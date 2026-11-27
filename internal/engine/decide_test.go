@@ -82,8 +82,11 @@ func TestResolving(t *testing.T) {
 			if d.NewState != c.wantState {
 				t.Fatalf("NewState = %q, want %q", d.NewState, c.wantState)
 			}
-			if c.legState == "unknown" && d.WaitReason == "" {
+			if c.legState == "unknown" && d.Reason == "" {
 				t.Fatal("unknown resolve must give a reason")
+			}
+			if d.WaitReason != "" {
+				t.Fatalf("a final state must not carry a wait reason: %q", d.WaitReason)
 			}
 			if d.TryAcquireLocks || d.CreateRevalidateLeg {
 				t.Fatalf("unexpected lock work: %+v", d)
@@ -159,10 +162,27 @@ func TestRevalidateFailedInvalidatesAndReleases(t *testing.T) {
 }
 
 func TestRevalidateUnknownNeedsReconciliationKeepsLocks(t *testing.T) {
-	d := Decide(View{Run: run("running"), LocksHeld: true, Legs: []store.Leg{
-		leg(1, "resolve", "succeeded"), leg(2, "revalidate", "unknown"), stepLeg(3, 10, "a", "pending")}})
+	legs := []store.Leg{
+		leg(1, "resolve", "succeeded"), leg(2, "revalidate", "unknown"), stepLeg(3, 10, "a", "pending")}
+	d := Decide(View{Run: run("running"), LocksHeld: true, Legs: legs})
 	if d.NewState != "needs_reconciliation" || d.ReleaseLocks {
 		t.Fatalf("got %+v", d)
+	}
+	wantIDs(t, "CancelLegs", d.CancelLegs, 3)
+
+	// still unknown: the run waits
+	after := apply(legs, d)
+	if d := Decide(View{Run: run("needs_reconciliation"), LocksHeld: true, Legs: after}); !reflect.DeepEqual(d, Decision{}) {
+		t.Fatalf("still unknown: %+v", d)
+	}
+	// the check-again leg settles: the run reaches a final state and releases locks
+	for state, want := range map[string]string{"succeeded": "failed", "failed": "failed"} {
+		settled := append([]store.Leg{}, after...)
+		settled[1].State = state
+		d := Decide(View{Run: run("needs_reconciliation"), LocksHeld: true, Legs: settled})
+		if d.NewState != want || !d.ReleaseLocks {
+			t.Fatalf("revalidate %s: %+v", state, d)
+		}
 	}
 }
 
@@ -191,6 +211,35 @@ func TestServiceScopeSkipsOnlyThatService(t *testing.T) {
 	d := Decide(fourServices(t, "service"))
 	wantIDs(t, "SkipLegs", d.SkipLegs, 5)
 	wantIDs(t, "QueueLegs", d.QueueLegs, 6, 7, 8)
+}
+
+func TestUnknownNeededLegSkipsDependentsInBothScopes(t *testing.T) {
+	for scope, want := range map[string][]int64{"step": {5, 6, 7, 8}, "service": {5}} {
+		v := fourServices(t, scope)
+		v.Legs[2] = stepLeg(1, 10, "s1", "unknown")
+		d := Decide(v)
+		wantIDs(t, scope+" SkipLegs", d.SkipLegs, want...)
+	}
+}
+
+func TestUnknownInChainSettlesIntoNeedsReconciliation(t *testing.T) {
+	steps := []store.RunStep{
+		{ID: 10, Name: "a", Position: 0},
+		{ID: 11, Name: "b", Position: 1, Needs: needs(t, spec.Need{Step: "a", Scope: "step"})},
+		{ID: 12, Name: "c", Position: 2, Needs: needs(t, spec.Need{Step: "b", Scope: "service"})},
+	}
+	v := View{Run: run("running"), Steps: steps, LocksHeld: true,
+		Legs: withRevalidated(stepLeg(1, 10, "x", "unknown"), stepLeg(2, 11, "x", "pending"), stepLeg(3, 12, "x", "pending"))}
+	d := Decide(v)
+	wantIDs(t, "first SkipLegs", d.SkipLegs, 2)
+	v.Legs = apply(v.Legs, d)
+	d = Decide(v)
+	wantIDs(t, "second SkipLegs", d.SkipLegs, 3)
+	v.Legs = apply(v.Legs, d)
+	d = Decide(v)
+	if d.NewState != "needs_reconciliation" || d.ReleaseLocks {
+		t.Fatalf("after cascade: %+v", d)
+	}
 }
 
 func TestStepScopeWaitsUntilEveryNeededLegSucceeded(t *testing.T) {
@@ -413,10 +462,14 @@ func TestNeedsReconciliation(t *testing.T) {
 		t.Fatalf("cancel requested: %+v", d)
 	}
 
-	// an operator retried the unknown leg: the run resumes
+	// a check-again leg was requeued: the run stays put, never resumes
 	d = Decide(View{Run: r, LocksHeld: true, Legs: withRevalidated(stepLeg(1, 10, "a", "queued"))})
-	if d.NewState != "running" || d.ReleaseLocks || d.TryAcquireLocks || d.CreateRevalidateLeg {
+	if !reflect.DeepEqual(d, Decision{}) {
 		t.Fatalf("retried: %+v", d)
+	}
+	d = Decide(View{Run: cancelled(r), LocksHeld: true, Legs: withRevalidated(stepLeg(1, 10, "a", "running"))})
+	if !reflect.DeepEqual(d, Decision{}) {
+		t.Fatalf("retried with cancel requested: %+v", d)
 	}
 }
 
@@ -451,6 +504,9 @@ func TestCancelInEveryRunState(t *testing.T) {
 			if len(d.QueueLegs) != 0 || d.TryAcquireLocks || d.CreateRevalidateLeg {
 				t.Fatalf("a cancelled run must not start work: %+v", d)
 			}
+			if st == "planned" || st == "waiting_approval" || st == "queued" {
+				wantIDs(t, "CancelLegs", d.CancelLegs, 2)
+			}
 			// In-flight legs are flagged, never silently left.
 			for _, l := range legs {
 				if l.State == "running" {
@@ -459,10 +515,17 @@ func TestCancelInEveryRunState(t *testing.T) {
 			}
 		})
 	}
-	t.Run("needs_reconciliation", func(t *testing.T) {
+	t.Run("needs_reconciliation with an unknown leg", func(t *testing.T) {
 		d := Decide(View{Run: cancelled(run("needs_reconciliation")), LocksHeld: true,
 			Legs: withRevalidated(stepLeg(2, 10, "a", "unknown"))})
-		if len(d.QueueLegs) != 0 || d.NewState == "cancelled" {
+		if !reflect.DeepEqual(d, Decision{}) {
+			t.Fatalf("got %+v", d)
+		}
+	})
+	t.Run("needs_reconciliation settled", func(t *testing.T) {
+		d := Decide(View{Run: cancelled(run("needs_reconciliation")), LocksHeld: true,
+			Legs: withRevalidated(stepLeg(2, 10, "a", "failed"))})
+		if d.NewState != "cancelled" || !d.ReleaseLocks {
 			t.Fatalf("got %+v", d)
 		}
 	})

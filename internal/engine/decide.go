@@ -42,8 +42,14 @@ type Decision struct {
 	TryAcquireLocks                 bool
 	// NewState and WaitReason: "" means unchanged. For a queued run, Advance
 	// applies NewState and CreateRevalidateLeg only if the locks were acquired.
+	// Advance clears the run's WaitReason whenever NewState is set (unless
+	// WaitReason is also set), so a stale reason such as a freeze never
+	// outlives the state it explained.
 	NewState, WaitReason string
-	ReleaseLocks         bool
+	// Reason says in plain words why NewState was chosen when it is a final
+	// state that needs explaining (for example a resolve that ended unknown).
+	Reason       string
+	ReleaseLocks bool
 }
 
 const (
@@ -124,7 +130,7 @@ func Decide(v View) Decision {
 
 	case state == "cancelling":
 		if allSettled(v.Legs) {
-			return finish(v, cancelRequested)
+			return finish(v, true)
 		}
 		return stopLegs(v.Legs)
 
@@ -209,7 +215,7 @@ func decideResolving(v View) Decision {
 			return Decision{NewState: "queued"}
 		}
 	case legUnknown:
-		return Decision{NewState: "failed", WaitReason: "resolving ended in an unknown outcome; nothing was changed"}
+		return Decision{NewState: "failed", Reason: "the resolve step's outcome could not be determined; nothing was changed"}
 	case legFailed, legSkipped, legCancelled:
 		return Decision{NewState: "failed"}
 	}
@@ -227,7 +233,10 @@ func decideRunning(v View) Decision {
 	case legQueued, legClaimed, legRunning:
 		return Decision{}
 	case legUnknown:
-		return Decision{NewState: "needs_reconciliation"}
+		// Keep the locks; the pending step legs will never run.
+		d := stopLegs(v.Legs)
+		d.NewState = "needs_reconciliation"
+		return d
 	case legFailed, legSkipped, legCancelled:
 		// Nothing ran; the plan is no longer valid. Pending legs will never run.
 		d := stopLegs(v.Legs)
@@ -268,19 +277,14 @@ func finish(v View, cancelRequested bool) Decision {
 	return Decision{NewState: "failed", ReleaseLocks: true}
 }
 
+// decideReconciling leaves needs_reconciliation only for a final state. While
+// any leg is unknown or unsettled (a check-again leg was requeued) the run
+// stays put: it never resumes running and never re-acquires locks.
 func decideReconciling(v View, cancelRequested bool) Decision {
-	if anyUnknown(v.Legs) {
+	if !allSettled(v.Legs) || anyUnknown(v.Legs) {
 		return Decision{}
 	}
-	if allSettled(v.Legs) {
-		return finish(v, cancelRequested)
-	}
-	// An operator retried an unknown leg (unknown -> queued): carry on. The
-	// locks are still held, so nothing is acquired again.
-	if cancelRequested {
-		return Decision{NewState: "cancelling"}
-	}
-	return Decision{NewState: "running"}
+	return finish(v, cancelRequested)
 }
 
 // needVerdict is how a step leg stands against its needs.
@@ -400,7 +404,9 @@ func judgeLeg(l store.Leg, step store.RunStep, stepsByName map[string]store.RunS
 		}
 		for _, nl := range considered {
 			switch nl.State {
-			case legFailed, legSkipped, legCancelled:
+			case legFailed, legSkipped, legCancelled, legUnknown:
+				// An unknown needed leg skips its dependents like a failed
+				// one, so the run settles into needs_reconciliation.
 				return needsSkip
 			case legSucceeded:
 			default:

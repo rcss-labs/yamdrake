@@ -1,0 +1,168 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// ErrLegMoved is returned by SetLegState when the leg is not in a state from
+// which the requested move is allowed, typically because a runner claimed it
+// first. Nothing was changed.
+var ErrLegMoved = errors.New("leg is not in a state that allows the move")
+
+// Leg is one unit of work for a runner: the resolve, the revalidation, or one
+// step for one service.
+type Leg struct {
+	ID, RunID        int64
+	StepID           *int64 // nil for resolve and revalidate
+	Kind             string // "resolve" | "revalidate" | "step"
+	Service, Version string
+	State            string
+	Attempt          int
+	Generation       int64
+	RunnerID         string
+	LeaseUntil       *time.Time
+	CancelRequested  bool
+	Resume, Result   []byte // JSON
+	FailureShort     string
+	FailureDetail    string
+	QueuedAt         *time.Time
+	StartedAt        *time.Time
+	FinishedAt       *time.Time
+}
+
+// Op is one external change a leg makes, recorded before and after it is made.
+// (LegID, Key) is unique: the key makes a repeated attempt find its own record.
+type Op struct {
+	ID, LegID      int64
+	Seq            int
+	Name, Key      string
+	Intent, Result []byte
+	State          string // "intended" | "done" | "failed"
+	At             time.Time
+}
+
+const legColumns = `id, run_id, step_id, kind, service, version, state, attempt, generation, runner_id,
+	lease_until, cancel_requested, resume, result, failure_short, failure_detail,
+	queued_at, started_at, finished_at`
+
+func scanLeg(r rowScanner) (Leg, error) {
+	var l Leg
+	err := r.Scan(&l.ID, &l.RunID, &l.StepID, &l.Kind, &l.Service, &l.Version, &l.State, &l.Attempt,
+		&l.Generation, &l.RunnerID, &l.LeaseUntil, &l.CancelRequested, &l.Resume, &l.Result,
+		&l.FailureShort, &l.FailureDetail, &l.QueuedAt, &l.StartedAt, &l.FinishedAt)
+	return l, err
+}
+
+// InsertLeg stores a leg; an empty State means "pending". ErrInvalid for an
+// unknown kind or state, ErrInvalidReference for an unknown run or step.
+func InsertLeg(ctx context.Context, tx DBTX, l Leg) (Leg, error) {
+	if l.State == "" {
+		l.State = "pending"
+	}
+	got, err := scanLeg(tx.QueryRow(ctx,
+		`INSERT INTO legs (run_id, step_id, kind, service, version, state, attempt, generation, runner_id,
+			lease_until, cancel_requested, resume, result, failure_short, failure_detail,
+			queued_at, started_at, finished_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		 RETURNING `+legColumns,
+		l.RunID, l.StepID, l.Kind, l.Service, l.Version, l.State, l.Attempt, l.Generation, l.RunnerID,
+		dbTimePtr(l.LeaseUntil), l.CancelRequested, l.Resume, l.Result, l.FailureShort, l.FailureDetail,
+		dbTimePtr(l.QueuedAt), dbTimePtr(l.StartedAt), dbTimePtr(l.FinishedAt)))
+	if err != nil {
+		return Leg{}, fmt.Errorf("insert leg: %w", mapError(err))
+	}
+	return got, nil
+}
+
+// LegsOfRun returns the run's legs in id order.
+func LegsOfRun(ctx context.Context, db DBTX, runID int64) ([]Leg, error) {
+	return queryLegs(ctx, db, "legs of run", "SELECT "+legColumns+" FROM legs WHERE run_id = $1 ORDER BY id", runID)
+}
+
+// ExpiredLegs returns claimed or running legs whose lease ended before now.
+func ExpiredLegs(ctx context.Context, db DBTX, now time.Time) ([]Leg, error) {
+	return queryLegs(ctx, db, "expired legs",
+		"SELECT "+legColumns+" FROM legs WHERE state IN ('claimed', 'running') AND lease_until < $1 ORDER BY id", dbTime(now))
+}
+
+func queryLegs(ctx context.Context, db DBTX, what, query string, args ...any) ([]Leg, error) {
+	rows, err := db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, mapError(err))
+	}
+	defer rows.Close()
+	legs := []Leg{}
+	for rows.Next() {
+		l, err := scanLeg(rows)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", what, mapError(err))
+		}
+		legs = append(legs, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", what, mapError(err))
+	}
+	return legs, nil
+}
+
+// legMoves lists, per target state, the states the orchestrator may move a leg
+// from. Runners own every other transition and write them conditionally on the
+// generation they claimed.
+var legMoves = map[string][]string{
+	"queued":    {"pending", "unknown"},
+	"skipped":   {"pending"},
+	"cancelled": {"pending", "queued"},
+	"succeeded": {"unknown"},
+	"failed":    {"unknown"},
+}
+
+// SetLegState makes an orchestrator-side move: pending to queued, skipped or
+// cancelled; queued to cancelled; unknown to succeeded, failed or queued. It is
+// conditional on the leg's current state, so it cannot overwrite a runner that
+// claimed the leg meanwhile: then nothing changes and it returns ErrLegMoved.
+// ErrNotFound for an unknown leg, ErrInvalid for a target not in the list.
+//
+// Moving to queued sets queued_at and clears runner, lease and finish time (an
+// unknown leg being given another try); settled targets set finished_at.
+func SetLegState(ctx context.Context, tx DBTX, legID int64, state string, at time.Time) error {
+	from, ok := legMoves[state]
+	if !ok {
+		return fmt.Errorf("set leg state: %w: %q is not an orchestrator move", ErrInvalid, state)
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE legs SET state = $2,
+			queued_at   = CASE WHEN $2 = 'queued' THEN $3 ELSE queued_at END,
+			runner_id   = CASE WHEN $2 = 'queued' THEN '' ELSE runner_id END,
+			lease_until = CASE WHEN $2 = 'queued' THEN NULL ELSE lease_until END,
+			finished_at = CASE WHEN $2 = 'queued' THEN NULL ELSE coalesce(finished_at, $3) END
+		 WHERE id = $1 AND state = ANY($4)`, legID, state, dbTime(at), from)
+	if err != nil {
+		return fmt.Errorf("set leg state: %w", mapError(err))
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM legs WHERE id = $1)", legID).Scan(&exists); err != nil {
+		return fmt.Errorf("set leg state: %w", mapError(err))
+	}
+	if !exists {
+		return fmt.Errorf("set leg state: %w", ErrNotFound)
+	}
+	return fmt.Errorf("set leg state: %w", ErrLegMoved)
+}
+
+// FlagLegCancel asks the runner holding the leg to stop it.
+func FlagLegCancel(ctx context.Context, tx DBTX, legID int64) error {
+	tag, err := tx.Exec(ctx, "UPDATE legs SET cancel_requested = true WHERE id = $1", legID)
+	if err != nil {
+		return fmt.Errorf("flag leg cancel: %w", mapError(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("flag leg cancel: %w", ErrNotFound)
+	}
+	return nil
+}

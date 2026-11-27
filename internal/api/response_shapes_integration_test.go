@@ -98,6 +98,8 @@ type listRoute struct {
 // cannot be forgotten.
 var notAListResponse = map[string]bool{
 	"GET /api/v1/admin/idp-mappings/{idpGroup}": true,
+	// ssoSettingsView holds only strings and a bool: no slice fields.
+	"GET /api/v1/admin/sso": true,
 }
 
 // Every list a route returns is [] when empty, never null, on an empty

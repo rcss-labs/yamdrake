@@ -69,6 +69,9 @@ type Deps struct {
 	LockoutWindow time.Duration
 	// Now is the clock (default time.Now).
 	Now func() time.Time
+	// DevicePollInterval is how often a CLI may poll a device sign-in (default
+	// 5 seconds). Tests shorten it.
+	DevicePollInterval time.Duration
 }
 
 // valkeyTimeout bounds every Valkey call made for a request: against a dead
@@ -103,6 +106,9 @@ func New(deps Deps) http.Handler {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
+	if deps.DevicePollInterval <= 0 {
+		deps.DevicePollInterval = defaultDevicePollInterval
+	}
 	dummy, err := dummyPasswordHash()
 	if err != nil {
 		panic("api.New: dummy password hash: " + err.Error())
@@ -128,6 +134,7 @@ func New(deps Deps) http.Handler {
 	route("GET /api/v1/jobs/{id}", auth.View, s.getJob)
 	route("PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob)
 	route("POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob)
+	s.accessRoutes(route)
 	// Unknown paths: 401 without credentials, 404 with them.
 	authenticated.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, codeNotFound, "not found")
@@ -137,6 +144,11 @@ func New(deps Deps) http.Handler {
 	// Sign-in is the one route that is open to everyone; it carries no session
 	// cookie to check, so it has its own origin check (login CSRF).
 	root.HandleFunc("POST /api/v1/auth/login", s.login)
+	// The CLI's device sign-in starts and finishes without credentials (the
+	// CLI has none yet). Neither route reads a cookie, so neither can be used
+	// cross-site to act as a signed-in browser user; confirm is authenticated.
+	root.HandleFunc("POST /api/v1/cli/login", s.startDeviceLogin)
+	root.HandleFunc("POST /api/v1/cli/login/token", s.pollDeviceLogin)
 	root.Handle("/", s.authenticate(authenticated))
 	return root
 }

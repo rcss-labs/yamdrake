@@ -122,11 +122,20 @@ func TestCreateGetDelete(t *testing.T) {
 }
 
 func TestGetMalformedIDIsNoSessionWithoutValkey(t *testing.T) {
-	// A client for a closed port: any Valkey call would give ErrUnavailable.
+	// A client for a closed port: any Valkey call would give ErrUnavailable
+	// (or hang until the deadline), so ErrNoSession proves none was made.
 	m := NewManager(openClient(t, "127.0.0.1:1"), time.Now)
-	for _, id := range []string{"", "short", "has/slash" + string(make([]byte, 40))} {
-		if _, err := m.Get(context.Background(), id); !errors.Is(err, ErrNoSession) {
-			t.Fatalf("Get(%d-char id) = %v, want ErrNoSession", len(id), err)
+	ids := map[string]string{
+		"empty":                   "",
+		"too short":               "short",
+		"43 chars, not base64url": validLookingID()[:42] + "/",
+	}
+	for name, id := range ids {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_, err := m.Get(ctx, id)
+		cancel()
+		if !errors.Is(err, ErrNoSession) {
+			t.Fatalf("%s: Get = %v, want ErrNoSession", name, err)
 		}
 	}
 }
@@ -234,6 +243,36 @@ func TestDeleteAllForUser(t *testing.T) {
 	}
 }
 
+func TestDeleteAllForUserKeepsSessionCreatedDuringDeletion(t *testing.T) {
+	m, _ := newManager(t)
+	ctx := context.Background()
+	user := randomUserID(t)
+	if _, err := m.Create(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	var late Session
+	m.afterListingUserSessions = func() {
+		var err error
+		if late, err = m.Create(ctx, user); err != nil {
+			t.Errorf("concurrent Create: %v", err)
+		}
+	}
+	if err := m.DeleteAllForUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	m.afterListingUserSessions = nil
+
+	// The session created mid-deletion may survive that call, but it must
+	// still be findable by the next one.
+	if err := m.DeleteAllForUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Get(ctx, late.ID); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("session created during DeleteAllForUser is orphaned: Get = %v", err)
+	}
+}
+
 func TestUserSetHasExpiry(t *testing.T) {
 	m, _ := newManager(t)
 	ctx := context.Background()
@@ -298,12 +337,14 @@ func assertAllUnavailable(t *testing.T, m *Manager, id string) {
 	}
 }
 
-// tcpProxy forwards to Valkey until stopped, then refuses and drops everything.
+// tcpProxy forwards to Valkey until stopped, then closes every connection and
+// refuses new ones.
 type tcpProxy struct {
-	addr  string
-	ln    net.Listener
-	mu    sync.Mutex
-	conns []net.Conn
+	addr    string
+	ln      net.Listener
+	mu      sync.Mutex
+	stopped bool
+	conns   []net.Conn
 }
 
 func startProxy(t *testing.T, target string) *tcpProxy {
@@ -324,9 +365,11 @@ func startProxy(t *testing.T, target string) *tcpProxy {
 				in.Close()
 				continue
 			}
-			p.mu.Lock()
-			p.conns = append(p.conns, in, out)
-			p.mu.Unlock()
+			if !p.register(in, out) {
+				in.Close()
+				out.Close()
+				return
+			}
 			go func() { _, _ = io.Copy(out, in); out.Close() }()
 			go func() { _, _ = io.Copy(in, out); in.Close() }()
 		}
@@ -335,10 +378,22 @@ func startProxy(t *testing.T, target string) *tcpProxy {
 	return p
 }
 
-func (p *tcpProxy) stop() {
-	p.ln.Close()
+// register records the connections unless the proxy has already stopped.
+func (p *tcpProxy) register(conns ...net.Conn) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.stopped {
+		return false
+	}
+	p.conns = append(p.conns, conns...)
+	return true
+}
+
+func (p *tcpProxy) stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stopped = true
+	p.ln.Close()
 	for _, c := range p.conns {
 		c.Close()
 	}

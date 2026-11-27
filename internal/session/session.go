@@ -61,6 +61,10 @@ type stored struct {
 type Manager struct {
 	client valkey.Client
 	now    func() time.Time
+
+	// afterListingUserSessions is a test seam called between reading a user's
+	// session ids and deleting them, to interleave a concurrent Create.
+	afterListingUserSessions func()
 }
 
 // NewManager returns a Manager using c. now is injectable for tests.
@@ -203,6 +207,9 @@ func (m *Manager) DeleteAllForUser(ctx context.Context, userID int64) error {
 	if err != nil && !valkey.IsValkeyNil(err) {
 		return unavailable(err)
 	}
+	if m.afterListingUserSessions != nil {
+		m.afterListingUserSessions()
+	}
 	b := m.client.B()
 	cmds := make(valkey.Commands, 0, len(ids)+1)
 	for _, id := range ids {
@@ -210,7 +217,12 @@ func (m *Manager) DeleteAllForUser(ctx context.Context, userID int64) error {
 			cmds = append(cmds, b.Del().Key(sessionKey(id)).Build())
 		}
 	}
-	cmds = append(cmds, b.Del().Key(setKey).Build())
+	// Remove only the ids read above rather than deleting the whole set: a
+	// session created after SMEMBERS must stay listed so a later call finds it.
+	// An emptied set disappears on its own.
+	if len(ids) > 0 {
+		cmds = append(cmds, b.Srem().Key(setKey).Member(ids...).Build())
+	}
 	for _, res := range m.client.DoMulti(ctx, cmds...) {
 		if err := res.Error(); err != nil {
 			return unavailable(err)

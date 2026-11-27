@@ -92,12 +92,12 @@ func UserByID(ctx context.Context, db DBTX, id int64) (User, error) {
 	return u, nil
 }
 
-// PasswordHash returns the stored hash of a local user. It returns ErrNotFound
-// for an unknown user, a non-local user or a user without a password, so
+// PasswordHash returns the stored hash of a local or service user. It returns
+// ErrNotFound for an unknown user, a SAML user or a user without a password, so
 // callers cannot tell those cases apart.
 func PasswordHash(ctx context.Context, db DBTX, userID int64) (string, error) {
 	var hash *string
-	err := db.QueryRow(ctx, "SELECT password_hash FROM users WHERE id = $1 AND source = 'local'", userID).Scan(&hash)
+	err := db.QueryRow(ctx, "SELECT password_hash FROM users WHERE id = $1 AND source IN ('local', 'service')", userID).Scan(&hash)
 	if err != nil {
 		return "", fmt.Errorf("password hash: %w", mapError(err))
 	}

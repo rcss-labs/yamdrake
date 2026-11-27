@@ -304,7 +304,11 @@ func TestTokenLifecycle(t *testing.T) {
 	u, _ := CreateLocalUser(ctx, pool, "svc@example.com", "svc", "service", "")
 	other, _ := CreateLocalUser(ctx, pool, "o@example.com", "o", "local", "h")
 	if _, err := PasswordHash(ctx, pool, u.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("PasswordHash of service user = %v, want ErrNotFound", err)
+		t.Fatalf("PasswordHash of service user without a password = %v, want ErrNotFound", err)
+	}
+	withPassword, _ := CreateLocalUser(ctx, pool, "svcpw@example.com", "svcpw", "service", "svc-hash")
+	if hash, err := PasswordHash(ctx, pool, withPassword.ID); err != nil || hash != "svc-hash" {
+		t.Fatalf("PasswordHash of service user with a password = %q, %v", hash, err)
 	}
 
 	hash := []byte{1, 2, 3, 4}

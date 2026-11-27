@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -306,4 +307,39 @@ func TestLogoutDeletesSession(t *testing.T) {
 	if !found {
 		t.Errorf("no auth.logout entry: %v", h.auditActions())
 	}
+}
+
+func TestServiceAccountSignsInWithItsPassword(t *testing.T) {
+	h := newHarness(t)
+	hash, err := auth.HashPassword(testPassword)
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	svc, err := store.CreateLocalUser(context.Background(), h.pool, uniqueEmail(t, "svc"), "svc", "service", hash)
+	if err != nil {
+		t.Fatalf("CreateLocalUser: %v", err)
+	}
+	rec := h.login(svc.Email, testPassword)
+	h.expect(rec, http.StatusOK, "")
+	if sessionCookie(rec) == nil {
+		t.Error("a service account got no session cookie")
+	}
+}
+
+// Attempts made while locked must not push the unlock time out, or anyone
+// could keep an account locked for ever by retrying.
+func TestAttemptsWhileLockedDoNotExtendTheLock(t *testing.T) {
+	h := newHarness(t)
+	user := h.newUser("nolockextend")
+	for range 5 {
+		h.expect(h.login(user.Email, "wrong password"), http.StatusUnauthorized, "unauthorized")
+	}
+	locked := time.Now()
+	for time.Since(locked) < 1500*time.Millisecond {
+		h.expect(h.login(user.Email, "wrong password"), http.StatusTooManyRequests, "")
+		time.Sleep(200 * time.Millisecond)
+	}
+	// 2s window from the fifth failure: the lock ends by then however often it was hit.
+	time.Sleep(time.Until(locked.Add(2300 * time.Millisecond)))
+	h.expect(h.login(user.Email, testPassword), http.StatusOK, "")
 }

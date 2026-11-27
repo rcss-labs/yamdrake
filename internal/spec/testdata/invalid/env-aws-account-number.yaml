@@ -1,0 +1,6 @@
+apiVersion: yumdrake/v1
+kind: Environments
+environments:
+  - name: hetzner-01
+    aws_account: 111111111111
+    aws_account: "111111111111"

@@ -10,12 +10,15 @@ import (
 	"time"
 )
 
+// All model types below are stored as JSON by later tasks: field names are
+// fixed by snake_case json tags, and time.Duration values stay nanosecond integers.
+
 // Problem is one thing wrong with a file, positioned at a 1-based line.
 // Line is 0 when the problem is about the whole file.
 type Problem struct {
-	File    string
-	Line    int
-	Message string
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Message string `json:"message"`
 }
 
 // Problems is a list of problems; it also implements error.
@@ -51,80 +54,83 @@ func (p Problems) Sorted() Problems {
 }
 
 type Environment struct {
-	Name       string
-	Label      string
-	AWSAccount string
-	Line       int
+	Name       string `json:"name"`
+	Label      string `json:"label"`
+	AWSAccount string `json:"aws_account"`
+	Line       int    `json:"line"`
 }
 
 type EnvFile struct {
-	Name        string
-	Source      string
-	Destination string
-	Line        int
+	Name        string `json:"name"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Line        int    `json:"line"`
 }
 
 type Toml struct {
-	Name        string
-	Source      string
-	Destination string
-	Line        int
+	Name        string `json:"name"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Line        int    `json:"line"`
 }
 
 type VersionRule struct {
-	Pattern string
-	Sort    string
-	Limit   int
+	Pattern string `json:"pattern"`
+	Sort    string `json:"sort"`
+	Limit   int    `json:"limit"`
 }
 
 type ServiceEnv struct {
-	ECSService    string
-	ECRRepository string
-	EnvFiles      []EnvFile
-	Tomls         []Toml
-	Line          int
+	ECSService    string    `json:"ecs_service"`
+	ECRRepository string    `json:"ecr_repository"`
+	EnvFiles      []EnvFile `json:"env_files"`
+	Tomls         []Toml    `json:"tomls"`
+	Line          int       `json:"line"`
 }
 
 type Service struct {
-	File         string
-	Name         string
-	Versions     VersionRule
-	Environments map[string]ServiceEnv
+	File         string                `json:"file"`
+	Name         string                `json:"name"`
+	Versions     VersionRule           `json:"versions"`
+	Environments map[string]ServiceEnv `json:"environments"`
 }
 
 // Need is a dependency of a step. Scope is "step" or "service".
 type Need struct {
-	Step  string
-	Scope string
+	Step  string `json:"step"`
+	Scope string `json:"scope"`
 }
 
 type Step struct {
-	Name, Use, Group string
-	MaxParallel      int           // 0 means not set
-	Timeout          time.Duration // 0 means not set
-	Needs            []Need
-	Line             int
+	Name        string        `json:"name"`
+	Use         string        `json:"use"`
+	Group       string        `json:"group"`
+	MaxParallel int           `json:"max_parallel"` // 0 means not set
+	Timeout     time.Duration `json:"timeout"`      // 0 means not set
+	Needs       []Need        `json:"needs"`
+	Line        int           `json:"line"`
 }
 
 // Group is a named list of services; Job.Groups keeps file order.
 type Group struct {
-	ID       string
-	Label    string
-	Services []string
-	Line     int
+	ID       string   `json:"id"`
+	Label    string   `json:"label"`
+	Services []string `json:"services"`
+	Line     int      `json:"line"`
 }
 
 type Approval struct {
-	Labels  []string
-	Expires time.Duration
+	Labels  []string      `json:"labels"`
+	Expires time.Duration `json:"expires"`
 }
 
 type Job struct {
-	File         string
-	ID, Title    string
-	Labels       []string
-	Groups       []Group
-	Approval     *Approval
-	SlackChannel string
-	Steps        []Step
+	File         string    `json:"file"`
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	Labels       []string  `json:"labels"`
+	Groups       []Group   `json:"groups"`
+	Approval     *Approval `json:"approval"`
+	SlackChannel string    `json:"slack_channel"`
+	Steps        []Step    `json:"steps"`
 }

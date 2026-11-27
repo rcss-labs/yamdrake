@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"encoding/json"
 	"os"
 	"reflect"
 	"strings"
@@ -222,33 +223,33 @@ func TestParseRejections(t *testing.T) {
 		parse    func(string, []byte) Problems
 		fragment string
 	}{
-		{"missing apiVersion", "job-missing-apiversion", parseJobProblems, "apiVersion"},
+		{"missing apiVersion", "job-missing-apiversion", parseJobProblems, `missing required field "apiVersion"`},
 		{"apiVersion v2", "job-apiversion-v2", parseJobProblems, "yumdrake/v2"},
-		{"wrong kind", "job-wrong-kind", parseJobProblems, "kind"},
-		{"unknown top-level field", "job-unknown-top-field", parseJobProblems, "inputs"},
-		{"unknown step field", "job-unknown-step-field", parseJobProblems, "colour"},
-		{"use run", "job-use-run", parseJobProblems, "run"},
-		{"use verify", "job-use-verify", parseJobProblems, "verify"},
-		{"label staging", "job-label-staging", parseJobProblems, "staging"},
-		{"aws_account bare number", "env-aws-account-number", parseEnvironmentsProblems, "aws_account"},
-		{"aws_account 11 digits", "env-aws-account-11-digits", parseEnvironmentsProblems, "11111111111"},
-		{"ecs_service bare name", "service-ecs-bare-name", parseServiceProblems, "ecs_service"},
-		{"ecr_repository without host", "service-ecr-no-registry", parseServiceProblems, "ecr_repository"},
+		{"wrong kind", "job-wrong-kind", parseJobProblems, `wrong kind "Service"`},
+		{"unknown top-level field", "job-unknown-top-field", parseJobProblems, `unknown field "inputs"`},
+		{"unknown step field", "job-unknown-step-field", parseJobProblems, `unknown field "colour"`},
+		{"use run", "job-use-run", parseJobProblems, `step use "run"`},
+		{"use verify", "job-use-verify", parseJobProblems, `step use "verify"`},
+		{"label staging", "job-label-staging", parseJobProblems, `label "staging"`},
+		{"aws_account bare number", "env-aws-account-number", parseEnvironmentsProblems, "quoted string"},
+		{"aws_account 11 digits", "env-aws-account-11-digits", parseEnvironmentsProblems, `aws_account "11111111111"`},
+		{"ecs_service bare name", "service-ecs-bare-name", parseServiceProblems, `ecs_service "backend-api"`},
+		{"ecr_repository without host", "service-ecr-no-registry", parseServiceProblems, `ecr_repository "backend-api"`},
 		{"source_env_path two parts", "service-source-two-parts", parseServiceProblems, "example-org/backend-api.env"},
 		{"destination not s3", "service-destination-not-s3", parseServiceProblems, "s3://"},
-		{"pattern does not compile", "service-pattern-invalid", parseServiceProblems, "pattern"},
-		{"limit zero", "service-limit-zero", parseServiceProblems, "limit"},
-		{"max_parallel zero", "job-max-parallel-zero", parseJobProblems, "max_parallel"},
-		{"timeout on copy-config", "job-timeout-on-copy-config", parseJobProblems, "timeout"},
-		{"needs scope leg", "job-needs-scope-leg", parseJobProblems, "leg"},
-		{"slack without hash", "job-slack-no-hash", parseJobProblems, "deployments"},
-		{"upper-case job id", "job-uppercase-id", parseJobProblems, "Deploy-Backend"},
+		{"pattern does not compile", "service-pattern-invalid", parseServiceProblems, `versions.pattern "("`},
+		{"limit zero", "service-limit-zero", parseServiceProblems, "versions.limit is 0"},
+		{"max_parallel zero", "job-max-parallel-zero", parseJobProblems, "max_parallel is 0"},
+		{"timeout on copy-config", "job-timeout-on-copy-config", parseJobProblems, "timeout is only allowed on ecs-deploy"},
+		{"needs scope leg", "job-needs-scope-leg", parseJobProblems, `needs scope "leg"`},
+		{"slack without hash", "job-slack-no-hash", parseJobProblems, `notify.slack "deployments" must start with #`},
+		{"upper-case job id", "job-uppercase-id", parseJobProblems, `job id "Deploy-Backend"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			problems := tt.parse(tt.fixture+".yaml", readFixture(t, "invalid/"+tt.fixture+".yaml"))
-			if len(problems) == 0 {
-				t.Fatal("expected a problem, got none")
+			if len(problems) != 1 {
+				t.Fatalf("each fixture holds one mistake; got %d problems: %v", len(problems), problems)
 			}
 			for _, problem := range problems {
 				if problem.File != tt.fixture+".yaml" {
@@ -361,5 +362,98 @@ func TestProblemsSortedAndFormatted(t *testing.T) {
 	}
 	if problems[0].Message != "third" {
 		t.Error("Sorted must not reorder the receiver")
+	}
+}
+
+func TestParseReturnsSortedProblemsOnEarlyExit(t *testing.T) {
+	// A wrong kind stops parsing early; the apiVersion problem on line 3 must
+	// still not come before the kind problem on line 1.
+	data := "kind: Service\nx: 1\napiVersion: yumdrake/v9\n"
+	problems := parseJobProblems("job.yaml", []byte(data))
+	if len(problems) < 2 {
+		t.Fatalf("expected kind and apiVersion problems, got %v", problems)
+	}
+	for i := 1; i < len(problems); i++ {
+		if problems[i-1].Line > problems[i].Line {
+			t.Fatalf("problems out of order: %v", problems)
+		}
+	}
+}
+
+func TestParseNestingDepthCap(t *testing.T) {
+	var builder strings.Builder
+	builder.WriteString("apiVersion: yumdrake/v1\nkind: Job\n")
+	for i := 0; i < 40; i++ {
+		builder.WriteString(strings.Repeat("  ", i) + "k:\n")
+	}
+	problems := parseJobProblems("job.yaml", []byte(builder.String()))
+	for _, problem := range problems {
+		if strings.Contains(problem.Message, "nested deeper") {
+			if problem.Line < 3 {
+				t.Errorf("depth problem has line %d", problem.Line)
+			}
+			return
+		}
+	}
+	t.Errorf("no depth problem: %v", problems)
+}
+
+func TestGroupLabelIsOptional(t *testing.T) {
+	data := `apiVersion: yumdrake/v1
+kind: Job
+job: deploy-backend
+title: Backend
+environment:
+  labels: [dev]
+groups:
+  backends:
+    services: [backend-api]
+steps:
+  - name: config-backends
+    group: backends
+    use: copy-config
+`
+	job, problems := ParseJob("job.yaml", []byte(data))
+	if len(problems) != 0 {
+		t.Fatalf("unexpected problems: %v", problems)
+	}
+	if job.Groups[0].Label != "" {
+		t.Errorf("label = %q, want empty", job.Groups[0].Label)
+	}
+}
+
+func TestModelJSONRoundTrip(t *testing.T) {
+	job, problems := ParseJob("job.yaml", readFixture(t, "valid/jobs/deploy-backend.yaml"))
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	svc, problems := ParseService("s.yaml", readFixture(t, "valid/services/backend-api.yaml"))
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	envs, problems := ParseEnvironments("e.yaml", readFixture(t, "valid/environments.yaml"))
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	for name, value := range map[string]any{"job": job, "service": svc, "environments": envs} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		decoded := reflect.New(reflect.TypeOf(value))
+		if err := json.Unmarshal(encoded, decoded.Interface()); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !reflect.DeepEqual(decoded.Elem().Interface(), value) {
+			t.Errorf("%s did not round-trip", name)
+		}
+	}
+	encoded, _ := json.Marshal(envs[0])
+	if !strings.Contains(string(encoded), `"aws_account":"111111111111"`) {
+		t.Errorf("environment JSON lacks snake_case aws_account: %s", encoded)
+	}
+	encoded, _ = json.Marshal(job.Steps[1])
+	if !strings.Contains(string(encoded), `"max_parallel":2`) {
+		t.Errorf("step JSON lacks snake_case max_parallel: %s", encoded)
 	}
 }

@@ -2,5 +2,5 @@ apiVersion: yumdrake/v1
 kind: Environments
 environments:
   - name: hetzner-01
+    label: dev
     aws_account: "11111111111"
-    aws_account: "111111111111"

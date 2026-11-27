@@ -40,7 +40,7 @@ func ParseEnvironments(file string, data []byte) (environments []Environment, pr
 	defer p.recoverPanic(&problems)
 	root := p.load(data, "Environments")
 	if root == nil {
-		return nil, p.problems
+		return nil, p.problems.Sorted()
 	}
 	fields := p.fields(root, "file", "apiVersion", "kind", "environments")
 	items := p.sequence(p.require(fields, root, "environments"), "environments")
@@ -56,7 +56,7 @@ func ParseService(file string, data []byte) (service Service, problems Problems)
 	defer p.recoverPanic(&problems)
 	root := p.load(data, "Service")
 	if root == nil {
-		return Service{}, p.problems
+		return Service{}, p.problems.Sorted()
 	}
 	fields := p.fields(root, "service", "apiVersion", "kind", "name", "versions", "environments")
 	service = Service{File: file, Environments: map[string]ServiceEnv{}}
@@ -79,7 +79,7 @@ func ParseJob(file string, data []byte) (job Job, problems Problems) {
 	defer p.recoverPanic(&problems)
 	root := p.load(data, "Job")
 	if root == nil {
-		return Job{}, p.problems
+		return Job{}, p.problems.Sorted()
 	}
 	fields := p.fields(root, "job", "apiVersion", "kind", "job", "title", "environment", "groups", "approval", "notify", "steps")
 	job = Job{File: file}
@@ -524,7 +524,9 @@ func (p *parser) groups(n *yaml.Node) []Group {
 		}
 		group := Group{ID: p.name(key, "group id"), Line: key.Line}
 		groupFields := p.fields(node, "group "+key.Value, "label", "services")
-		group.Label = p.text(p.require(groupFields, node, "label"), "group label")
+		if labelNode := groupFields["label"]; labelNode != nil {
+			group.Label = p.text(labelNode, "group label")
+		}
 		for _, service := range p.sequence(p.require(groupFields, node, "services"), "group services") {
 			group.Services = append(group.Services, p.name(service, "service name"))
 		}

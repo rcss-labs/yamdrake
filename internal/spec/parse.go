@@ -60,7 +60,11 @@ func ParseService(file string, data []byte) (service Service, problems Problems)
 	}
 	fields := p.fields(root, "service", "apiVersion", "kind", "name", "versions", "environments")
 	service = Service{File: file, Environments: map[string]ServiceEnv{}}
-	service.Name = p.name(p.require(fields, root, "name"), "service name")
+	nameNode := p.require(fields, root, "name")
+	service.Name = p.name(nameNode, "service name")
+	if nameNode != nil {
+		service.Line = nameNode.Line
+	}
 	service.Versions = p.versions(fields["versions"])
 	envs := p.fields(p.require(fields, root, "environments"), "environments")
 	for _, key := range p.orderedKeys(fields["environments"]) {

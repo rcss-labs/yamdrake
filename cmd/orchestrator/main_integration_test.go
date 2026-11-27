@@ -100,7 +100,7 @@ func start(t *testing.T, args []string, env map[string]string) *running {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{done: make(chan int, 1), cancel: cancel, stdout: &syncBuffer{}, stderr: &syncBuffer{}}
-	go func() { r.done <- run(ctx, args, envFrom(env), r.stdout, r.stderr) }()
+	go func() { r.done <- run(ctx, args, envFrom(env), nil, r.stdout, r.stderr) }()
 	t.Cleanup(func() {
 		cancel()
 		r.wait(t, 10*time.Second)
@@ -139,6 +139,9 @@ func waitStatus(t *testing.T, addr, path string, want int, within time.Duration)
 	return ""
 }
 
+// publicURL is the development address cookie requests must come from.
+const publicURL = "http://localhost:8080"
+
 // Development only: base64 of a fixed, public 32-byte key. Never use outside tests.
 const devSecretKey = "ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE="
 
@@ -149,6 +152,7 @@ func baseEnv(t *testing.T, databaseURL, httpAddr string) map[string]string {
 		"YUMDRAKE_VALKEY_ADDR":      valkeyAddr(t),
 		"YUMDRAKE_LOCAL_SECRET_KEY": devSecretKey,
 		"YUMDRAKE_HTTP_ADDR":        httpAddr,
+		"YUMDRAKE_PUBLIC_URL":       publicURL,
 		"YUMDRAKE_SHUTDOWN_TIMEOUT": "5s",
 		"YUMDRAKE_STARTUP_TIMEOUT":  "20s",
 	}
@@ -156,7 +160,7 @@ func baseEnv(t *testing.T, databaseURL, httpAddr string) map[string]string {
 
 func TestRunVersionPrintsVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"yumdrake-orchestrator", "version"}, envFrom(nil), &stdout, &stderr)
+	code := run(context.Background(), []string{"yumdrake-orchestrator", "version"}, envFrom(nil), nil, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("run() = %d, want 0", code)
 	}
@@ -167,7 +171,7 @@ func TestRunVersionPrintsVersion(t *testing.T) {
 
 func TestRunUnknownSubcommandReturns2(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"yumdrake-orchestrator", "bogus"}, envFrom(nil), &stdout, &stderr)
+	code := run(context.Background(), []string{"yumdrake-orchestrator", "bogus"}, envFrom(nil), nil, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("run() = %d, want 2", code)
 	}
@@ -178,7 +182,7 @@ func TestRunUnknownSubcommandReturns2(t *testing.T) {
 
 func TestRunWithBadConfigReturns2AndNamesVariable(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"yumdrake-orchestrator"}, envFrom(nil), &stdout, &stderr)
+	code := run(context.Background(), []string{"yumdrake-orchestrator"}, envFrom(nil), nil, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("run() = %d, want 2", code)
 	}
@@ -234,14 +238,14 @@ func request(t *testing.T, method, addr, path, token string) int {
 	return resp.StatusCode
 }
 
-func TestRunStartsWithoutBootstrapTokenOrInventorySource(t *testing.T) {
+func TestRunStartsWithoutInventorySource(t *testing.T) {
 	dbURL := testdb.New(t)
 	addr := freeAddr(t)
 	r := start(t, []string{"yumdrake-orchestrator"}, baseEnv(t, dbURL, addr))
 
 	waitStatus(t, addr, "/readyz", http.StatusOK, 10*time.Second)
-	if got := request(t, "GET", addr, "/api/v1/inventory", ""); got != http.StatusNotFound {
-		t.Errorf("GET /api/v1/inventory without a bootstrap token = %d, want 404", got)
+	if got := request(t, "GET", addr, "/api/v1/inventory", ""); got != http.StatusUnauthorized {
+		t.Errorf("GET /api/v1/inventory without credentials = %d, want 401", got)
 	}
 	out := r.stdout.String()
 	if !strings.Contains(out, "sync loop started") {
@@ -256,23 +260,59 @@ func TestRunStartsWithoutBootstrapTokenOrInventorySource(t *testing.T) {
 	}
 }
 
-func TestRunServesAPIBehindBootstrapToken(t *testing.T) {
-	const token = "orchestrator-test-token-0123456789-abc"
+// TestRunServesAPIBehindSignIn creates the first admin with create-admin and
+// signs in as that admin over HTTP.
+func TestRunServesAPIBehindSignIn(t *testing.T) {
+	const password = "orchestrator test password"
 	dbURL := testdb.New(t)
 	addr := freeAddr(t)
 	env := baseEnv(t, dbURL, addr)
-	env["YUMDRAKE_BOOTSTRAP_TOKEN"] = token
 	r := start(t, []string{"yumdrake-orchestrator"}, env)
-
 	waitStatus(t, addr, "/readyz", http.StatusOK, 10*time.Second)
+
+	email := uniqueEmail(t)
+	var stdout, stderr bytes.Buffer
+	args := []string{"yumdrake-orchestrator", "create-admin", "--email", email, "--name", "Ada"}
+	if code := run(context.Background(), args, envFrom(env), strings.NewReader(password+"\n"), &stdout, &stderr); code != 0 {
+		t.Fatalf("create-admin = %d (stderr %q)", code, stderr.String())
+	}
+
 	if got := request(t, "GET", addr, "/api/v1/folders", ""); got != http.StatusUnauthorized {
-		t.Errorf("without token = %d, want 401", got)
+		t.Errorf("without credentials = %d, want 401", got)
 	}
-	if got := request(t, "GET", addr, "/api/v1/folders", token); got != http.StatusOK {
-		t.Errorf("with token = %d, want 200", got)
+	login, err := http.NewRequest("POST", "http://"+addr+"/api/v1/auth/login",
+		strings.NewReader(`{"email":"`+email+`","password":"`+password+`"}`))
+	if err != nil {
+		t.Fatalf("build login request: %v", err)
 	}
-	if strings.Contains(r.stdout.String(), token) {
-		t.Errorf("the bootstrap token appears in the logs")
+	login.Header.Set("Origin", publicURL)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(login)
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	_ = resp.Body.Close()
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "yumdrake_session" {
+			cookie = c
+		}
+	}
+	if resp.StatusCode != http.StatusOK || cookie == nil {
+		t.Fatalf("login = %d with cookie %v, want 200 and a session cookie", resp.StatusCode, cookie != nil)
+	}
+	// The cookie is Secure, so a plain-http client will not replay it by itself.
+	folders, _ := http.NewRequest("GET", "http://"+addr+"/api/v1/folders", nil)
+	folders.AddCookie(&http.Cookie{Name: cookie.Name, Value: cookie.Value})
+	got, err := (&http.Client{Timeout: 10 * time.Second}).Do(folders)
+	if err != nil {
+		t.Fatalf("GET folders: %v", err)
+	}
+	_ = got.Body.Close()
+	if got.StatusCode != http.StatusOK {
+		t.Errorf("GET /api/v1/folders with the session = %d, want 200", got.StatusCode)
+	}
+	if strings.Contains(r.stdout.String(), password) || strings.Contains(r.stdout.String(), cookie.Value) {
+		t.Errorf("a password or session id appears in the logs")
 	}
 }
 
@@ -370,12 +410,13 @@ func TestRunExits1WhenDatabaseNeverAppears(t *testing.T) {
 		"YUMDRAKE_VALKEY_ADDR":      "127.0.0.1:1",
 		"YUMDRAKE_HTTP_ADDR":        freeAddr(t),
 		"YUMDRAKE_STARTUP_TIMEOUT":  "2s",
+		"YUMDRAKE_PUBLIC_URL":       publicURL,
 		"YUMDRAKE_LOCAL_SECRET_KEY": devSecretKey,
 	}
 	var stdout, stderr syncBuffer
 	done := make(chan int, 1)
 	go func() {
-		done <- run(context.Background(), []string{"yumdrake-orchestrator"}, envFrom(env), &stdout, &stderr)
+		done <- run(context.Background(), []string{"yumdrake-orchestrator"}, envFrom(env), nil, &stdout, &stderr)
 	}()
 	select {
 	case code := <-done:
@@ -401,20 +442,20 @@ func TestHealthcheckSubcommand(t *testing.T) {
 	waitStatus(t, addr, "/healthz", http.StatusOK, 10*time.Second)
 
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), []string{"yumdrake-orchestrator", "healthcheck"}, envFrom(env), &stdout, &stderr); code != 0 {
+	if code := run(context.Background(), []string{"yumdrake-orchestrator", "healthcheck"}, envFrom(env), nil, &stdout, &stderr); code != 0 {
 		t.Errorf("healthcheck against a live instance = %d, want 0 (stderr %q)", code, stderr.String())
 	}
 
 	r.cancel()
 	r.wait(t, 10*time.Second)
 	stderr.Reset()
-	if code := run(context.Background(), []string{"yumdrake-orchestrator", "healthcheck"}, envFrom(env), &stdout, &stderr); code != 1 {
+	if code := run(context.Background(), []string{"yumdrake-orchestrator", "healthcheck"}, envFrom(env), nil, &stdout, &stderr); code != 1 {
 		t.Errorf("healthcheck with nothing listening = %d, want 1", code)
 	}
 
 	bad := map[string]string{"YUMDRAKE_HTTP_ADDR": "not-an-address"}
 	stderr.Reset()
-	if code := run(context.Background(), []string{"yumdrake-orchestrator", "healthcheck"}, envFrom(bad), &stdout, &stderr); code != 2 {
+	if code := run(context.Background(), []string{"yumdrake-orchestrator", "healthcheck"}, envFrom(bad), nil, &stdout, &stderr); code != 2 {
 		t.Errorf("healthcheck with invalid address = %d, want 2", code)
 	}
 }

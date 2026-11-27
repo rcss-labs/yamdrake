@@ -35,6 +35,7 @@ Point both services at the local services:
 export YUMDRAKE_DATABASE_URL='postgres://yumdrake:yumdrake@localhost:5432/yumdrake?sslmode=disable'
 export YUMDRAKE_VALKEY_ADDR=localhost:6379
 export YUMDRAKE_LOCAL_SECRET_KEY="$(openssl rand -base64 32)"   # required; keep it the same between runs
+export YUMDRAKE_PUBLIC_URL=http://localhost:8080                  # orchestrator only; the address the browser uses
 
 bin/yumdrake-orchestrator   # serves on :8080; applies migrations on start
 bin/yumdrake-runner         # health endpoint on 127.0.0.1:8081; waits for the schema
@@ -54,9 +55,15 @@ bin/yumdrake-runner healthcheck
 
 ## API
 
-The orchestrator serves a JSON API under `/api/v1`. Until sign-in arrives, every route requires `Authorization: Bearer <YUMDRAKE_BOOTSTRAP_TOKEN>`. This bootstrap mechanism is temporary and goes away with sign-in. When `YUMDRAKE_BOOTSTRAP_TOKEN` is empty the API answers 404 and the rest of the orchestrator still runs.
+The orchestrator serves a JSON API under `/api/v1`. Every request is made by a signed-in user: either a session cookie (from `POST /api/v1/auth/login`, used by the browser) or `Authorization: Bearer <token>` (used by the CLI). The first admin is created on the command line, with the password on standard input (never as an argument):
 
-Errors look like `{"error":{"code":"...","message":"..."}}` with codes `unauthorized`, `not_found`, `invalid`, `conflict` and `internal`. Request bodies are limited to 1 MB and unknown JSON fields are rejected. No response contains a token, a private key or ciphertext.
+```sh
+printf '%s\n' "$PASSWORD" | bin/yumdrake-orchestrator create-admin --email ada@example.com --name "Ada"
+```
+
+It prints `created` and exits 0 (1 on failure, 2 on a usage error). The admin can then sign in; `GET /api/v1/me` shows who you are. Full documentation of sign-in, permissions and tokens follows in a later release.
+
+Errors look like `{"error":{"code":"...","message":"..."}}` with codes `unauthorized`, `forbidden`, `not_found`, `invalid`, `conflict`, `too_many_requests`, `unavailable` and `internal`. Request bodies are limited to 1 MB and unknown JSON fields are rejected. No response contains a token, a private key or ciphertext.
 
 | Method and path | Does |
 | --- | --- |
@@ -66,6 +73,8 @@ Errors look like `{"error":{"code":"...","message":"..."}}` with codes `unauthor
 | `POST /api/v1/inventory/sync` | Sync the inventory now. |
 | `GET /api/v1/folders`, `POST /api/v1/folders` | List folders; create one by `name`. |
 | `GET /api/v1/jobs` | Every job source with its folder, commit, sync and check times, runnable flag, problem count and sync error. |
+| `POST /api/v1/auth/login`, `POST /api/v1/auth/logout` | Sign in with `email` and `password` (sets the session cookie) and sign out. Five failed sign-ins for one email lock it for 15 minutes (`429` with `Retry-After`). |
+| `GET /api/v1/me` | The signed-in user: id, email, name, admin flag and grants. |
 | `POST /api/v1/jobs` | Register a job file (`folder_id`, `repo`, `branch`, `path`), sync it once and return it. |
 | `GET /api/v1/jobs/{id}` | The source, its last good `definition` and its current `problems`. |
 | `PATCH /api/v1/jobs/{id}` | Move to another folder (`folder_id`). |
@@ -73,7 +82,7 @@ Errors look like `{"error":{"code":"...","message":"..."}}` with codes `unauthor
 | `GET /api/v1/admin/github-connections`, `POST /api/v1/admin/github-connections` | List connections without secrets; create one for an `owner` (stored in lower case) with `method` `token` (and `token`) or `app` (and `app_id`, `installation_id`, `private_key`). The secret is encrypted before it is stored. |
 
 ```sh
-curl -H "Authorization: Bearer $YUMDRAKE_BOOTSTRAP_TOKEN" localhost:8080/api/v1/inventory
+curl -H "Authorization: Bearer $YUMDRAKE_TOKEN" localhost:8080/api/v1/inventory
 ```
 
 The orchestrator also polls GitHub every `YUMDRAKE_SYNC_INTERVAL` (inventory first, then each job source). A failure to reach GitHub is kept as `sync_error` next to the last good data, which stays in use.
@@ -116,7 +125,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_RUNNER_ID` | runner | the host name | Identifies the runner in its logs. If unset and the host name cannot be determined, startup fails. |
 | `YUMDRAKE_SECRETS_MODE` | orchestrator, runner | `local` | Only `local` is supported in this release; any other value is a config error. |
 | `YUMDRAKE_LOCAL_SECRET_KEY` | orchestrator, runner | none (required when the mode is `local`) | Base64 of exactly 32 bytes (for example `openssl rand -base64 32`). Encrypts stored GitHub credentials. For development and tests only; never printed. |
-| `YUMDRAKE_BOOTSTRAP_TOKEN` | orchestrator | empty | If set, at least 32 characters. Guards `/api/v1`; empty disables the API. Temporary until sign-in. Never printed. |
+| `YUMDRAKE_PUBLIC_URL` | orchestrator | none (required) | Address users reach the service at, such as `https://yumdrake.example.com`: scheme, host and optional port only. Must be `https://`, except `http://` for `localhost` and `127.0.0.1`. Requests that carry a session cookie and change state must come from this origin. |
 | `YUMDRAKE_SYNC_INTERVAL` | orchestrator | `60s` | Go duration of at least `10s`. |
 | `YUMDRAKE_GITHUB_API_URL` | orchestrator | `https://api.github.com` | An `http://` or `https://` URL. Overridden in tests. |
 | `YUMDRAKE_TEST_DATABASE_URL` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_DATABASE_URL`. Set by `make test-integration` and CI. |

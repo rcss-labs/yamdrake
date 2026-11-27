@@ -12,7 +12,6 @@ import (
 const (
 	secretsModeLocal      = "local"
 	localSecretKeyBytes   = 32
-	minBootstrapTokenLen  = 32
 	minSyncInterval       = 10 * time.Second
 	defaultGitHubAPIURL   = "https://api.github.com"
 	redactedSecretDisplay = "REDACTED"
@@ -46,9 +45,8 @@ type SecretSettings struct {
 
 // SyncSettings is read by the orchestrator only.
 type SyncSettings struct {
-	BootstrapToken Secret
-	SyncInterval   time.Duration
-	GitHubAPIURL   string
+	SyncInterval time.Duration
+	GitHubAPIURL string
 }
 
 func (l *loader) loadSecretSettings() SecretSettings {
@@ -79,13 +77,6 @@ func (l *loader) loadSecretSettings() SecretSettings {
 
 func (l *loader) loadSyncSettings() SyncSettings {
 	var s SyncSettings
-
-	token := l.getenv("YUMDRAKE_BOOTSTRAP_TOKEN")
-	if token != "" && len(token) < minBootstrapTokenLen {
-		l.fail("YUMDRAKE_BOOTSTRAP_TOKEN", fmt.Sprintf("must be at least %d characters when set", minBootstrapTokenLen))
-	} else {
-		s.BootstrapToken = Secret(token)
-	}
 
 	s.SyncInterval = l.duration("YUMDRAKE_SYNC_INTERVAL", "60s")
 	if s.SyncInterval > 0 && s.SyncInterval < minSyncInterval {

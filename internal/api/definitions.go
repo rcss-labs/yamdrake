@@ -6,9 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/rcss-labs/yamdrake/internal/audit"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
@@ -122,6 +126,10 @@ func (s *server) syncFailed(w http.ResponseWriter, r *http.Request, err error) b
 }
 
 func (s *server) syncInventory(w http.ResponseWriter, r *http.Request) {
+	if err := s.recordAudit(r.Context(), s.Pool, r, audit.Event{Action: "inventory.sync", TargetType: "inventory_source", TargetID: "inventory"}); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	if s.syncFailed(w, r, s.Engine.SyncInventory(r.Context())) {
 		return
 	}
@@ -160,8 +168,14 @@ func (s *server) putInventorySource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Stored and synced under the sync lock, so a poll in flight cannot write a
-	// status for the old source after the change.
-	if s.syncFailed(w, r, s.Engine.SetInventorySource(r.Context(), store.InventorySource{Repo: req.Repo, Branch: req.Branch, Path: req.Path})) {
+	// status for the old source after the change. The audit entry is written in
+	// the transaction that stores the source.
+	source := store.InventorySource{Repo: req.Repo, Branch: req.Branch, Path: req.Path}
+	record := func(ctx context.Context, tx store.DBTX) error {
+		return s.recordAudit(ctx, tx, r, audit.Event{Action: "inventory.source_set", TargetType: "inventory_source", TargetID: "inventory",
+			Detail: map[string]any{"repo": source.Repo, "branch": source.Branch, "path": source.Path}})
+	}
+	if s.syncFailed(w, r, s.Engine.SetInventorySource(r.Context(), source, record)) {
 		return
 	}
 	s.getInventory(w, r)
@@ -199,7 +213,13 @@ func (s *server) createFolder(w http.ResponseWriter, r *http.Request) {
 		invalid(w, fmt.Sprintf("name is required and at most %d characters", maxFolderNameLength))
 		return
 	}
-	folder, err := store.CreateFolder(r.Context(), s.Pool, name)
+	var folder store.Folder
+	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+		var err error
+		folder, err = store.CreateFolder(ctx, tx, name)
+		return audit.Event{Action: "folder.create", TargetType: "folder", TargetID: strconv.FormatInt(folder.ID, 10),
+			Detail: map[string]any{"name": name}}, err
+	})
 	switch {
 	case errors.Is(err, store.ErrDuplicate):
 		writeError(w, http.StatusConflict, codeConflict, fmt.Sprintf("a folder named %q already exists", name))
@@ -351,8 +371,14 @@ func (s *server) registerJob(w http.ResponseWriter, r *http.Request) {
 		invalid(w, "path is required")
 		return
 	}
-	created, err := store.CreateJobSource(r.Context(), s.Pool, store.JobSource{
-		FolderID: req.FolderID, Repo: req.Repo, Branch: req.Branch, Path: req.Path})
+	var created store.JobSource
+	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+		var err error
+		created, err = store.CreateJobSource(ctx, tx, store.JobSource{
+			FolderID: req.FolderID, Repo: req.Repo, Branch: req.Branch, Path: req.Path})
+		return audit.Event{Action: "job.register", TargetType: "job_source", TargetID: strconv.FormatInt(created.ID, 10),
+			Detail: map[string]any{"folder_id": req.FolderID, "repo": req.Repo, "branch": req.Branch, "path": req.Path}}, err
+	})
 	switch {
 	case errors.Is(err, store.ErrDuplicate):
 		writeError(w, http.StatusConflict, codeConflict,
@@ -387,7 +413,10 @@ func (s *server) moveJob(w http.ResponseWriter, r *http.Request) {
 		invalid(w, "folder_id is required")
 		return
 	}
-	err := store.MoveJobSource(r.Context(), s.Pool, id, req.FolderID)
+	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+		return audit.Event{Action: "job.move", TargetType: "job_source", TargetID: strconv.FormatInt(id, 10),
+			Detail: map[string]any{"folder_id": req.FolderID}}, store.MoveJobSource(ctx, tx, id, req.FolderID)
+	})
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		notFound(w, "job")
@@ -412,6 +441,10 @@ func (s *server) syncJob(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.internalError(w, r, err)
 		}
+		return
+	}
+	if err := s.recordAudit(r.Context(), s.Pool, r, audit.Event{Action: "job.sync", TargetType: "job_source", TargetID: strconv.FormatInt(id, 10)}); err != nil {
+		s.internalError(w, r, err)
 		return
 	}
 	if s.syncFailed(w, r, s.Engine.SyncJob(r.Context(), id)) {

@@ -258,23 +258,28 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 		s.writeAccessError(w, r, err, "user")
 		return
 	}
-	user, err := store.UserByID(r.Context(), s.Pool, id)
-	if err == nil {
-		var view userResponse
-		if view, err = s.userView(r.Context(), user); err == nil {
-			if req.Disabled != nil && *req.Disabled {
-				// The disable is committed and enforced on every request (Resolve
-				// refuses a disabled user), so a Valkey failure here only leaves
-				// stale sessions that can no longer be used. Say so, log without
-				// session ids, and still answer 200.
-				deleted := s.deleteUserSessions(r, id)
-				view.SessionsRevoked = &deleted
-			}
-			writeJSON(w, http.StatusOK, view)
-			return
-		}
+	// The disable is committed and enforced on every request (Resolve refuses
+	// a disabled user), so sessions are deleted before anything that can fail
+	// (reading the user back). A Valkey failure only leaves stale sessions that
+	// can no longer be used: say so in the response, log without session ids,
+	// and still answer 200.
+	var sessionsDeleted *bool
+	if req.Disabled != nil && *req.Disabled {
+		deleted := s.deleteUserSessions(r, id)
+		sessionsDeleted = &deleted
 	}
-	s.internalError(w, r, err)
+	user, err := store.UserByID(r.Context(), s.Pool, id)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	view, err := s.userView(r.Context(), user)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	view.SessionsRevoked = sessionsDeleted
+	writeJSON(w, http.StatusOK, view)
 }
 
 func (s *server) deleteUserSessions(r *http.Request, userID int64) bool {
@@ -619,26 +624,29 @@ func (s *server) listAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-// accessRoutes registers the access administration, token and device sign-in
-// routes on the authenticated mux. Each states the action it needs.
-func (s *server) accessRoutes(route func(string, auth.Action, http.HandlerFunc)) {
-	route("GET /api/v1/admin/users", auth.ManageAccess, s.listUsers)
-	route("POST /api/v1/admin/users", auth.ManageAccess, s.createUser)
-	route("PATCH /api/v1/admin/users/{id}", auth.ManageAccess, s.updateUser)
-	route("GET /api/v1/admin/groups", auth.ManageAccess, s.listGroups)
-	route("POST /api/v1/admin/groups", auth.ManageAccess, s.createGroup)
-	route("PATCH /api/v1/admin/groups/{id}", auth.ManageAccess, s.updateGroup)
-	route("GET /api/v1/admin/idp-mappings", auth.ManageAccess, s.listIDPMappings)
-	route("GET /api/v1/admin/idp-mappings/{idpGroup}", auth.ManageAccess, s.getIDPMapping)
-	route("PUT /api/v1/admin/idp-mappings/{idpGroup}", auth.ManageAccess, s.putIDPMapping)
-	route("DELETE /api/v1/admin/idp-mappings/{idpGroup}", auth.ManageAccess, s.deleteIDPMapping)
-	route("GET /api/v1/admin/grants", auth.ManageAccess, s.listGrants)
-	route("POST /api/v1/admin/grants", auth.ManageAccess, s.createGrant)
-	route("DELETE /api/v1/admin/grants/{id}", auth.ManageAccess, s.deleteGrant)
-	route("GET /api/v1/admin/audit", auth.ViewAudit, s.listAudit)
-	// Every signed-in principal has View; these touch only the caller's own data.
-	route("GET /api/v1/tokens", auth.View, s.listTokens)
-	route("POST /api/v1/tokens", auth.View, s.createToken)
-	route("DELETE /api/v1/tokens/{id}", auth.View, s.revokeToken)
-	route("POST /api/v1/cli/login/confirm", auth.View, s.confirmDeviceLogin)
+// accessRoutes lists the access administration, token and device sign-in
+// routes of the authenticated mux. Each states the action it needs.
+func (s *server) accessRoutes() []routeDef {
+	return []routeDef{
+		{"GET /api/v1/admin/users", auth.ManageAccess, s.listUsers},
+		{"POST /api/v1/admin/users", auth.ManageAccess, s.createUser},
+		{"PATCH /api/v1/admin/users/{id}", auth.ManageAccess, s.updateUser},
+		{"GET /api/v1/admin/groups", auth.ManageAccess, s.listGroups},
+		{"POST /api/v1/admin/groups", auth.ManageAccess, s.createGroup},
+		{"PATCH /api/v1/admin/groups/{id}", auth.ManageAccess, s.updateGroup},
+		{"GET /api/v1/admin/idp-mappings", auth.ManageAccess, s.listIDPMappings},
+		{"GET /api/v1/admin/idp-mappings/{idpGroup}", auth.ManageAccess, s.getIDPMapping},
+		{"PUT /api/v1/admin/idp-mappings/{idpGroup}", auth.ManageAccess, s.putIDPMapping},
+		{"DELETE /api/v1/admin/idp-mappings/{idpGroup}", auth.ManageAccess, s.deleteIDPMapping},
+		{"GET /api/v1/admin/grants", auth.ManageAccess, s.listGrants},
+		{"POST /api/v1/admin/grants", auth.ManageAccess, s.createGrant},
+		{"DELETE /api/v1/admin/grants/{id}", auth.ManageAccess, s.deleteGrant},
+		{"GET /api/v1/admin/audit", auth.ViewAudit, s.listAudit},
+		// Every signed-in principal has View; these touch only the caller's own data.
+		{"GET /api/v1/tokens", auth.View, s.listTokens},
+		{"POST /api/v1/tokens", auth.View, s.createToken},
+		{"DELETE /api/v1/tokens/{id}", auth.View, s.revokeToken},
+		// Session principals only: the handler answers 403 to a bearer token.
+		{"POST /api/v1/cli/login/confirm", auth.View, s.confirmDeviceLogin},
+	}
 }

@@ -318,6 +318,12 @@ if not v then return false end
 if string.sub(v, 1, 10) == 'confirmed:' then redis.call('DEL', KEYS[1]) end
 return v`)
 
+// readDeviceState returns the state under key, deleting it atomically when it
+// is confirmed.
+func readDeviceState(ctx context.Context, client valkey.Client, key string) (string, error) {
+	return pollScript.Exec(ctx, client, []string{key}, nil).ToString()
+}
+
 // pollDeviceLogin answers {"status":"pending"} until the user confirmed, then
 // once {"status":"complete","token":...}. An unknown, expired or already
 // collected device code is 400 "expired_token" (the cases are not told apart).
@@ -347,7 +353,7 @@ func (s *server) pollDeviceLogin(w http.ResponseWriter, r *http.Request) {
 		s.valkeyFailed(w, "rate-limit device poll", err)
 		return
 	}
-	state, err := pollScript.Exec(ctx, s.Valkey, []string{deviceKey(hash)}, nil).ToString()
+	state, err := readDeviceState(ctx, s.Valkey, deviceKey(hash))
 	if isNil(err) {
 		writeError(w, http.StatusBadRequest, "expired_token", "the device code is unknown or has expired")
 		return
@@ -384,3 +390,5 @@ func (s *server) pollDeviceLogin(w http.ResponseWriter, r *http.Request) {
 		"status": "complete", "token": plaintext, "token_id": created.ID, "expires_at": created.ExpiresAt,
 	})
 }
+
+func isNil(err error) bool { return valkey.IsValkeyNil(err) }

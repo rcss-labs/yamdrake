@@ -159,37 +159,43 @@ func TestDeviceCodeYieldsTokenOnce(t *testing.T) {
 	h := newDeviceHarness(t)
 	user := h.newUser("once")
 	sessionID := h.newSession(user.ID)
+
+	// The exactly-once step itself: many readers of one confirmed device state
+	// at the same time (the poll limiter is not in the way here). Exactly one
+	// may see "confirmed:...".
+	racing := h.startDeviceLogin()
+	h.expect(h.confirmDevice(sessionID, racing["user_code"].(string)), http.StatusNoContent, "")
+	key := deviceKey(deviceHash(racing["device_code"].(string)))
+	const readers = 16
+	results := make(chan bool, readers)
+	for range readers {
+		go func() {
+			state, err := readDeviceState(context.Background(), h.valkey, key)
+			results <- err == nil && strings.HasPrefix(state, confirmedPrefix)
+		}()
+	}
+	sawConfirmed := 0
+	for range readers {
+		if <-results {
+			sawConfirmed++
+		}
+	}
+	if sawConfirmed != 1 {
+		t.Fatalf("%d of %d concurrent readers saw the confirmed state, want exactly 1", sawConfirmed, readers)
+	}
+
+	// Through the API: the code is confirmed once, gives one token, then is gone.
 	start := h.startDeviceLogin()
 	deviceCode, userCode := start["device_code"].(string), start["user_code"].(string)
 	h.expect(h.confirmDevice(sessionID, userCode), http.StatusNoContent, "")
-	// The code cannot be confirmed twice, by anyone.
 	h.expect(h.confirmDevice(sessionID, userCode), http.StatusNotFound, "not_found")
-
-	// Several simultaneous polls: exactly one gets the token.
-	const pollers = 6
-	results := make(chan int, pollers)
-	for range pollers {
-		go func() {
-			req := httptest.NewRequest("POST", "/api/v1/cli/login/token", strings.NewReader(`{"device_code":"`+deviceCode+`"}`))
-			rec := httptest.NewRecorder()
-			h.handler.ServeHTTP(rec, req)
-			if strings.Contains(rec.Body.String(), `"token"`) {
-				results <- 1
-				return
-			}
-			results <- 0
-		}()
-	}
-	got := 0
-	for range pollers {
-		got += <-results
-	}
-	if got != 1 {
-		t.Fatalf("%d of %d concurrent polls received a token, want exactly 1", got, pollers)
+	done := h.pollDevice(deviceCode)
+	h.expect(done, http.StatusOK, "")
+	if token, _ := decodeObject(t, done)["token"].(string); !strings.HasPrefix(token, "ymd_") {
+		t.Fatalf("the confirmed poll did not return a token")
 	}
 	time.Sleep(350 * time.Millisecond)
-	again := h.pollDevice(deviceCode)
-	h.expect(again, http.StatusBadRequest, "expired_token")
+	h.expect(h.pollDevice(deviceCode), http.StatusBadRequest, "expired_token")
 	tokens, err := store.ListTokens(context.Background(), h.pool, user.ID)
 	if err != nil || len(tokens) != 1 {
 		t.Fatalf("tokens of the user = %d, %v; want exactly 1", len(tokens), err)

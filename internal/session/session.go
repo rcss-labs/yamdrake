@@ -61,19 +61,32 @@ type stored struct {
 type Manager struct {
 	client valkey.Client
 	now    func() time.Time
+	prefix string // in front of every key; empty in production
 
 	// afterListingUserSessions is a test seam called between reading a user's
 	// session ids and deleting them, to interleave a concurrent Create.
 	afterListingUserSessions func()
 }
 
+// Option adjusts a Manager.
+type Option func(*Manager)
+
+// WithKeyPrefix puts prefix in front of every Valkey key the Manager uses.
+func WithKeyPrefix(prefix string) Option { return func(m *Manager) { m.prefix = prefix } }
+
 // NewManager returns a Manager using c. now is injectable for tests.
-func NewManager(c valkey.Client, now func() time.Time) *Manager {
-	return &Manager{client: c, now: now}
+func NewManager(c valkey.Client, now func() time.Time, opts ...Option) *Manager {
+	m := &Manager{client: c, now: now}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
-func sessionKey(id string) string         { return "session:" + id }
-func userSessionsKey(userID int64) string { return "user-sessions:" + strconv.FormatInt(userID, 10) }
+func (m *Manager) sessionKey(id string) string { return m.prefix + "session:" + id }
+func (m *Manager) userSessionsKey(userID int64) string {
+	return m.prefix + "user-sessions:" + strconv.FormatInt(userID, 10)
+}
 
 func unavailable(err error) error {
 	return fmt.Errorf("%w: %w", ErrUnavailable, err)
@@ -107,9 +120,9 @@ func (m *Manager) Create(ctx context.Context, userID int64) (Session, error) {
 		return Session{}, fmt.Errorf("session: encode: %w", err)
 	}
 	b := m.client.B()
-	setKey := userSessionsKey(userID)
+	setKey := m.userSessionsKey(userID)
 	results := m.client.DoMulti(ctx,
-		b.Set().Key(sessionKey(s.ID)).Value(string(doc)).Px(IdleTimeout).Build(),
+		b.Set().Key(m.sessionKey(s.ID)).Value(string(doc)).Px(IdleTimeout).Build(),
 		b.Sadd().Key(setKey).Member(s.ID).Build(),
 		// No session outlives MaxAge, so the set may expire that long after its latest addition.
 		b.Pexpire().Key(setKey).Milliseconds(MaxAge.Milliseconds()).Build(),
@@ -128,7 +141,7 @@ func (m *Manager) Get(ctx context.Context, id string) (Session, error) {
 	if !validID(id) {
 		return Session{}, ErrNoSession
 	}
-	key := sessionKey(id)
+	key := m.sessionKey(id)
 	doc, err := m.client.Do(ctx, m.client.B().Get().Key(key).Build()).ToString()
 	if valkey.IsValkeyNil(err) {
 		return Session{}, ErrNoSession
@@ -178,7 +191,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if !validID(id) {
 		return nil
 	}
-	key := sessionKey(id)
+	key := m.sessionKey(id)
 	doc, err := m.client.Do(ctx, m.client.B().Get().Key(key).Build()).ToString()
 	if err != nil && !valkey.IsValkeyNil(err) {
 		return unavailable(err)
@@ -188,7 +201,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err == nil {
 		var st stored
 		if json.Unmarshal([]byte(doc), &st) == nil {
-			cmds = append(cmds, b.Srem().Key(userSessionsKey(st.UserID)).Member(id).Build())
+			cmds = append(cmds, b.Srem().Key(m.userSessionsKey(st.UserID)).Member(id).Build())
 		}
 	}
 	for _, res := range m.client.DoMulti(ctx, cmds...) {
@@ -202,7 +215,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 // DeleteAllForUser removes every session of userID. The user's set may list
 // sessions that already expired; those are harmless to delete again.
 func (m *Manager) DeleteAllForUser(ctx context.Context, userID int64) error {
-	setKey := userSessionsKey(userID)
+	setKey := m.userSessionsKey(userID)
 	ids, err := m.client.Do(ctx, m.client.B().Smembers().Key(setKey).Build()).AsStrSlice()
 	if err != nil && !valkey.IsValkeyNil(err) {
 		return unavailable(err)
@@ -214,7 +227,7 @@ func (m *Manager) DeleteAllForUser(ctx context.Context, userID int64) error {
 	cmds := make(valkey.Commands, 0, len(ids)+1)
 	for _, id := range ids {
 		if validID(id) {
-			cmds = append(cmds, b.Del().Key(sessionKey(id)).Build())
+			cmds = append(cmds, b.Del().Key(m.sessionKey(id)).Build())
 		}
 	}
 	// Remove only the ids read above rather than deleting the whole set: a

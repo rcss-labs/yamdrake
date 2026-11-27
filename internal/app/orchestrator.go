@@ -61,8 +61,9 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Cipher:              cipher,
 			Log:                 log,
 			OnConnectionCreated: sources.Forget,
-			Sessions:            session.NewManager(client, time.Now),
+			Sessions:            session.NewManager(client, time.Now, session.WithKeyPrefix(cfg.ValkeyKeyPrefix)),
 			Valkey:              client,
+			KeyPrefix:           cfg.ValkeyKeyPrefix,
 			PublicURL:           cfg.PublicURL,
 		})
 		return Extension{

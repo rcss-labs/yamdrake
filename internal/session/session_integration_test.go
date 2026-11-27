@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -165,7 +166,7 @@ func TestIdleTimeoutSetsKeyExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ttl, err := m.client.Do(ctx, m.client.B().Pttl().Key(sessionKey(s.ID)).Build()).AsInt64()
+	ttl, err := m.client.Do(ctx, m.client.B().Pttl().Key(m.sessionKey(s.ID)).Build()).AsInt64()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +189,7 @@ func TestMaximumAgeExpiresDespiteActivity(t *testing.T) {
 		}
 	}
 	// The key's TTL must never reach past the maximum age.
-	ttl, err := m.client.Do(ctx, m.client.B().Pttl().Key(sessionKey(s.ID)).Build()).AsInt64()
+	ttl, err := m.client.Do(ctx, m.client.B().Pttl().Key(m.sessionKey(s.ID)).Build()).AsInt64()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +223,7 @@ func TestDeleteAllForUser(t *testing.T) {
 	if err := m.Delete(ctx, mine[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.client.Do(ctx, m.client.B().Sadd().Key(userSessionsKey(user)).Member(mine[0].ID, "not-a-real-id").Build()).ToInt64(); err != nil {
+	if _, err := m.client.Do(ctx, m.client.B().Sadd().Key(m.userSessionsKey(user)).Member(mine[0].ID, "not-a-real-id").Build()).ToInt64(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,7 +238,7 @@ func TestDeleteAllForUser(t *testing.T) {
 	if _, err := m.Get(ctx, theirs.ID); err != nil {
 		t.Fatalf("another user's session must survive: %v", err)
 	}
-	exists, err := m.client.Do(ctx, m.client.B().Exists().Key(userSessionsKey(user)).Build()).AsInt64()
+	exists, err := m.client.Do(ctx, m.client.B().Exists().Key(m.userSessionsKey(user)).Build()).AsInt64()
 	if err != nil || exists != 0 {
 		t.Fatalf("user set should be gone: exists=%d err=%v", exists, err)
 	}
@@ -280,7 +281,7 @@ func TestUserSetHasExpiry(t *testing.T) {
 	if _, err := m.Create(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	ttl, err := m.client.Do(ctx, m.client.B().Pttl().Key(userSessionsKey(user)).Build()).AsInt64()
+	ttl, err := m.client.Do(ctx, m.client.B().Pttl().Key(m.userSessionsKey(user)).Build()).AsInt64()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,4 +399,37 @@ func (p *tcpProxy) stop() {
 		c.Close()
 	}
 	p.conns = nil
+}
+
+// Two services (or two test runs) that share one Valkey and number their users
+// from 1 must not see each other's sessions: signing a user out everywhere in
+// one must leave the same-numbered user of the other alone. This is what made
+// concurrent end-to-end runs sign each other out.
+func TestKeyPrefixKeepsSharedValkeyUsersApart(t *testing.T) {
+	ctx := context.Background()
+	client := openClient(t, valkeyAddr(t))
+	suffix := randomUserID(t)
+	mine := NewManager(client, time.Now, WithKeyPrefix(fmt.Sprintf("test-%d-a:", suffix)))
+	other := NewManager(client, time.Now, WithKeyPrefix(fmt.Sprintf("test-%d-b:", suffix)))
+
+	const sameUserID = 1
+	keep, err := mine.Create(ctx, sameUserID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := other.Create(ctx, sameUserID); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := other.DeleteAllForUser(ctx, sameUserID); err != nil {
+		t.Fatalf("DeleteAllForUser: %v", err)
+	}
+	if _, err := mine.Get(ctx, keep.ID); err != nil {
+		t.Fatalf("a session of another prefix was deleted: Get = %v", err)
+	}
+	if _, err := other.Get(ctx, keep.ID); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("a session is visible under another prefix: Get = %v", err)
+	}
+	if err := mine.DeleteAllForUser(ctx, sameUserID); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
 }

@@ -36,6 +36,10 @@ type Orchestrator struct {
 	// PublicURL is the address users reach the service at (scheme, host and
 	// optional port, no trailing slash). Cookie requests must come from it.
 	PublicURL string
+	// ValkeyKeyPrefix goes in front of the Valkey keys of sessions and sign-in
+	// counters. Empty by default; set it to tell apart services (or test runs)
+	// that share one Valkey.
+	ValkeyKeyPrefix string
 
 	SyncSettings
 }
@@ -48,6 +52,8 @@ type Runner struct {
 }
 
 const redactedPassword = "REDACTED"
+
+var keyPrefixPattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{0,64}$`)
 
 // loader collects problems so that every one is reported at once.
 type loader struct {
@@ -104,6 +110,10 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	}
 
 	cfg.PublicURL = l.publicURL("YUMDRAKE_PUBLIC_URL")
+	cfg.ValkeyKeyPrefix = l.getenv("YUMDRAKE_VALKEY_KEY_PREFIX")
+	if !keyPrefixPattern.MatchString(cfg.ValkeyKeyPrefix) {
+		l.fail("YUMDRAKE_VALKEY_KEY_PREFIX", "must be at most 64 letters, digits, '-', '_' or ':'")
+	}
 	cfg.SyncSettings = l.loadSyncSettings()
 
 	if err := l.err(); err != nil {

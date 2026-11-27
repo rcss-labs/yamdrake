@@ -256,10 +256,11 @@ func newHarness(t *testing.T) *harness {
 		func(context.Context, string) (yumsync.Source, error) { return src, nil },
 		log, time.Now)
 	client := openValkey(t, valkeyAddr(t))
-	sessions := session.NewManager(client, time.Now)
+	prefix := fmt.Sprintf("test-%x:", randomBytes(t, 8)) // runs sharing the Valkey must not see each other
+	sessions := session.NewManager(client, time.Now, session.WithKeyPrefix(prefix))
 	deps := Deps{
 		Pool: pool, Engine: engine, Cipher: cipher, Log: log,
-		Sessions: sessions, Valkey: client, PublicURL: publicURL,
+		Sessions: sessions, Valkey: client, KeyPrefix: prefix, PublicURL: publicURL,
 		LockoutWindow: testLockoutWindow,
 	}
 	h := &harness{t: t, dbURL: url, pool: pool, cipher: cipher, src: src, handler: New(deps),
@@ -793,4 +794,13 @@ func shortenValkeyTimeout(t *testing.T) {
 	previous := valkeyTimeout
 	valkeyTimeout = 500 * time.Millisecond
 	t.Cleanup(func() { valkeyTimeout = previous })
+}
+
+func randomBytes(t *testing.T, n int) []byte {
+	t.Helper()
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("random: %v", err)
+	}
+	return b
 }

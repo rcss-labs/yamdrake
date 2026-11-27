@@ -60,9 +60,9 @@ func (s *server) me(w http.ResponseWriter, r *http.Request) {
 
 // lockoutKey names the failure counter of an email. The email is hashed so the
 // address itself never sits in Valkey.
-func lockoutKey(email string) string {
+func (s *server) lockoutKey(email string) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
-	return "login-failures:" + hex.EncodeToString(sum[:])
+	return s.KeyPrefix + "login-failures:" + hex.EncodeToString(sum[:])
 }
 
 // reserveScript counts one sign-in attempt for the key atomically, before the
@@ -143,7 +143,7 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := lockoutKey(email)
+	key := s.lockoutKey(email)
 	ctx, cancel := s.valkeyContext(r)
 	allowed, wait, err := s.reserveAttempt(ctx, key)
 	cancel()

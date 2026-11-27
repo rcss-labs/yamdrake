@@ -421,3 +421,21 @@ func TestPublicURLRules(t *testing.T) {
 		})
 	}
 }
+
+func TestValkeyKeyPrefix(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.ValkeyKeyPrefix != "" {
+		t.Fatalf("default prefix = %q, %v; want empty", cfg.ValkeyKeyPrefix, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_VALKEY_KEY_PREFIX"] = "blue:"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.ValkeyKeyPrefix != "blue:" {
+		t.Fatalf("prefix = %q, %v; want blue:", cfg.ValkeyKeyPrefix, err)
+	}
+	for _, bad := range []string{"has space", "wild*", strings.Repeat("a", 65)} {
+		env["YUMDRAKE_VALKEY_KEY_PREFIX"] = bad
+		if _, err := LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_VALKEY_KEY_PREFIX") {
+			t.Errorf("prefix %q: error = %v, want it to name the variable", bad, err)
+		}
+	}
+}

@@ -61,6 +61,9 @@ type Deps struct {
 	// counters. Both are required.
 	Sessions *session.Manager
 	Valkey   valkey.Client
+	// KeyPrefix goes in front of the Valkey keys of the sign-in counters (use
+	// the prefix of Sessions); empty in production.
+	KeyPrefix string
 	// PublicURL is the address users reach the service at; cookie requests that
 	// change state must come from it. Required.
 	PublicURL string

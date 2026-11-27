@@ -404,7 +404,7 @@ func TestFullVerificationLimiterAnswers503AndIsNotCounted(t *testing.T) {
 	if unavailable == 0 || unauthorized == 0 {
 		t.Fatalf("got %d x 401 and %d x 503; want some of each", unauthorized, unavailable)
 	}
-	count, err := h.valkey.Do(context.Background(), h.valkey.B().Get().Key(lockoutKey(user.Email)).Build()).AsInt64()
+	count, err := h.valkey.Do(context.Background(), h.valkey.B().Get().Key((&server{Deps: h.deps}).lockoutKey(user.Email)).Build()).AsInt64()
 	if err != nil || int(count) != unauthorized {
 		t.Fatalf("failure counter = %d (%v), want %d: refused requests must not count", count, err, unauthorized)
 	}

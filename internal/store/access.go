@@ -52,3 +52,23 @@ func ManualGroupIDs(ctx context.Context, db DBTX, userID int64) ([]int64, error)
 	}
 	return ids, rows.Err()
 }
+
+// GroupMemberCounts returns how many distinct users are in each group (groups
+// without members are absent).
+func GroupMemberCounts(ctx context.Context, db DBTX) (map[int64]int, error) {
+	rows, err := db.Query(ctx, "SELECT group_id, count(DISTINCT user_id) FROM group_members GROUP BY group_id")
+	if err != nil {
+		return nil, fmt.Errorf("group member counts: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, fmt.Errorf("group member counts: scan: %w", err)
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}

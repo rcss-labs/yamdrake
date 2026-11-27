@@ -88,7 +88,7 @@ func TestCreateGroupGrantAndMembershipThenUserGainsPermission(t *testing.T) {
 	h.expect(h.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": groupID, "action": "fly"}), http.StatusBadRequest, "invalid")
 	h.expect(h.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": groupID + 999, "action": "run"}), http.StatusBadRequest, "invalid")
 
-	rec := h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"manual_group_ids": []int64{groupID}})
+	rec := h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"group_ids": []int64{groupID}})
 	h.expect(rec, http.StatusOK, "")
 	if got := meGrants(); got != 1 {
 		t.Fatalf("grants after joining the group = %d, want 1", got)
@@ -106,11 +106,11 @@ func TestCreateGroupGrantAndMembershipThenUserGainsPermission(t *testing.T) {
 		t.Errorf("the user list does not show the new membership")
 	}
 	// Leaving the group takes the permission away again.
-	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"manual_group_ids": []int64{}}), http.StatusOK, "")
+	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"group_ids": []int64{}}), http.StatusOK, "")
 	if meGrants() != 0 {
 		t.Errorf("the grant outlived the membership")
 	}
-	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"manual_group_ids": []int64{groupID + 999}}), http.StatusBadRequest, "invalid")
+	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"group_ids": []int64{groupID + 999}}), http.StatusBadRequest, "invalid")
 	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID+999), map[string]any{"disabled": true}), http.StatusNotFound, "not_found")
 }
 
@@ -189,7 +189,7 @@ func TestCannotRemoveLastAdmin(t *testing.T) {
 	// Un-admin path.
 	h.expect(h.asAdmin("PATCH", "/api/v1/admin/groups/"+itoa(adminGroup), map[string]any{"admin": false}), http.StatusConflict, "conflict")
 	// Leaving the admin group.
-	h.expect(h.asAdmin("PATCH", adminPath, map[string]any{"manual_group_ids": []int64{}}), http.StatusConflict, "conflict")
+	h.expect(h.asAdmin("PATCH", adminPath, map[string]any{"group_ids": []int64{}}), http.StatusConflict, "conflict")
 	if u, _ := store.UserByID(ctx, h.pool, h.admin.ID); u.Disabled {
 		t.Fatalf("a refused change was applied")
 	}
@@ -199,7 +199,7 @@ func TestCannotRemoveLastAdmin(t *testing.T) {
 
 	// With a second admin the first can go.
 	second := h.newUser("second")
-	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(second.ID), map[string]any{"manual_group_ids": []int64{adminGroup}}), http.StatusOK, "")
+	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(second.ID), map[string]any{"group_ids": []int64{adminGroup}}), http.StatusOK, "")
 	h.expect(h.asAdmin("PATCH", adminPath, map[string]any{"disabled": true}), http.StatusOK, "")
 	// ... and now the second is the last one.
 	secondToken, _ := h.newToken(second.ID)
@@ -211,7 +211,7 @@ func TestTwoConcurrentRemovalsOfDifferentAdminsCannotBothSucceed(t *testing.T) {
 	h := newHarness(t)
 	second := h.newUser("second")
 	groups, _ := store.GroupsOfUser(context.Background(), h.pool, h.admin.ID)
-	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(second.ID), map[string]any{"manual_group_ids": []int64{groups[0].ID}}), http.StatusOK, "")
+	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(second.ID), map[string]any{"group_ids": []int64{groups[0].ID}}), http.StatusOK, "")
 	secondToken, _ := h.newToken(second.ID)
 
 	var wg sync.WaitGroup
@@ -361,7 +361,7 @@ func TestEveryChangeIsAudited(t *testing.T) {
 		t.Errorf("group.update detail %s lacks before and after", e.Detail)
 	}
 	wantAction("user.update", func() {
-		h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(userID), map[string]any{"disabled": true, "manual_group_ids": []int64{groupID}}), http.StatusOK, "")
+		h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(userID), map[string]any{"disabled": true, "group_ids": []int64{groupID}}), http.StatusOK, "")
 	})
 	var grantID int64
 	wantAction("grant.create", func() {
@@ -388,4 +388,73 @@ func TestEveryChangeIsAudited(t *testing.T) {
 	wantAction("token.revoke", func() {
 		h.expect(h.asAdmin("DELETE", "/api/v1/tokens/"+itoa(tokenID), nil), http.StatusNoContent, "")
 	})
+}
+
+// The web application's contract: field names, and lists that are [] never null.
+func TestAccessResponsesMatchTheWebContract(t *testing.T) {
+	h := newHarness(t)
+	// Empty lists are arrays.
+	for path, key := range map[string]string{
+		"/api/v1/admin/grants": "grants", "/api/v1/admin/idp-mappings": "mappings",
+		"/api/v1/admin/audit": "entries",
+	} {
+		rec := h.asAdmin("GET", path, nil)
+		h.expect(rec, http.StatusOK, "")
+		if !strings.Contains(rec.Body.String(), `"`+key+`":[]`) {
+			t.Errorf("GET %s: empty %s is not []", path, key)
+		}
+	}
+	fresh := h.newUser("notokens")
+	rec := h.send(sent{method: "GET", path: "/api/v1/tokens", sessionID: h.newSession(fresh.ID)})
+	h.expect(rec, http.StatusOK, "")
+	if !strings.Contains(rec.Body.String(), `"tokens":[]`) {
+		t.Errorf("GET /api/v1/tokens: empty tokens is not []")
+	}
+	// A user without groups has "groups": [], and the contract's field names.
+	user := h.newUser("contract")
+	rec = h.asAdmin("GET", "/api/v1/admin/users", nil)
+	h.expect(rec, http.StatusOK, "")
+	var found map[string]any
+	for _, u := range decodeObject(t, rec)["users"].([]any) {
+		if int64(u.(map[string]any)["id"].(float64)) == user.ID {
+			found = u.(map[string]any)
+		}
+	}
+	for _, key := range []string{"id", "email", "name", "source", "disabled", "groups", "last_sign_in_at", "created_at"} {
+		if _, ok := found[key]; !ok {
+			t.Errorf("user lacks %q", key)
+		}
+	}
+	if groups, _ := found["groups"].([]any); groups == nil || len(groups) != 0 {
+		t.Errorf("groups of a new user = %v, want []", found["groups"])
+	}
+	// Groups carry member_count; a group's members are counted once.
+	groupID := h.createGroupVia("counted-"+uniqueEmail(t, "g"), false)
+	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+idString(user.ID), map[string]any{"group_ids": []int64{groupID}}), http.StatusOK, "")
+	counts := map[int64]float64{}
+	for _, g := range decodeObject(t, h.asAdmin("GET", "/api/v1/admin/groups", nil))["groups"].([]any) {
+		entry := g.(map[string]any)
+		count, ok := entry["member_count"].(float64)
+		if !ok {
+			t.Fatalf("group lacks member_count")
+		}
+		counts[int64(entry["id"].(float64))] = count
+	}
+	if counts[groupID] != 1 {
+		t.Errorf("member_count of the group = %v, want 1", counts[groupID])
+	}
+	// Audit pages: next_before is always present (null on the last page).
+	last := decodeObject(t, h.asAdmin("GET", "/api/v1/admin/audit?limit=200", nil))
+	if v, present := last["next_before"]; !present || v != nil {
+		t.Errorf("next_before on the last page = %v (present %v), want null", v, present)
+	}
+	// A token is listed with the contract's fields and no revoked ones.
+	created := decodeObject(t, h.asAdmin("POST", "/api/v1/tokens", map[string]any{"name": "w", "ttl_days": 1}))
+	if p, _ := created["plaintext"].(string); !strings.HasPrefix(p, "ymd_") {
+		t.Errorf("created token has no plaintext")
+	}
+	h.expect(h.asAdmin("DELETE", "/api/v1/tokens/"+idString(int64(created["id"].(float64))), nil), http.StatusNoContent, "")
+	if left := decodeObject(t, h.asAdmin("GET", "/api/v1/tokens", nil))["tokens"].([]any); len(left) != 1 {
+		t.Errorf("tokens listed after revoking one = %d, want only the admin's own", len(left))
+	}
 }

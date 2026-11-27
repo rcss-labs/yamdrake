@@ -47,11 +47,10 @@ type tokenResponse struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 	ExpiresAt  *time.Time `json:"expires_at"`
-	RevokedAt  *time.Time `json:"revoked_at"`
 }
 
 func tokenView(t store.Token) tokenResponse {
-	return tokenResponse{ID: t.ID, Name: t.Name, CreatedAt: t.CreatedAt, LastUsedAt: t.LastUsedAt, ExpiresAt: t.ExpiresAt, RevokedAt: t.RevokedAt}
+	return tokenResponse{ID: t.ID, Name: t.Name, CreatedAt: t.CreatedAt, LastUsedAt: t.LastUsedAt, ExpiresAt: t.ExpiresAt}
 }
 
 func (s *server) listTokens(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +62,9 @@ func (s *server) listTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]tokenResponse, 0, len(tokens))
 	for _, t := range tokens {
+		if t.RevokedAt != nil {
+			continue // a revoked token is gone as far as the owner is concerned
+		}
 		out = append(out, tokenView(t))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": out})
@@ -74,7 +76,7 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 	principal, _ := PrincipalFrom(r.Context())
 	var req struct {
 		Name          string `json:"name"`
-		ExpiresInDays int    `json:"expires_in_days"`
+		ExpiresInDays int    `json:"ttl_days"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -85,7 +87,7 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ExpiresInDays < 0 || req.ExpiresInDays > maxTokenDays {
-		invalid(w, fmt.Sprintf("expires_in_days must be between 0 (the default, 90) and %d", maxTokenDays))
+		invalid(w, fmt.Sprintf("ttl_days must be between 0 (the default, 90) and %d", maxTokenDays))
 		return
 	}
 	plaintext, created, err := s.issueToken(r, principal, name, time.Duration(req.ExpiresInDays)*24*time.Hour)
@@ -95,7 +97,7 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 	}
 	body := struct {
 		tokenResponse
-		Token string `json:"token"`
+		Plaintext string `json:"plaintext"`
 	}{tokenView(created), plaintext}
 	writeJSON(w, http.StatusCreated, body)
 }

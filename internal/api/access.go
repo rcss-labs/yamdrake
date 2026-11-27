@@ -77,24 +77,32 @@ func guardAdmins(ctx context.Context, tx pgx.Tx, change func() error) error {
 
 // ---- users ----
 
-type groupView struct {
-	ID    int64  `json:"id"`
-	Name  string `json:"name"`
-	Admin bool   `json:"admin"`
+// groupRef is a group as listed on a user.
+type groupRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
-func groupViewOf(g store.Group) groupView { return groupView{ID: g.ID, Name: g.Name, Admin: g.Admin} }
+type groupView struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Admin       bool   `json:"admin"`
+	MemberCount int    `json:"member_count"`
+}
+
+func groupViewOf(g store.Group, members int) groupView {
+	return groupView{ID: g.ID, Name: g.Name, Admin: g.Admin, MemberCount: members}
+}
 
 type userResponse struct {
-	ID             int64       `json:"id"`
-	Email          string      `json:"email"`
-	Name           string      `json:"name"`
-	Source         string      `json:"source"`
-	Disabled       bool        `json:"disabled"`
-	LastLoginAt    *time.Time  `json:"last_login_at"`
-	CreatedAt      time.Time   `json:"created_at"`
-	Groups         []groupView `json:"groups"`
-	ManualGroupIDs []int64     `json:"manual_group_ids"`
+	ID           int64      `json:"id"`
+	Email        string     `json:"email"`
+	Name         string     `json:"name"`
+	Source       string     `json:"source"`
+	Disabled     bool       `json:"disabled"`
+	LastSignInAt *time.Time `json:"last_sign_in_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	Groups       []groupRef `json:"groups"`
 	// SessionsRevoked is set by a PATCH that disables the user: false means
 	// the sessions could not be deleted (Valkey is down). The user is refused
 	// on every request regardless, so the disable stands.
@@ -106,14 +114,10 @@ func (s *server) userView(ctx context.Context, u store.User) (userResponse, erro
 	if err != nil {
 		return userResponse{}, err
 	}
-	manual, err := store.ManualGroupIDs(ctx, s.Pool, u.ID)
-	if err != nil {
-		return userResponse{}, err
-	}
 	out := userResponse{ID: u.ID, Email: u.Email, Name: u.Name, Source: u.Source, Disabled: u.Disabled,
-		LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, Groups: []groupView{}, ManualGroupIDs: manual}
+		LastSignInAt: u.LastLoginAt, CreatedAt: u.CreatedAt, Groups: []groupRef{}}
 	for _, g := range groups {
-		out.Groups = append(out.Groups, groupViewOf(g))
+		out.Groups = append(out.Groups, groupRef{ID: g.ID, Name: g.Name})
 	}
 	return out, nil
 }
@@ -202,13 +206,13 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Disabled       *bool    `json:"disabled"`
-		ManualGroupIDs *[]int64 `json:"manual_group_ids"`
+		ManualGroupIDs *[]int64 `json:"group_ids"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
 	}
 	if req.Disabled == nil && req.ManualGroupIDs == nil {
-		invalid(w, "disabled or manual_group_ids is required")
+		invalid(w, "disabled or group_ids is required")
 		return
 	}
 	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
@@ -222,8 +226,8 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			before := map[string]any{"disabled": user.Disabled, "manual_group_ids": beforeManual}
-			after := map[string]any{"disabled": user.Disabled, "manual_group_ids": beforeManual}
+			before := map[string]any{"disabled": user.Disabled, "group_ids": beforeManual}
+			after := map[string]any{"disabled": user.Disabled, "group_ids": beforeManual}
 			if req.Disabled != nil {
 				if err := store.SetDisabled(ctx, tx, id, *req.Disabled); err != nil {
 					return err
@@ -246,7 +250,7 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				after["manual_group_ids"] = wanted
+				after["group_ids"] = wanted
 			}
 			event = audit.Event{Action: "user.update", TargetType: "user", TargetID: idString(id),
 				Detail: map[string]any{"email": user.Email, "before": before, "after": after}}
@@ -297,15 +301,18 @@ func (s *server) deleteUserSessions(r *http.Request, userID int64) bool {
 
 func (s *server) listGroups(w http.ResponseWriter, r *http.Request) {
 	groups, err := store.ListGroups(r.Context(), s.Pool)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
+	if err == nil {
+		var counts map[int64]int
+		if counts, err = store.GroupMemberCounts(r.Context(), s.Pool); err == nil {
+			out := make([]groupView, 0, len(groups))
+			for _, g := range groups {
+				out = append(out, groupViewOf(g, counts[g.ID]))
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"groups": out})
+			return
+		}
 	}
-	out := make([]groupView, 0, len(groups))
-	for _, g := range groups {
-		out = append(out, groupViewOf(g))
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": out})
+	s.internalError(w, r, err)
 }
 
 func (s *server) createGroup(w http.ResponseWriter, r *http.Request) {
@@ -332,7 +339,7 @@ func (s *server) createGroup(w http.ResponseWriter, r *http.Request) {
 		s.writeAccessError(w, r, err, fmt.Sprintf("group %q", name))
 		return
 	}
-	writeJSON(w, http.StatusCreated, groupViewOf(created))
+	writeJSON(w, http.StatusCreated, groupViewOf(created, 0))
 }
 
 func (s *server) updateGroup(w http.ResponseWriter, r *http.Request) {
@@ -379,7 +386,12 @@ func (s *server) updateGroup(w http.ResponseWriter, r *http.Request) {
 		s.writeAccessError(w, r, err, "group")
 		return
 	}
-	writeJSON(w, http.StatusOK, groupViewOf(updated))
+	counts, err := store.GroupMemberCounts(r.Context(), s.Pool)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, groupViewOf(updated, counts[id]))
 }
 
 // ---- identity-provider group mappings ----
@@ -617,10 +629,12 @@ func (s *server) listAudit(w http.ResponseWriter, r *http.Request) {
 		out = append(out, auditEntryResponse{ID: e.ID, At: e.At, ActorID: e.ActorID, Actor: e.Actor, Action: e.Action,
 			TargetType: e.TargetType, TargetID: e.TargetID, Detail: e.Detail})
 	}
-	body := map[string]any{"entries": out}
+	// next_before is null on the last page.
+	var nextBefore *int64
 	if len(entries) == limit {
-		body["next_before"] = entries[len(entries)-1].ID
+		nextBefore = &entries[len(entries)-1].ID
 	}
+	body := map[string]any{"entries": out, "next_before": nextBefore}
 	writeJSON(w, http.StatusOK, body)
 }
 

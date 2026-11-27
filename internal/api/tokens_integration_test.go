@@ -20,10 +20,10 @@ func TestTokenPlaintextReturnedOnceAndListNeverShowsIt(t *testing.T) {
 	sessionID := h.newSession(user.ID)
 
 	// A session creates a token (the session path needs the Origin header).
-	rec := h.send(sent{method: "POST", path: "/api/v1/tokens", sessionID: sessionID, origin: publicURL, body: map[string]any{"name": "laptop", "expires_in_days": 30}})
+	rec := h.send(sent{method: "POST", path: "/api/v1/tokens", sessionID: sessionID, origin: publicURL, body: map[string]any{"name": "laptop", "ttl_days": 30}})
 	h.expect(rec, http.StatusCreated, "")
 	created := decodeObject(t, rec)
-	plaintext, _ := created["token"].(string)
+	plaintext, _ := created["plaintext"].(string)
 	if !strings.HasPrefix(plaintext, "ymd_") || len(plaintext) != 4+43 {
 		t.Fatalf("the created token does not look like ymd_ plus 32 bytes of base64url")
 	}
@@ -47,7 +47,7 @@ func TestTokenPlaintextReturnedOnceAndListNeverShowsIt(t *testing.T) {
 		t.Errorf("token list = %v, want the one token", tokens)
 	}
 	// Bad requests.
-	for _, body := range []map[string]any{{"name": ""}, {"name": "x", "expires_in_days": -1}, {"name": strings.Repeat("n", 101)}} {
+	for _, body := range []map[string]any{{"name": ""}, {"name": "x", "ttl_days": -1}, {"name": strings.Repeat("n", 101)}} {
 		h.expect(h.send(sent{method: "POST", path: "/api/v1/tokens", bearer: plaintext, body: body}), http.StatusBadRequest, "invalid")
 	}
 	// Revoking ends it.

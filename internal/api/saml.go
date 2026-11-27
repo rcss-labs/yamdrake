@@ -45,7 +45,6 @@ const (
 	samlACSPath     = "/saml/acs"
 
 	maxACSBodyBytes = 2 << 20
-	maxNameLength   = 200
 
 	// rsaSHA256 is the XML signature method for the requests we sign (the key is RSA).
 	rsaSHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"

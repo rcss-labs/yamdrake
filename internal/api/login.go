@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,8 +23,11 @@ const (
 	// maxLoginFailures failed sign-ins for one email within lockoutWindow lock it.
 	maxLoginFailures     = 5
 	defaultLockoutWindow = 15 * time.Minute
-	maxEmailLength       = 254
-	maxPasswordLength    = 1024
+	// defaultConcurrentLogins password checks at once use at most 4 x 64 MiB.
+	defaultConcurrentLogins = 4
+	defaultVerifyWait       = time.Second
+	maxEmailLength          = 254
+	maxPasswordLength       = 1024
 )
 
 type grantView struct {
@@ -61,49 +65,60 @@ func lockoutKey(email string) string {
 	return "login-failures:" + hex.EncodeToString(sum[:])
 }
 
-// lockedFor returns how long sign-in for the counter stays locked (zero when
-// it is not locked).
-func (s *server) lockedFor(ctx context.Context, key string) (time.Duration, error) {
-	b := s.Valkey.B()
-	count, err := s.Valkey.Do(ctx, b.Get().Key(key).Build()).AsInt64()
+// reserveScript counts one sign-in attempt for the key atomically, before the
+// password is checked. The expiry is (re)set only while the count is within
+// the limit, so attempts made while locked never push the unlock time out.
+// It returns the count and the remaining lifetime in milliseconds.
+var reserveScript = valkey.NewLuaScript(`
+local n = redis.call('INCR', KEYS[1])
+if n <= tonumber(ARGV[2]) or redis.call('PTTL', KEYS[1]) < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return {n, redis.call('PTTL', KEYS[1])}
+`)
+
+// reserveAttempt counts the attempt and reports whether it may go on. When it
+// may not, wait is how long the lock lasts.
+func (s *server) reserveAttempt(ctx context.Context, key string) (allowed bool, wait time.Duration, err error) {
+	reply, err := reserveScript.Exec(ctx, s.Valkey, []string{key},
+		[]string{strconv.FormatInt(s.LockoutWindow.Milliseconds(), 10), strconv.Itoa(maxLoginFailures)}).AsIntSlice()
 	if err != nil {
-		if isNil(err) {
-			return 0, nil
-		}
-		return 0, err
+		return false, 0, fmt.Errorf("reserve sign-in attempt: %w", err)
 	}
-	if count < maxLoginFailures {
-		return 0, nil
+	if len(reply) != 2 {
+		return false, 0, errors.New("reserve sign-in attempt: unexpected reply")
 	}
-	remaining, err := s.Valkey.Do(ctx, b.Pttl().Key(key).Build()).AsInt64()
-	if err != nil {
-		return 0, err
+	if reply[0] <= maxLoginFailures {
+		return true, 0, nil
 	}
-	if remaining <= 0 {
-		return time.Second, nil
-	}
-	return time.Duration(remaining) * time.Millisecond, nil
+	return false, max(time.Duration(reply[1])*time.Millisecond, time.Second), nil
 }
 
-// recordFailure counts one failed sign-in and restarts the window: the counter
-// goes away LockoutWindow after the latest failure, so five failures less than
-// a window apart lock the email until a full window passes without an attempt.
-// SET NX comes first so a counter can never exist without an expiry.
-func (s *server) recordFailure(ctx context.Context, key string) error {
-	b := s.Valkey.B()
-	for _, res := range s.Valkey.DoMulti(ctx,
-		b.Set().Key(key).Value("0").Nx().Px(s.LockoutWindow).Build(),
-		b.Incr().Key(key).Build(),
-		b.Pexpire().Key(key).Milliseconds(s.LockoutWindow.Milliseconds()).Build(),
-	) {
-		if err := res.Error(); err != nil && !isNil(err) {
-			return err
-		}
+// refundScript decrements only a counter that still exists and is above zero:
+// a plain DECR would create a key of -1 with no expiry if the counter was
+// deleted (sign-in success) or expired in the meantime.
+var refundScript = valkey.NewLuaScript(`
+local n = tonumber(redis.call('GET', KEYS[1]))
+if n and n > 0 then return redis.call('DECR', KEYS[1]) end
+return 0
+`)
+
+// refundAttempt takes back a reserved attempt that was never checked (the
+// request was refused for lack of capacity), best effort. It does not depend
+// on the request context, which ends when the client gives up waiting.
+func (s *server) refundAttempt(r *http.Request, key string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), valkeyTimeout)
+	defer cancel()
+	if err := refundScript.Exec(ctx, s.Valkey, []string{key}, nil).Error(); err != nil {
+		s.Log.Error("refund sign-in attempt", "error", err.Error())
 	}
-	return nil
 }
 
-func isNil(err error) bool { return valkey.IsValkeyNil(err) }
+// valkeyContext gives each Valkey call its own timeout, so a slow password
+// check cannot use up the budget of the calls that follow it.
+func (s *server) valkeyContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), valkeyTimeout)
+}
 
 func (s *server) valkeyFailed(w http.ResponseWriter, what string, err error) {
 	s.Log.Error(what, "error", err.Error())
@@ -128,31 +143,36 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)
-	defer cancel()
 	key := lockoutKey(email)
-	wait, err := s.lockedFor(ctx, key)
+	ctx, cancel := s.valkeyContext(r)
+	allowed, wait, err := s.reserveAttempt(ctx, key)
+	cancel()
 	if err != nil {
-		s.valkeyFailed(w, "read sign-in failure counter", err)
+		s.valkeyFailed(w, "count sign-in attempt", err)
 		return
 	}
-	if wait > 0 {
+	if !allowed {
 		seconds := int64((wait + time.Second - 1) / time.Second)
 		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
 		writeError(w, http.StatusTooManyRequests, codeTooMany, "too many failed sign-ins; try again later")
 		return
 	}
 
-	user, ok, reason, err := s.checkPassword(r.Context(), email, req.Password)
+	// Only a few password checks run at once. A request that cannot get a slot
+	// says nothing about the account and is not counted.
+	release, ok := s.acquireVerifySlot(r.Context())
+	if !ok {
+		s.refundAttempt(r, key)
+		w.Header().Set("Retry-After", "1")
+		signInUnavailable(w)
+		return
+	}
+	user, ok, reason, err := s.checkPasswordHoldingSlot(r.Context(), release, email, req.Password)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
 	if !ok {
-		if err := s.recordFailure(ctx, key); err != nil {
-			s.valkeyFailed(w, "count failed sign-in", err)
-			return
-		}
 		detail := map[string]any{"email": truncate(email, maxEmailLength), "reason": reason}
 		if err := audit.Record(context.WithoutCancel(r.Context()), s.Pool, nil, s.Now(), audit.Event{
 			Action: "auth.login_failed", TargetType: "user", TargetID: "", Detail: detail}); err != nil {
@@ -162,7 +182,10 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Valkey.Do(ctx, s.Valkey.B().Del().Key(key).Build()).Error(); err != nil {
+	ctx, cancel = s.valkeyContext(r)
+	err = s.Valkey.Do(ctx, s.Valkey.B().Del().Key(key).Build()).Error()
+	cancel()
+	if err != nil {
 		s.valkeyFailed(w, "reset sign-in failure counter", err)
 		return
 	}
@@ -246,6 +269,26 @@ func (s *server) checkPassword(ctx context.Context, email, password string) (use
 		return store.User{}, false, "disabled", nil
 	}
 	return user, true, "", nil
+}
+
+// checkPasswordHoldingSlot runs checkPassword and always gives the slot back,
+// even if the check panics.
+func (s *server) checkPasswordHoldingSlot(ctx context.Context, release func(), email, password string) (store.User, bool, string, error) {
+	defer release()
+	return s.checkPassword(ctx, email, password)
+}
+
+// acquireVerifySlot waits briefly for permission to run a password check.
+func (s *server) acquireVerifySlot(ctx context.Context) (release func(), ok bool) {
+	timer := time.NewTimer(s.VerifyWait)
+	defer timer.Stop()
+	select {
+	case s.verifySlots <- struct{}{}:
+		return func() { <-s.verifySlots }, true
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	return nil, false
 }
 
 func truncate(s string, n int) string {

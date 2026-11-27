@@ -111,7 +111,10 @@ type harness struct {
 	src     *fakeSource
 	handler http.Handler
 	bodies  []string // every response body, for the secret checks
+	// bodiesMu guards bodies: some tests send requests from several goroutines.
+	bodiesMu gosync.Mutex
 
+	dbURL      string
 	deps       Deps
 	valkey     valkey.Client
 	sessions   *session.Manager
@@ -147,6 +150,10 @@ func uniqueEmail(t *testing.T, label string) string {
 	}
 	return fmt.Sprintf("%s-%x@example.test", label, raw)
 }
+
+// testLockoutWindow is long enough that five sign-ins in a row (each costs an
+// argon2 check, slow under -race) fit in it, and short enough to wait out.
+const testLockoutWindow = 5 * time.Second
 
 // testPassword is a valid password for users made by the harness.
 const testPassword = "correct horse battery staple"
@@ -253,9 +260,9 @@ func newHarness(t *testing.T) *harness {
 	deps := Deps{
 		Pool: pool, Engine: engine, Cipher: cipher, Log: log,
 		Sessions: sessions, Valkey: client, PublicURL: publicURL,
-		LockoutWindow: 2 * time.Second,
+		LockoutWindow: testLockoutWindow,
 	}
-	h := &harness{t: t, pool: pool, cipher: cipher, src: src, handler: New(deps),
+	h := &harness{t: t, dbURL: url, pool: pool, cipher: cipher, src: src, handler: New(deps),
 		deps: deps, valkey: client, sessions: sessions}
 	h.admin = h.newUser("admin")
 	adminGroup, err := store.CreateGroup(ctx, pool, "Admins", true)

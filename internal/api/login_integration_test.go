@@ -165,8 +165,8 @@ func TestLoginLocksAfterFiveFailures(t *testing.T) {
 	rec := h.login(user.Email, "one more wrong password")
 	h.expect(rec, http.StatusTooManyRequests, "")
 	retry, err := strconv.Atoi(rec.Header().Get("Retry-After"))
-	if err != nil || retry < 1 || retry > 2 {
-		t.Fatalf("Retry-After = %q, want 1 or 2 seconds (window is 2s)", rec.Header().Get("Retry-After"))
+	if err != nil || retry < 1 || retry > int(testLockoutWindow/time.Second) {
+		t.Fatalf("Retry-After = %q, want at most the window", rec.Header().Get("Retry-After"))
 	}
 	// The right password does not get through while locked, in any letter case.
 	locked := h.login(strings.ToUpper(user.Email), testPassword)
@@ -178,7 +178,7 @@ func TestLoginLocksAfterFiveFailures(t *testing.T) {
 	other := h.newUser("unlocked")
 	h.expect(h.login(other.Email, testPassword), http.StatusOK, "")
 
-	time.Sleep(2200 * time.Millisecond)
+	time.Sleep(testLockoutWindow + 300*time.Millisecond)
 	h.expect(h.login(user.Email, testPassword), http.StatusOK, "")
 }
 
@@ -339,7 +339,73 @@ func TestAttemptsWhileLockedDoNotExtendTheLock(t *testing.T) {
 		h.expect(h.login(user.Email, "wrong password"), http.StatusTooManyRequests, "")
 		time.Sleep(200 * time.Millisecond)
 	}
-	// 2s window from the fifth failure: the lock ends by then however often it was hit.
-	time.Sleep(time.Until(locked.Add(2300 * time.Millisecond)))
+	// The lock ends one window after the fifth attempt however often it was hit.
+	time.Sleep(time.Until(locked.Add(testLockoutWindow + 300*time.Millisecond)))
 	h.expect(h.login(user.Email, testPassword), http.StatusOK, "")
+}
+
+// Parallel attempts must not get around the lockout: the attempt is counted
+// before the password is checked, so at most five of them are ever checked.
+func TestConcurrentWrongPasswordsAreLimitedToFive(t *testing.T) {
+	h := newHarness(t)
+	// A limiter that cannot fill, so only the lockout decides each answer.
+	h.rebuild(func(d *Deps) { d.MaxConcurrentLogins = 10; d.VerifyWait = time.Minute })
+	user := h.newUser("concurrent")
+	const parallel = 10
+	statuses := make(chan int, parallel)
+	start := make(chan struct{})
+	for range parallel {
+		go func() {
+			<-start
+			statuses <- h.login(user.Email, "wrong password").Code
+		}()
+	}
+	close(start)
+	counts := map[int]int{}
+	for range parallel {
+		counts[<-statuses]++
+	}
+	if counts[http.StatusUnauthorized] > maxLoginFailures || counts[http.StatusUnauthorized]+counts[http.StatusTooManyRequests] != parallel {
+		t.Fatalf("statuses = %v; want at most %d x 401 and the rest 429", counts, maxLoginFailures)
+	}
+}
+
+// Password checks cost 64 MiB each, so only a few run at once; a request that
+// cannot get a slot is told to retry and is not counted as a failed attempt.
+func TestFullVerificationLimiterAnswers503AndIsNotCounted(t *testing.T) {
+	h := newHarness(t)
+	h.rebuild(func(d *Deps) { d.MaxConcurrentLogins = 1; d.VerifyWait = 20 * time.Millisecond })
+	user := h.newUser("limiter")
+	const parallel = 4
+	recs := make(chan *httptest.ResponseRecorder, parallel)
+	start := make(chan struct{})
+	for range parallel {
+		go func() {
+			<-start
+			recs <- h.login(user.Email, "wrong password")
+		}()
+	}
+	close(start)
+	var unauthorized, unavailable int
+	for range parallel {
+		rec := <-recs
+		switch rec.Code {
+		case http.StatusUnauthorized:
+			unauthorized++
+		case http.StatusServiceUnavailable:
+			unavailable++
+			if errorCodeOf(rec) != "unavailable" || rec.Header().Get("Retry-After") == "" {
+				t.Errorf("503 = %s with Retry-After %q, want code unavailable and a Retry-After", failure(rec), rec.Header().Get("Retry-After"))
+			}
+		default:
+			t.Errorf("unexpected status %d", rec.Code)
+		}
+	}
+	if unavailable == 0 || unauthorized == 0 {
+		t.Fatalf("got %d x 401 and %d x 503; want some of each", unauthorized, unavailable)
+	}
+	count, err := h.valkey.Do(context.Background(), h.valkey.B().Get().Key(lockoutKey(user.Email)).Build()).AsInt64()
+	if err != nil || int(count) != unauthorized {
+		t.Fatalf("failure counter = %d (%v), want %d: refused requests must not count", count, err, unauthorized)
+	}
 }

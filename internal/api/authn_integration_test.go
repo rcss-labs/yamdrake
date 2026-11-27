@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -48,7 +50,9 @@ func (h *harness) send(r sent) *httptest.ResponseRecorder {
 	}
 	rec := httptest.NewRecorder()
 	h.handler.ServeHTTP(rec, req)
+	h.bodiesMu.Lock()
 	h.bodies = append(h.bodies, rec.Body.String())
+	h.bodiesMu.Unlock()
 	return rec
 }
 
@@ -288,5 +292,132 @@ func TestWriteIsUndoneWhenItsAuditEntryFails(t *testing.T) {
 	}
 	if _, ok, _ := store.GetInventorySource(context.Background(), h.pool); ok {
 		t.Error("inventory source is stored although its audit entry failed")
+	}
+}
+
+// A database failure while checking a token is the server's problem, not a bad credential.
+func TestTokenCheckDatabaseFailureIs503Not401(t *testing.T) {
+	h := newHarness(t)
+	broken, err := db.Open(context.Background(), h.dbURL)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	broken.Close()
+	h.rebuild(func(d *Deps) { d.Pool = broken })
+	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: h.adminToken}), http.StatusServiceUnavailable, "unavailable")
+}
+
+// Every registered route: without credentials 401; without the grant 403 (or
+// allowed, for view); with the grant never 403. A route added without a
+// decision, or wired to the wrong action, shows up here.
+func TestEveryRouteEnforcesItsAction(t *testing.T) {
+	h := newHarness(t)
+	h.withSyncer(stubSyncer{})
+	routes := (&server{}).routes()
+	// Written from the task brief, independently of the code's own table: a
+	// route given the wrong action, or added or dropped, makes this differ.
+	expected := map[string]auth.Action{
+		"GET /api/v1/me":                               auth.View,
+		"POST /api/v1/auth/logout":                     auth.View,
+		"GET /api/v1/inventory":                        auth.View,
+		"GET /api/v1/inventory/services/{name}":        auth.View,
+		"POST /api/v1/inventory/sync":                  auth.ManageConnections,
+		"PUT /api/v1/admin/inventory-source":           auth.ManageConnections,
+		"GET /api/v1/admin/github-connections":         auth.ManageConnections,
+		"POST /api/v1/admin/github-connections":        auth.ManageConnections,
+		"GET /api/v1/admin/sso":                        auth.ManageAccess,
+		"PUT /api/v1/admin/sso":                        auth.ManageAccess,
+		"POST /api/v1/admin/sso/test":                  auth.ManageAccess,
+		"GET /api/v1/folders":                          auth.View,
+		"POST /api/v1/folders":                         auth.ManageJobs,
+		"GET /api/v1/jobs":                             auth.View,
+		"POST /api/v1/jobs":                            auth.ManageJobs,
+		"GET /api/v1/jobs/{id}":                        auth.View,
+		"PATCH /api/v1/jobs/{id}":                      auth.ManageJobs,
+		"POST /api/v1/jobs/{id}/sync":                  auth.ManageJobs,
+		"GET /api/v1/admin/users":                      auth.ManageAccess,
+		"POST /api/v1/admin/users":                     auth.ManageAccess,
+		"PATCH /api/v1/admin/users/{id}":               auth.ManageAccess,
+		"GET /api/v1/admin/groups":                     auth.ManageAccess,
+		"POST /api/v1/admin/groups":                    auth.ManageAccess,
+		"PATCH /api/v1/admin/groups/{id}":              auth.ManageAccess,
+		"GET /api/v1/admin/idp-mappings":               auth.ManageAccess,
+		"GET /api/v1/admin/idp-mappings/{idpGroup}":    auth.ManageAccess,
+		"PUT /api/v1/admin/idp-mappings/{idpGroup}":    auth.ManageAccess,
+		"DELETE /api/v1/admin/idp-mappings/{idpGroup}": auth.ManageAccess,
+		"GET /api/v1/admin/grants":                     auth.ManageAccess,
+		"POST /api/v1/admin/grants":                    auth.ManageAccess,
+		"DELETE /api/v1/admin/grants/{id}":             auth.ManageAccess,
+		"GET /api/v1/admin/audit":                      auth.ViewAudit,
+		"GET /api/v1/tokens":                           auth.View,
+		"POST /api/v1/tokens":                          auth.View,
+		"DELETE /api/v1/tokens/{id}":                   auth.View,
+		"POST /api/v1/cli/login/confirm":               auth.View,
+	}
+	if len(routes) != len(expected) {
+		t.Fatalf("routes() has %d routes, the expected table %d", len(routes), len(expected))
+	}
+	for _, route := range routes {
+		if want, ok := expected[route.pattern]; !ok || want != route.action {
+			t.Errorf("route %q has action %q; the brief says %q (listed: %v)", route.pattern, route.action, want, ok)
+		}
+	}
+	// An unlisted path is not served, even to an admin.
+	h.expect(h.send(sent{method: "GET", path: "/api/v1/not-in-the-table", bearer: h.adminToken}), http.StatusNotFound, "not_found")
+	plain := h.newUser("routeplain")
+	plainToken, _ := h.newToken(plain.ID)
+	granted := map[auth.Action]string{}
+	for _, route := range routes {
+		method, pattern, _ := strings.Cut(route.pattern, " ")
+		path := strings.NewReplacer("{name}", "x", "{idpGroup}", "x", "{id}", "999999").Replace(pattern)
+		name := route.pattern
+
+		if rec := h.send(sent{method: method, path: path}); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s without credentials: %s, want 401", name, failure(rec))
+		}
+		rec := h.send(sent{method: method, path: path, bearer: plainToken})
+		if route.action == auth.View {
+			// Confirming a device sign-in needs a session: a token gets 403 by design.
+			if rec.Code == http.StatusForbidden && route.pattern != "POST /api/v1/cli/login/confirm" {
+				t.Errorf("%s needs only view but a plain user got 403", name)
+			}
+			continue
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s without a grant: %s, want 403", name, failure(rec))
+		}
+		token, ok := granted[route.action]
+		if !ok {
+			u := h.newUser("route" + string(route.action))
+			h.grant(u.ID, string(route.action))
+			token, _ = h.newToken(u.ID)
+			granted[route.action] = token
+		}
+		if rec := h.send(sent{method: method, path: path, bearer: token}); rec.Code == http.StatusForbidden {
+			t.Errorf("%s with %s granted still got 403", name, route.action)
+		}
+	}
+}
+
+// A pattern registered next to the table, without a permission decision, must
+// never reach its handler.
+func TestRouteOutsideTheTableIsNeverServed(t *testing.T) {
+	h := newHarness(t)
+	reached := false
+	deps := h.deps
+	deps.Now = time.Now
+	s := &server{Deps: deps}
+	handler := s.authenticate(s.authenticatedMux(func(mux *http.ServeMux) {
+		mux.HandleFunc("GET /api/v1/sneaky", func(w http.ResponseWriter, _ *http.Request) {
+			reached = true
+			w.WriteHeader(http.StatusOK)
+		})
+	}))
+	req := httptest.NewRequest("GET", "/api/v1/sneaky", nil)
+	req.Header.Set("Authorization", "Bearer "+h.adminToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if reached || rec.Code != http.StatusNotFound {
+		t.Fatalf("a route outside the table: reached=%v, %s; want it refused with 404", reached, failure(rec))
 	}
 }

@@ -69,6 +69,14 @@ type Deps struct {
 	LockoutWindow time.Duration
 	// Now is the clock (default time.Now).
 	Now func() time.Time
+	// DevicePollInterval is how often a CLI may poll a device sign-in (default
+	// 5 seconds). Tests shorten it.
+	DevicePollInterval time.Duration
+	// MaxConcurrentLogins bounds the password checks running at once (default
+	// 4): each uses 64 MiB, and sign-in is open to anyone. VerifyWait is how
+	// long a request waits for a slot before it is answered 503 (default 1s).
+	MaxConcurrentLogins int
+	VerifyWait          time.Duration
 }
 
 // valkeyTimeout bounds every Valkey call made for a request: against a dead
@@ -80,6 +88,8 @@ type server struct {
 	// dummyHash is verified when the account does not exist (or cannot sign in
 	// with a password), so every sign-in costs one argon2 verification.
 	dummyHash string
+	// verifySlots has one token per allowed concurrent password check.
+	verifySlots chan struct{}
 }
 
 // dummyPasswordHash is computed once per process, with the production parameters.
@@ -103,38 +113,22 @@ func New(deps Deps) http.Handler {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
+	if deps.DevicePollInterval <= 0 {
+		deps.DevicePollInterval = defaultDevicePollInterval
+	}
 	dummy, err := dummyPasswordHash()
 	if err != nil {
 		panic("api.New: dummy password hash: " + err.Error())
 	}
-	s := &server{Deps: deps, dummyHash: dummy}
-
-	authenticated := http.NewServeMux()
-	route := func(pattern string, action auth.Action, handler http.HandlerFunc) {
-		authenticated.Handle(pattern, s.require(action, nil)(handler))
+	if deps.MaxConcurrentLogins <= 0 {
+		deps.MaxConcurrentLogins = defaultConcurrentLogins
 	}
-	route("GET /api/v1/me", auth.View, s.me)
-	route("POST /api/v1/auth/logout", auth.View, s.logout)
-	route("GET /api/v1/inventory", auth.View, s.getInventory)
-	route("GET /api/v1/inventory/services/{name}", auth.View, s.getService)
-	route("POST /api/v1/inventory/sync", auth.ManageConnections, s.syncInventory)
-	route("PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource)
-	route("GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections)
-	route("POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection)
-	route("GET /api/v1/admin/sso", auth.ManageAccess, s.getSSO)
-	route("PUT /api/v1/admin/sso", auth.ManageAccess, s.putSSO)
-	route("POST /api/v1/admin/sso/test", auth.ManageAccess, s.testSSO)
-	route("GET /api/v1/folders", auth.View, s.listFolders)
-	route("POST /api/v1/folders", auth.ManageJobs, s.createFolder)
-	route("GET /api/v1/jobs", auth.View, s.listJobs)
-	route("POST /api/v1/jobs", auth.ManageJobs, s.registerJob)
-	route("GET /api/v1/jobs/{id}", auth.View, s.getJob)
-	route("PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob)
-	route("POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob)
-	// Unknown paths: 401 without credentials, 404 with them.
-	authenticated.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeError(w, http.StatusNotFound, codeNotFound, "not found")
-	})
+	if deps.VerifyWait <= 0 {
+		deps.VerifyWait = defaultVerifyWait
+	}
+	s := &server{Deps: deps, dummyHash: dummy, verifySlots: make(chan struct{}, deps.MaxConcurrentLogins)}
+
+	authenticated := s.authenticatedMux(nil)
 
 	root := http.NewServeMux()
 	// Sign-in is the one route that is open to everyone; it carries no session
@@ -149,8 +143,72 @@ func New(deps Deps) http.Handler {
 	root.HandleFunc("GET /saml/metadata", s.samlMetadata)
 	root.HandleFunc("POST /saml/acs", s.samlACS)
 	root.HandleFunc("GET /api/v1/auth/saml/start", s.samlStart)
+	// The CLI's device sign-in starts and finishes without credentials (the
+	// CLI has none yet). Neither route reads a cookie, so neither can be used
+	// cross-site to act as a signed-in browser user; confirm is authenticated.
+	root.HandleFunc("POST /api/v1/cli/login", s.startDeviceLogin)
+	root.HandleFunc("POST /api/v1/cli/login/token", s.pollDeviceLogin)
 	root.Handle("/", s.authenticate(authenticated))
 	return root
+}
+
+// authenticatedMux serves the routes of routes(), each behind require, and 404
+// for everything else. extra lets a test register one more pattern; it exists
+// to prove the guard below: a pattern that is not in routes() is never served,
+// whoever registered it, so no route can skip the permission decision.
+func (s *server) authenticatedMux(extra func(*http.ServeMux)) http.Handler {
+	mux := http.NewServeMux()
+	allowed := map[string]bool{"/": true}
+	for _, route := range s.routes() {
+		allowed[route.pattern] = true
+		mux.Handle(route.pattern, s.require(route.action, nil)(route.handler))
+	}
+	// Unknown paths: 401 without credentials, 404 with them.
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, codeNotFound, "not found")
+	})
+	if extra != nil {
+		extra(mux)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" && !allowed[pattern] {
+			s.Log.Error("refusing a route that has no permission decision", "pattern", pattern)
+			writeError(w, http.StatusNotFound, codeNotFound, "not found")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// routeDef is a route of the authenticated part of the API with the action it
+// needs. Every route is listed here, so each has an explicit decision.
+type routeDef struct {
+	pattern string
+	action  auth.Action
+	handler http.HandlerFunc
+}
+
+func (s *server) routes() []routeDef {
+	return append([]routeDef{
+		{"GET /api/v1/me", auth.View, s.me},
+		{"POST /api/v1/auth/logout", auth.View, s.logout},
+		{"GET /api/v1/inventory", auth.View, s.getInventory},
+		{"GET /api/v1/inventory/services/{name}", auth.View, s.getService},
+		{"POST /api/v1/inventory/sync", auth.ManageConnections, s.syncInventory},
+		{"PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource},
+		{"GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections},
+		{"POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection},
+		{"GET /api/v1/admin/sso", auth.ManageAccess, s.getSSO},
+		{"PUT /api/v1/admin/sso", auth.ManageAccess, s.putSSO},
+		{"POST /api/v1/admin/sso/test", auth.ManageAccess, s.testSSO},
+		{"GET /api/v1/folders", auth.View, s.listFolders},
+		{"POST /api/v1/folders", auth.ManageJobs, s.createFolder},
+		{"GET /api/v1/jobs", auth.View, s.listJobs},
+		{"POST /api/v1/jobs", auth.ManageJobs, s.registerJob},
+		{"GET /api/v1/jobs/{id}", auth.View, s.getJob},
+		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
+		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
+	}, s.accessRoutes()...)
 }
 
 type errorBody struct {

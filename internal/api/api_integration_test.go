@@ -1,0 +1,572 @@
+//go:build integration
+
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	gosync "sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/rcss-labs/yamdrake/internal/config"
+	"github.com/rcss-labs/yamdrake/internal/db"
+	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yamdrake/internal/store"
+	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
+	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
+)
+
+const (
+	bootstrapToken = "test-bootstrap-token-0123456789-abcdef"
+	invRepo        = "acme/inventory"
+	invPath        = "inv"
+	jobsRepo       = "acme/jobs"
+	jobPath        = "jobs/deploy-backend.yaml"
+)
+
+// fakeSource serves files from memory keyed "repo@commit/path".
+type fakeSource struct {
+	mu    gosync.Mutex
+	files map[string][]byte
+	heads map[string]string
+	err   error
+}
+
+func (f *fakeSource) put(repo, commit, path string, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[repo+"@"+commit+"/"+path] = data
+}
+
+func (f *fakeSource) setHead(repo, branch, commit string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.heads[repo+"@"+branch] = commit
+}
+
+func (f *fakeSource) setErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *fakeSource) HeadCommit(_ context.Context, repo, branch string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.heads[repo+"@"+branch], nil
+}
+
+func (f *fakeSource) ListFiles(_ context.Context, repo, commit, dir string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	prefix := repo + "@" + commit + "/"
+	var out []string
+	for key := range f.files {
+		if p, ok := strings.CutPrefix(key, prefix); ok && strings.HasPrefix(p, dir+"/") {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeSource) ReadFile(_ context.Context, repo, commit, path string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	data, ok := f.files[repo+"@"+commit+"/"+path]
+	if !ok {
+		return nil, fmt.Errorf("fake: %s@%s/%s: not found", repo, commit, path)
+	}
+	return data, nil
+}
+
+type harness struct {
+	t       *testing.T
+	pool    *pgxpool.Pool
+	cipher  secrets.Cipher
+	src     *fakeSource
+	handler http.Handler
+	bodies  []string // every response body, for the secret checks
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	ctx := context.Background()
+	url := testdb.New(t)
+	if err := db.Migrate(ctx, url); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	pool, err := db.Open(ctx, url)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	cipher, err := secrets.NewLocal([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	src := &fakeSource{files: map[string][]byte{}, heads: map[string]string{}}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := yumsync.NewEngine(pool,
+		func(context.Context, string) (yumsync.Source, error) { return src, nil },
+		log, time.Now)
+	return &harness{t: t, pool: pool, cipher: cipher, src: src, handler: New(Deps{
+		Pool: pool, Engine: engine, Cipher: cipher, BootstrapToken: config.Secret(bootstrapToken), Log: log,
+	})}
+}
+
+func fixture(t *testing.T, rel string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "spec", "testdata", "valid", rel))
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", rel, err)
+	}
+	return data
+}
+
+func (h *harness) pushInventory(commit string) {
+	h.src.put(invRepo, commit, invPath+"/environments.yaml", fixture(h.t, "environments.yaml"))
+	h.src.put(invRepo, commit, invPath+"/services/orders.yaml", fixture(h.t, "services/orders.yaml"))
+	h.src.put(invRepo, commit, invPath+"/services/backend-api.yaml", fixture(h.t, "services/backend-api.yaml"))
+	h.src.setHead(invRepo, "main", commit)
+}
+
+func (h *harness) pushJob(commit string) {
+	h.src.put(jobsRepo, commit, jobPath, fixture(h.t, "jobs/deploy-backend.yaml"))
+	h.src.setHead(jobsRepo, "main", commit)
+}
+
+// do sends an authorised JSON request and records the body.
+func (h *harness) do(method, path string, body any) (int, map[string]any) {
+	h.t.Helper()
+	code, raw := h.doRaw(method, path, bootstrapToken, body)
+	var decoded map[string]any
+	if len(bytes.TrimSpace(raw)) > 0 {
+		_ = json.Unmarshal(raw, &decoded)
+	}
+	return code, decoded
+}
+
+func (h *harness) doRaw(method, path, token string, body any) (int, []byte) {
+	h.t.Helper()
+	var reader io.Reader
+	switch b := body.(type) {
+	case nil:
+	case string:
+		reader = strings.NewReader(b)
+	default:
+		encoded, err := json.Marshal(b)
+		if err != nil {
+			h.t.Fatalf("encode body: %v", err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	h.bodies = append(h.bodies, rec.Body.String())
+	return rec.Code, rec.Body.Bytes()
+}
+
+func (h *harness) mustDo(method, path string, body any, want int) map[string]any {
+	h.t.Helper()
+	code, got := h.do(method, path, body)
+	if code != want {
+		h.t.Fatalf("%s %s = %d, want %d (body %v)", method, path, code, want, got)
+	}
+	return got
+}
+
+func errorCode(t *testing.T, body map[string]any) string {
+	t.Helper()
+	e, _ := body["error"].(map[string]any)
+	code, _ := e["code"].(string)
+	return code
+}
+
+func errorMessage(body map[string]any) string {
+	e, _ := body["error"].(map[string]any)
+	m, _ := e["message"].(string)
+	return m
+}
+
+func (h *harness) setInventorySource() {
+	h.t.Helper()
+	h.mustDo("PUT", "/api/v1/admin/inventory-source", map[string]string{"repo": invRepo, "branch": "main", "path": invPath}, http.StatusOK)
+}
+
+func (h *harness) createFolder(name string) int64 {
+	h.t.Helper()
+	body := h.mustDo("POST", "/api/v1/folders", map[string]string{"name": name}, http.StatusCreated)
+	return int64(body["id"].(float64))
+}
+
+func (h *harness) registerJob(folderID int64) map[string]any {
+	h.t.Helper()
+	return h.mustDo("POST", "/api/v1/jobs", map[string]any{
+		"folder_id": folderID, "repo": jobsRepo, "branch": "main", "path": jobPath,
+	}, http.StatusCreated)
+}
+
+func TestRoutesRequireBootstrapToken(t *testing.T) {
+	h := newHarness(t)
+	for _, tc := range []struct {
+		name, token string
+		want        int
+	}{
+		{"no header", "", http.StatusUnauthorized},
+		{"wrong token", "not-the-token", http.StatusUnauthorized},
+		{"right token", bootstrapToken, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, raw := h.doRaw("GET", "/api/v1/folders", tc.token, nil)
+			if code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", code, tc.want, raw)
+			}
+			if tc.want == http.StatusUnauthorized {
+				var body map[string]any
+				_ = json.Unmarshal(raw, &body)
+				if errorCode(t, body) != "unauthorized" {
+					t.Errorf("error code = %q, want unauthorized (body %s)", errorCode(t, body), raw)
+				}
+			}
+		})
+	}
+}
+
+func TestEmptyBootstrapTokenDisablesAPI(t *testing.T) {
+	handler := New(Deps{BootstrapToken: "", Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	for _, header := range []string{"", "Bearer ", "Bearer anything"} {
+		req := httptest.NewRequest("GET", "/api/v1/folders", nil)
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("Authorization %q: status = %d, want 404", header, rec.Code)
+		}
+	}
+}
+
+func TestCreateConnectionEncryptsAndNeverReturnsSecret(t *testing.T) {
+	h := newHarness(t)
+	const token = "ghp_super-secret-token-value-123"
+	created := h.mustDo("POST", "/api/v1/admin/github-connections",
+		map[string]any{"owner": "Acme", "method": "token", "token": token}, http.StatusCreated)
+	if created["owner"] != "acme" {
+		t.Errorf("owner = %v, want it normalised to lower case", created["owner"])
+	}
+	h.mustDo("GET", "/api/v1/admin/github-connections", nil, http.StatusOK)
+	// A duplicate (different case) and a rejected request must not echo it either.
+	h.mustDo("POST", "/api/v1/admin/github-connections",
+		map[string]any{"owner": "ACME", "method": "token", "token": token}, http.StatusConflict)
+	h.mustDo("POST", "/api/v1/admin/github-connections",
+		map[string]any{"owner": "other", "method": "token", "token": token, "bogus": 1}, http.StatusBadRequest)
+
+	ctx := context.Background()
+	conn, ciphertext, err := store.ConnectionSecret(ctx, h.pool, "acme")
+	if err != nil {
+		t.Fatalf("ConnectionSecret: %v", err)
+	}
+	if conn.Method != "token" {
+		t.Errorf("method = %q, want token", conn.Method)
+	}
+	if bytes.Contains(ciphertext, []byte(token)) {
+		t.Fatal("stored secret contains the plaintext token")
+	}
+	plain, err := h.cipher.Decrypt(ctx, "github-connection", ciphertext)
+	if err != nil || string(plain) != token {
+		t.Fatalf("Decrypt with purpose github-connection = %q, %v; want the token", plain, err)
+	}
+	if _, err := h.cipher.Decrypt(ctx, "other-purpose", ciphertext); err == nil {
+		t.Error("ciphertext decrypts under a different purpose")
+	}
+	for i, body := range h.bodies {
+		if strings.Contains(body, token) {
+			t.Errorf("response %d contains the token: %s", i, body)
+		}
+	}
+	if len(h.bodies) < 4 {
+		t.Fatalf("recorded %d responses, want at least 4", len(h.bodies))
+	}
+}
+
+func TestCreateConnectionValidatesInput(t *testing.T) {
+	h := newHarness(t)
+	for name, body := range map[string]map[string]any{
+		"token method without token": {"owner": "acme", "method": "token"},
+		"app method without key":     {"owner": "acme", "method": "app", "app_id": 1, "installation_id": 2},
+		"app method without ids":     {"owner": "acme", "method": "app", "private_key": "x"},
+		"unknown method":             {"owner": "acme", "method": "password", "token": "t"},
+		"missing owner":              {"method": "token", "token": "t"},
+		"owner with slash":           {"owner": "acme/evil", "method": "token", "token": "t"},
+		"app with malformed key":     {"owner": "acme", "method": "app", "app_id": 1, "installation_id": 2, "private_key": "not a pem"},
+	} {
+		code, got := h.do("POST", "/api/v1/admin/github-connections", body)
+		if code != http.StatusBadRequest || errorCode(t, got) != "invalid" {
+			t.Errorf("%s: status %d code %q, want 400 invalid", name, code, errorCode(t, got))
+		}
+	}
+}
+
+func TestSetInventorySourceSyncsAndInventoryIsServed(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	h.setInventorySource()
+
+	inv := h.mustDo("GET", "/api/v1/inventory", nil, http.StatusOK)
+	if inv["commit"] != "c1" {
+		t.Errorf("commit = %v, want c1", inv["commit"])
+	}
+	if inv["activated_at"] == nil || inv["checked_at"] == nil {
+		t.Errorf("activated_at/checked_at missing: %v", inv)
+	}
+	if envs, _ := inv["environments"].([]any); len(envs) != 5 {
+		t.Errorf("environments = %v, want 5", inv["environments"])
+	}
+	services, _ := inv["services"].([]any)
+	if len(services) != 2 {
+		t.Fatalf("services = %v, want 2", inv["services"])
+	}
+	first := services[0].(map[string]any)
+	if first["name"] != "backend-api" {
+		t.Errorf("first service = %v, want backend-api (sorted)", first["name"])
+	}
+	if envs, _ := first["environments"].([]any); len(envs) == 0 {
+		t.Errorf("service lists no environments: %v", first)
+	}
+
+	svc := h.mustDo("GET", "/api/v1/inventory/services/orders", nil, http.StatusOK)
+	if svc["name"] != "orders" || svc["environments"] == nil {
+		t.Errorf("service = %v, want the full orders service", svc)
+	}
+	if code, body := h.do("GET", "/api/v1/inventory/services/nope", nil); code != http.StatusNotFound || errorCode(t, body) != "not_found" {
+		t.Errorf("unknown service = %d %v, want 404 not_found", code, body)
+	}
+
+	if code, body := h.do("PUT", "/api/v1/admin/inventory-source", map[string]string{"repo": "no-slash", "branch": "main"}); code != http.StatusBadRequest || errorCode(t, body) != "invalid" {
+		t.Errorf("bad repo = %d %v, want 400 invalid", code, body)
+	}
+
+	// A new commit is picked up by the on-demand sync.
+	h.pushInventory("c2")
+	synced := h.mustDo("POST", "/api/v1/inventory/sync", nil, http.StatusOK)
+	if synced["commit"] != "c2" {
+		t.Errorf("after sync commit = %v, want c2", synced["commit"])
+	}
+}
+
+func TestInventoryBeforeAnySourceIsEmptyNotAnError(t *testing.T) {
+	h := newHarness(t)
+	inv := h.mustDo("GET", "/api/v1/inventory", nil, http.StatusOK)
+	if inv["commit"] != "" {
+		t.Errorf("commit = %v, want empty", inv["commit"])
+	}
+	if code, _ := h.do("GET", "/api/v1/inventory/services/orders", nil); code != http.StatusNotFound {
+		t.Errorf("service without inventory = %d, want 404", code)
+	}
+}
+
+func TestRegisterJobSyncsAndReturnsDefinition(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	h.setInventorySource()
+	h.pushJob("j1")
+	folder := h.createFolder("Backends")
+
+	job := h.registerJob(folder)
+	if job["job_id"] != "deploy-backend" || job["runnable"] != true || job["commit"] != "j1" {
+		t.Errorf("registered job = %v, want deploy-backend runnable at j1", job)
+	}
+	def, _ := job["definition"].(map[string]any)
+	if def["id"] != "deploy-backend" || def["steps"] == nil {
+		t.Errorf("definition = %v, want the parsed job", job["definition"])
+	}
+	if job["synced_at"] == nil {
+		t.Errorf("synced_at missing: %v", job)
+	}
+	id := int64(job["id"].(float64))
+
+	got := h.mustDo("GET", fmt.Sprintf("/api/v1/jobs/%d", id), nil, http.StatusOK)
+	if got["definition"] == nil {
+		t.Errorf("GET job has no definition: %v", got)
+	}
+	list := h.mustDo("GET", "/api/v1/jobs", nil, http.StatusOK)
+	items, _ := list["jobs"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("jobs = %v, want 1", list["jobs"])
+	}
+	row := items[0].(map[string]any)
+	if row["folder"] != "Backends" || row["repo"] != jobsRepo || row["problem_count"] != float64(0) {
+		t.Errorf("job row = %v", row)
+	}
+}
+
+func TestRegisterSameFileTwiceIsConflict(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	h.setInventorySource()
+	h.pushJob("j1")
+	folder := h.createFolder("Backends")
+	h.registerJob(folder)
+	code, body := h.do("POST", "/api/v1/jobs", map[string]any{"folder_id": folder, "repo": jobsRepo, "branch": "main", "path": jobPath})
+	if code != http.StatusConflict || errorCode(t, body) != "conflict" {
+		t.Errorf("second register = %d %v, want 409 conflict", code, body)
+	}
+}
+
+func TestMoveJobBetweenFolders(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	h.setInventorySource()
+	h.pushJob("j1")
+	from, to := h.createFolder("From"), h.createFolder("To")
+	id := int64(h.registerJob(from)["id"].(float64))
+
+	moved := h.mustDo("PATCH", fmt.Sprintf("/api/v1/jobs/%d", id), map[string]any{"folder_id": to}, http.StatusOK)
+	if moved["folder_id"] != float64(to) || moved["folder"] != "To" {
+		t.Errorf("moved job = %v, want folder To", moved)
+	}
+
+	code, body := h.do("PATCH", fmt.Sprintf("/api/v1/jobs/%d", id), map[string]any{"folder_id": 987654})
+	if code != http.StatusBadRequest || errorCode(t, body) != "invalid" || !strings.Contains(errorMessage(body), "987654") {
+		t.Errorf("move to unknown folder = %d %v, want 400 invalid naming 987654", code, body)
+	}
+	code, body = h.do("POST", "/api/v1/jobs", map[string]any{"folder_id": 987654, "repo": jobsRepo, "branch": "main", "path": "jobs/other.yaml"})
+	if code != http.StatusBadRequest || errorCode(t, body) != "invalid" || !strings.Contains(errorMessage(body), "987654") {
+		t.Errorf("register in unknown folder = %d %v, want 400 invalid naming 987654", code, body)
+	}
+}
+
+func TestUnknownJobIs404(t *testing.T) {
+	h := newHarness(t)
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/v1/jobs/4242"},
+		{"PATCH", "/api/v1/jobs/4242"},
+		{"POST", "/api/v1/jobs/4242/sync"},
+		{"GET", "/api/v1/jobs/not-a-number"},
+	} {
+		var body any
+		if tc.method == "PATCH" {
+			body = map[string]any{"folder_id": 1}
+		}
+		code, got := h.do(tc.method, tc.path, body)
+		if code != http.StatusNotFound || errorCode(t, got) != "not_found" {
+			t.Errorf("%s %s = %d %v, want 404 not_found", tc.method, tc.path, code, got)
+		}
+	}
+}
+
+func TestSyncJobNowAndSourceErrorIsShown(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	h.setInventorySource()
+	h.pushJob("j1")
+	id := int64(h.registerJob(h.createFolder("Backends"))["id"].(float64))
+
+	h.src.setErr(errors.New("github is down"))
+	job := h.mustDo("POST", fmt.Sprintf("/api/v1/jobs/%d/sync", id), nil, http.StatusOK)
+	msg, _ := job["sync_error"].(string)
+	if !strings.Contains(msg, "github is down") || job["sync_error_at"] == nil {
+		t.Errorf("job = %v, want sync_error and sync_error_at", job)
+	}
+	if job["commit"] != "j1" || job["definition"] == nil {
+		t.Errorf("last good definition lost during outage: %v", job)
+	}
+
+	inv := h.mustDo("POST", "/api/v1/inventory/sync", nil, http.StatusOK)
+	if m, _ := inv["sync_error"].(string); !strings.Contains(m, "github is down") || inv["sync_error_at"] == nil {
+		t.Errorf("inventory = %v, want sync_error and sync_error_at", inv)
+	}
+	if inv["commit"] != "c1" || inv["activated_at"] == nil {
+		t.Errorf("age of last good sync lost: %v", inv)
+	}
+
+	h.src.setErr(nil)
+	job = h.mustDo("POST", fmt.Sprintf("/api/v1/jobs/%d/sync", id), nil, http.StatusOK)
+	if job["sync_error"] != "" {
+		t.Errorf("sync_error = %v after recovery, want empty", job["sync_error"])
+	}
+}
+
+func TestInventoryShowsProblemsOfRejectedCommitAlongsideActiveOne(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	h.setInventorySource()
+
+	// c2 has a broken service file.
+	h.pushInventory("c2")
+	h.src.put(invRepo, "c2", invPath+"/services/orders.yaml", []byte("apiVersion: yumdrake/v1\nkind: Service\nname: orders\nbogus: true\n"))
+	inv := h.mustDo("POST", "/api/v1/inventory/sync", nil, http.StatusOK)
+
+	if inv["commit"] != "c1" {
+		t.Errorf("active commit = %v, want c1 to stay active", inv["commit"])
+	}
+	rejected, _ := inv["rejected"].(map[string]any)
+	if rejected["commit"] != "c2" {
+		t.Fatalf("rejected = %v, want commit c2", inv["rejected"])
+	}
+	problems, _ := rejected["problems"].([]any)
+	if len(problems) == 0 {
+		t.Fatalf("rejected has no problems: %v", rejected)
+	}
+	first := problems[0].(map[string]any)
+	if first["file"] != "services/orders.yaml" || first["line"] == nil || first["message"] == "" {
+		t.Errorf("problem = %v, want file, line and message", first)
+	}
+}
+
+func TestUnknownJSONFieldIsInvalid(t *testing.T) {
+	h := newHarness(t)
+	code, body := h.do("POST", "/api/v1/folders", `{"name":"x","surprise":true}`)
+	if code != http.StatusBadRequest || errorCode(t, body) != "invalid" {
+		t.Errorf("unknown field = %d %v, want 400 invalid", code, body)
+	}
+	code, body = h.do("POST", "/api/v1/folders", `{"name":"x"} {"name":"y"}`)
+	if code != http.StatusBadRequest || errorCode(t, body) != "invalid" {
+		t.Errorf("trailing data = %d %v, want 400 invalid", code, body)
+	}
+}
+
+func TestOversizedBodyIsRejected(t *testing.T) {
+	h := newHarness(t)
+	huge := `{"name":"` + strings.Repeat("a", 2<<20) + `"}`
+	code, body := h.do("POST", "/api/v1/folders", huge)
+	if code != http.StatusRequestEntityTooLarge || errorCode(t, body) != "invalid" {
+		t.Errorf("oversized body = %d %v, want 413 invalid", code, body)
+	}
+}
+
+func TestFoldersCreateListAndRejectDuplicates(t *testing.T) {
+	h := newHarness(t)
+	h.createFolder("Payments")
+	if code, body := h.do("POST", "/api/v1/folders", map[string]string{"name": "payments"}); code != http.StatusConflict || errorCode(t, body) != "conflict" {
+		t.Errorf("duplicate folder = %d %v, want 409 conflict", code, body)
+	}
+	if code, body := h.do("POST", "/api/v1/folders", map[string]string{"name": "  "}); code != http.StatusBadRequest || errorCode(t, body) != "invalid" {
+		t.Errorf("blank folder = %d %v, want 400 invalid", code, body)
+	}
+	list := h.mustDo("GET", "/api/v1/folders", nil, http.StatusOK)
+	if folders, _ := list["folders"].([]any); len(folders) != 1 {
+		t.Errorf("folders = %v, want 1", list["folders"])
+	}
+}

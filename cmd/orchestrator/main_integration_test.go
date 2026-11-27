@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -21,6 +23,8 @@ import (
 	"github.com/pressly/goose/v3/lock"
 
 	"github.com/rcss-labs/yamdrake/internal/db"
+	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
 	"github.com/rcss-labs/yamdrake/internal/version"
 )
@@ -210,6 +214,122 @@ func TestRunMigratesThenBecomesReady(t *testing.T) {
 	}
 	if !strings.Contains(r.stdout.String(), `"msg":"stopped"`) {
 		t.Errorf("stdout lacks a stopped line: %s", r.stdout.String())
+	}
+}
+
+func request(t *testing.T, method, addr, path, token string) int {
+	t.Helper()
+	req, err := http.NewRequest(method, "http://"+addr+path, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestRunStartsWithoutBootstrapTokenOrInventorySource(t *testing.T) {
+	dbURL := testdb.New(t)
+	addr := freeAddr(t)
+	r := start(t, []string{"yumdrake-orchestrator"}, baseEnv(t, dbURL, addr))
+
+	waitStatus(t, addr, "/readyz", http.StatusOK, 10*time.Second)
+	if got := request(t, "GET", addr, "/api/v1/inventory", ""); got != http.StatusNotFound {
+		t.Errorf("GET /api/v1/inventory without a bootstrap token = %d, want 404", got)
+	}
+	out := r.stdout.String()
+	if !strings.Contains(out, "sync loop started") {
+		t.Errorf("stdout lacks the sync loop start line: %s", out)
+	}
+	r.cancel()
+	if code := r.wait(t, 10*time.Second); code != 0 {
+		t.Errorf("run() = %d after cancel, want 0", code)
+	}
+	if !strings.Contains(r.stdout.String(), "sync loop stopped") {
+		t.Errorf("stdout lacks the sync loop stop line: %s", r.stdout.String())
+	}
+}
+
+func TestRunServesAPIBehindBootstrapToken(t *testing.T) {
+	const token = "orchestrator-test-token-0123456789-abc"
+	dbURL := testdb.New(t)
+	addr := freeAddr(t)
+	env := baseEnv(t, dbURL, addr)
+	env["YUMDRAKE_BOOTSTRAP_TOKEN"] = token
+	r := start(t, []string{"yumdrake-orchestrator"}, env)
+
+	waitStatus(t, addr, "/readyz", http.StatusOK, 10*time.Second)
+	if got := request(t, "GET", addr, "/api/v1/folders", ""); got != http.StatusUnauthorized {
+		t.Errorf("without token = %d, want 401", got)
+	}
+	if got := request(t, "GET", addr, "/api/v1/folders", token); got != http.StatusOK {
+		t.Errorf("with token = %d, want 200", got)
+	}
+	if strings.Contains(r.stdout.String(), token) {
+		t.Errorf("the bootstrap token appears in the logs")
+	}
+}
+
+// TestRunSyncLoopReadsGitHubWithStoredConnection stores an encrypted
+// connection and an inventory source before start-up and expects the loop's
+// first round to call GitHub with the decrypted token.
+func TestRunSyncLoopReadsGitHubWithStoredConnection(t *testing.T) {
+	dbURL := testdb.New(t)
+	ctx := context.Background()
+	if err := db.Migrate(ctx, dbURL); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	pool, err := db.Open(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer pool.Close()
+	key, err := base64.StdEncoding.DecodeString(devSecretKey)
+	if err != nil {
+		t.Fatalf("decode dev key: %v", err)
+	}
+	cipher, err := secrets.NewLocal(key)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	ciphertext, err := cipher.Encrypt(ctx, "github-connection", []byte("stored-token"))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	if _, err := store.CreateConnection(ctx, pool, store.Connection{Owner: "acme", Method: "token"}, ciphertext); err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+	if err := store.SetInventorySource(ctx, pool, store.InventorySource{Repo: "acme/inventory", Branch: "main", Path: "inv"}); err != nil {
+		t.Fatalf("SetInventorySource: %v", err)
+	}
+
+	authorizations := make(chan string, 16)
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		select {
+		case authorizations <- req.Header.Get("Authorization"):
+		default:
+		}
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer github.Close()
+
+	env := baseEnv(t, dbURL, freeAddr(t))
+	env["YUMDRAKE_GITHUB_API_URL"] = github.URL
+	start(t, []string{"yumdrake-orchestrator"}, env)
+
+	select {
+	case got := <-authorizations:
+		if got != "Bearer stored-token" {
+			t.Errorf("GitHub saw Authorization %q, want the decrypted stored token", got)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the sync loop never called GitHub")
 	}
 }
 

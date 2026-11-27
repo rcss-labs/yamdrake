@@ -5,74 +5,22 @@ package db
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"io"
 	"log/slog"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
 )
-
-const testDatabaseURLVar = "YUMDRAKE_TEST_DATABASE_URL"
-
-// newTestDatabase creates a uniquely named empty database on the server named by
-// YUMDRAKE_TEST_DATABASE_URL, drops it (with FORCE) when the test ends and
-// returns its URL.
-func newTestDatabase(t *testing.T) string {
-	t.Helper()
-	adminURL := os.Getenv(testDatabaseURLVar)
-	if adminURL == "" {
-		t.Fatalf("%s must be set for integration tests", testDatabaseURLVar)
-	}
-
-	suffix := make([]byte, 6)
-	if _, err := rand.Read(suffix); err != nil {
-		t.Fatalf("generate database name: %v", err)
-	}
-	name := "yumdrake_test_" + hex.EncodeToString(suffix)
-
-	ctx := context.Background()
-	admin, err := pgx.Connect(ctx, adminURL)
-	if err != nil {
-		t.Fatalf("connect to admin database: %v", err)
-	}
-	defer admin.Close(ctx)
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
-		t.Fatalf("create test database: %v", err)
-	}
-
-	t.Cleanup(func() {
-		ctx := context.Background()
-		conn, err := pgx.Connect(ctx, adminURL)
-		if err != nil {
-			t.Errorf("connect to drop test database: %v", err)
-			return
-		}
-		defer conn.Close(ctx)
-		if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)"); err != nil {
-			t.Errorf("drop test database: %v", err)
-		}
-	})
-
-	u, err := url.Parse(adminURL)
-	if err != nil {
-		t.Fatalf("parse admin URL: %v", err)
-	}
-	u.Path = "/" + name
-	return u.String()
-}
 
 func TestMigrateAppliesAllAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbURL := newTestDatabase(t)
+	dbURL := testdb.New(t)
 
 	if err := Migrate(ctx, dbURL); err != nil {
 		t.Fatalf("first Migrate: %v", err)
@@ -113,7 +61,7 @@ func TestMigrateAppliesAllAndIsIdempotent(t *testing.T) {
 func TestMigrateConcurrentCallersApplyOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbURL := newTestDatabase(t)
+	dbURL := testdb.New(t)
 
 	const callers = 8
 	errs := make([]error, callers)
@@ -165,7 +113,7 @@ func TestMigrateConcurrentCallersApplyOnce(t *testing.T) {
 func TestSchemaVersionIsZeroOnFreshDatabase(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	pool, err := Open(ctx, newTestDatabase(t))
+	pool, err := Open(ctx, testdb.New(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -190,7 +138,7 @@ func TestSchemaVersionIsZeroOnFreshDatabase(t *testing.T) {
 func TestWaitSchemaTimesOutNamingVersions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	pool, err := Open(ctx, newTestDatabase(t))
+	pool, err := Open(ctx, testdb.New(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -241,7 +189,7 @@ func TestWaitOpenGivesUpWithRedactedURL(t *testing.T) {
 
 func TestWaitOpenSucceedsWhenDatabaseAppearsLate(t *testing.T) {
 	t.Parallel()
-	realURL := newTestDatabase(t)
+	realURL := testdb.New(t)
 	parsed, err := url.Parse(realURL)
 	if err != nil {
 		t.Fatalf("parse URL: %v", err)

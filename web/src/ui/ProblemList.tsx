@@ -17,7 +17,7 @@ export function ProblemList({ problems, className, ...rest }: ProblemListProps) 
     <ul className={cx('ui-problems', className)} {...rest}>
       {problems.map((problem, index) => (
         <li key={`${problem.file}:${problem.line}:${index}`}>
-          <span className="ui-problem-where">{`${problem.file}:${problem.line}`}</span>
+          <span className="ui-problem-where">{problem.line > 0 ? `${problem.file}:${problem.line}` : problem.file}</span>
           <span>{problem.message}</span>
         </li>
       ))}

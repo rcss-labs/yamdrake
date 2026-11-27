@@ -16,4 +16,10 @@ describe('ProblemList', () => {
     expect(screen.getByText('unknown service type')).toBeInTheDocument()
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
   })
+
+  it('shows the file name alone for a problem about the whole file (line 0)', () => {
+    render(<ProblemList problems={[{ file: 'environments.yaml', line: 0, message: 'file is empty' }]} />)
+    expect(screen.getByText('environments.yaml')).toBeInTheDocument()
+    expect(screen.queryByText('environments.yaml:0')).not.toBeInTheDocument()
+  })
 })

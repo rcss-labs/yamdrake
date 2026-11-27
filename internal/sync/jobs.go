@@ -49,13 +49,18 @@ func NewEngine(pool *pgxpool.Pool, sources SourceFor, log *slog.Logger, now func
 
 const noInventoryMessage = "no active inventory yet"
 
-// SyncJob brings one job source up to date with the head of its branch.
+// SyncJob brings one job source up to date with the head of its branch. It
+// serialises with every other sync (see withLock).
 func (e *Engine) SyncJob(ctx context.Context, jobSourceID int64) error {
+	return e.withLock(ctx, func(ctx context.Context) error { return e.syncJob(ctx, jobSourceID) })
+}
+
+// syncJob is SyncJob without the lock; the caller must hold it.
+func (e *Engine) syncJob(ctx context.Context, jobSourceID int64) error {
 	job, err := store.GetJobSource(ctx, e.pool, jobSourceID)
 	if err != nil {
 		return err
 	}
-	at := e.now()
 
 	snapshot, haveInventory, err := store.ActiveSnapshot(ctx, e.pool)
 	if err != nil {
@@ -65,33 +70,45 @@ func (e *Engine) SyncJob(ctx context.Context, jobSourceID int64) error {
 		// The problem is stored without a commit so that every round reads the
 		// file again until an inventory exists.
 		problems := spec.Problems{{File: job.Path, Message: noInventoryMessage}}
-		return e.saveJobProblems(ctx, e.pool, job, problems, "", false, at)
+		return e.saveJobProblems(ctx, e.pool, job, problems, "", false, e.now())
 	}
 	var inventory spec.Inventory
 	if err := json.Unmarshal(snapshot.Inventory, &inventory); err != nil {
 		return fmt.Errorf("decode active inventory: %w", err)
 	}
 
+	// A source error stores only the failure message; definitions stay as they
+	// are. It is cleared once GitHub has answered again.
+	fail := func(what string, err error, attrs ...any) error {
+		e.recordSyncError(ctx, what, err, func(message string, at time.Time) error {
+			return store.SetJobSyncError(ctx, e.pool, job.ID, message, at)
+		})
+		return e.sourceError(what, err, append(attrs, "job_source_id", job.ID, "repo", job.Repo)...)
+	}
 	source, err := e.sourceForRepo(ctx, job.Repo)
 	if err != nil {
-		return e.sourceError("job source", err, "job_source_id", job.ID, "repo", job.Repo)
+		return fail("job source", err)
 	}
 	head, err := source.HeadCommit(ctx, job.Repo, job.Branch)
 	if err != nil {
-		return e.sourceError("read job branch head", err, "job_source_id", job.ID, "repo", job.Repo, "branch", job.Branch)
+		return fail("read job branch head", err, "branch", job.Branch)
+	}
+	if err := store.ClearJobSyncError(ctx, e.pool, job.ID); err != nil {
+		return err
 	}
 
 	// Unchanged means: nothing new at the head and the file was last checked
 	// against the inventory that is active now. A job re-validated at
 	// activation, or read since, has checked_at at or after ActivatedAt.
 	if head == newestSeenCommit(job) && job.CheckedAt != nil && !job.CheckedAt.Before(snapshot.ActivatedAt) {
-		return store.TouchJobChecked(ctx, e.pool, job.ID, at)
+		return store.TouchJobChecked(ctx, e.pool, job.ID, e.now())
 	}
 
 	data, err := source.ReadFile(ctx, job.Repo, head, job.Path)
 	if err != nil {
-		return e.sourceError("read job file", err, "job_source_id", job.ID, "repo", job.Repo, "commit", head)
+		return fail("read job file", err, "commit", head)
 	}
+	at := e.now() // taken after the reads, just before the write
 	parsed, problems := spec.ParseJob(job.Path, data)
 	if len(problems) == 0 {
 		problems = spec.ValidateJob(parsed, inventory)
@@ -191,6 +208,25 @@ func (e *Engine) sourceForRepo(ctx context.Context, repo string) (Source, error)
 	owner, _, _ := strings.Cut(repo, "/")
 	return e.sources(ctx, owner)
 }
+
+// recordSyncError stores a credential-free description of a source error. The
+// message is the failing step plus the error text; the GitHub client's errors
+// carry only method, path and status, never a token. A cancelled context is not
+// a source failure and is not recorded. Failing to record is logged only.
+func (e *Engine) recordSyncError(ctx context.Context, what string, err error, save func(message string, at time.Time) error) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	message := "source error: " + what + ": " + err.Error()
+	if len(message) > maxSyncErrorLength {
+		message = message[:maxSyncErrorLength]
+	}
+	if serr := save(message, e.now()); serr != nil {
+		e.log.Warn("could not record sync error", "error", serr.Error())
+	}
+}
+
+const maxSyncErrorLength = 500
 
 // sourceError logs a failure to reach the source at warn level and returns it
 // wrapped. Nothing is stored for it.

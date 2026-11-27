@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -16,6 +17,11 @@ const environmentsFile = "environments.yaml"
 // every file at that commit is valid. Any problem leaves the active snapshot
 // alone and records the problems with the rejected commit.
 func (e *Engine) SyncInventory(ctx context.Context) error {
+	return e.withLock(ctx, e.syncInventory)
+}
+
+// syncInventory is SyncInventory without the lock; the caller must hold it.
+func (e *Engine) syncInventory(ctx context.Context) error {
 	src, configured, err := store.GetInventorySource(ctx, e.pool)
 	if err != nil {
 		return err
@@ -23,15 +29,23 @@ func (e *Engine) SyncInventory(ctx context.Context) error {
 	if !configured {
 		return nil
 	}
+	fail := func(what string, err error, attrs ...any) error {
+		e.recordSyncError(ctx, what, err, func(message string, at time.Time) error {
+			return store.SetInventorySyncError(ctx, e.pool, message, at)
+		})
+		return e.sourceError(what, err, append(attrs, "repo", src.Repo)...)
+	}
 	source, err := e.sourceForRepo(ctx, src.Repo)
 	if err != nil {
-		return e.sourceError("inventory source", err, "repo", src.Repo)
+		return fail("inventory source", err)
 	}
 	head, err := source.HeadCommit(ctx, src.Repo, src.Branch)
 	if err != nil {
-		return e.sourceError("read inventory branch head", err, "repo", src.Repo, "branch", src.Branch)
+		return fail("read inventory branch head", err, "branch", src.Branch)
 	}
-	at := e.now()
+	if err := store.ClearInventorySyncError(ctx, e.pool); err != nil {
+		return err
+	}
 
 	status, err := store.GetInventoryStatus(ctx, e.pool)
 	if err != nil {
@@ -44,18 +58,21 @@ func (e *Engine) SyncInventory(ctx context.Context) error {
 	if haveActive && active.Commit == head {
 		// The head is the valid active commit; stale problems from a rejected
 		// commit that was since reverted no longer apply.
+		at := e.now()
 		return store.SaveInventoryStatus(ctx, e.pool, store.InventoryStatus{CheckedAt: &at})
 	}
 	if status.Problems != nil && status.ProblemsCommit == head {
 		// Already rejected; a commit's content never changes.
+		at := e.now()
 		status.CheckedAt = &at
 		return store.SaveInventoryStatus(ctx, e.pool, status)
 	}
 
-	inventory, problems, err := e.readInventory(ctx, source, src, head)
+	inventory, problems, err := e.readInventory(ctx, source, src, head, fail)
 	if err != nil {
 		return err
 	}
+	at := e.now() // taken after the reads, just before the write
 	if len(problems) > 0 {
 		encoded, err := json.Marshal(problems.Sorted())
 		if err != nil {
@@ -97,7 +114,8 @@ func (e *Engine) SyncInventory(ctx context.Context) error {
 // readInventory reads and checks every inventory file at commit. The error is
 // a source error; problems are definitions errors. File names in problems are
 // relative to the inventory path (for example services/orders.yaml).
-func (e *Engine) readInventory(ctx context.Context, source Source, src store.InventorySource, commit string) (spec.Inventory, spec.Problems, error) {
+func (e *Engine) readInventory(ctx context.Context, source Source, src store.InventorySource, commit string,
+	fail func(what string, err error, attrs ...any) error) (spec.Inventory, spec.Problems, error) {
 	dir := strings.Trim(strings.TrimSpace(src.Path), "/")
 	if dir == "." {
 		dir = ""
@@ -108,7 +126,7 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 	}
 	files, err := source.ListFiles(ctx, src.Repo, commit, dir)
 	if err != nil {
-		return spec.Inventory{}, nil, e.sourceError("list inventory files", err, "repo", src.Repo, "commit", commit)
+		return spec.Inventory{}, nil, fail("list inventory files", err, "commit", commit)
 	}
 
 	var haveEnvironments bool
@@ -132,7 +150,7 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 	if haveEnvironments {
 		data, err := source.ReadFile(ctx, src.Repo, commit, prefix+environmentsFile)
 		if err != nil {
-			return spec.Inventory{}, nil, e.sourceError("read inventory file", err, "repo", src.Repo, "commit", commit, "file", environmentsFile)
+			return spec.Inventory{}, nil, fail("read inventory file", err, "commit", commit, "file", environmentsFile)
 		}
 		var found spec.Problems
 		environments, found = spec.ParseEnvironments(environmentsFile, data)
@@ -146,7 +164,7 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 	for _, relative := range serviceFiles {
 		data, err := source.ReadFile(ctx, src.Repo, commit, prefix+relative)
 		if err != nil {
-			return spec.Inventory{}, nil, e.sourceError("read inventory file", err, "repo", src.Repo, "commit", commit, "file", relative)
+			return spec.Inventory{}, nil, fail("read inventory file", err, "commit", commit, "file", relative)
 		}
 		service, found := spec.ParseService(relative, data)
 		problems = append(problems, found...)

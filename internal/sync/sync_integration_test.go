@@ -40,6 +40,9 @@ type fakeSource struct {
 	heads     map[string]string // "repo@branch" -> commit
 	err       error
 	headCalls int
+	// onRead, when set, runs at the start of every ReadFile without the lock
+	// held, so a test can park a read until it chooses to release it.
+	onRead func(repo, path string)
 }
 
 func newFakeSource() *fakeSource {
@@ -103,6 +106,9 @@ func (f *fakeSource) ListFiles(_ context.Context, repo, commit, dir string) ([]s
 }
 
 func (f *fakeSource) ReadFile(_ context.Context, repo, commit, path string) ([]byte, error) {
+	if f.onRead != nil {
+		f.onRead(repo, path)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -529,9 +535,9 @@ func dumpTables(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var out strings.Builder
 	for _, q := range []string{
-		"SELECT t::text FROM job_sources t ORDER BY id",
+		"SELECT (to_jsonb(t) - 'sync_error' - 'sync_error_at')::text FROM job_sources t ORDER BY id",
 		"SELECT t::text FROM inventory_snapshots t ORDER BY id",
-		"SELECT t::text FROM inventory_status t ORDER BY id",
+		"SELECT (to_jsonb(t) - 'sync_error' - 'sync_error_at')::text FROM inventory_status t ORDER BY id",
 		"SELECT t::text FROM folders t ORDER BY id",
 	} {
 		rows, err := pool.Query(context.Background(), q)
@@ -578,6 +584,36 @@ func TestSourceErrorChangesNothingAndIsReturned(t *testing.T) {
 	}
 	if after := dumpTables(t, h.pool); after != before {
 		t.Fatalf("stored rows changed on a source error:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+
+	// The failure is visible on the inventory status and on every job, with the
+	// time it happened, and it is cleared by the next successful contact.
+	ctx := context.Background()
+	failedAt := h.clock
+	if st := h.status(); !strings.Contains(st.SyncError, "502 bad gateway") || st.SyncErrorAt == nil || !st.SyncErrorAt.Equal(failedAt) {
+		t.Fatalf("inventory sync error not recorded: %+v", st)
+	}
+	for _, id := range h.jobIDs {
+		if js := h.job(id); !strings.Contains(js.SyncError, "502 bad gateway") || js.SyncErrorAt == nil || !js.SyncErrorAt.Equal(failedAt) {
+			t.Fatalf("job %d sync error not recorded: %+v", id, js)
+		}
+	}
+	h.src.setErr(nil)
+	h.tick()
+	if err := h.syncAll(); err != nil {
+		t.Fatalf("SyncAll after recovery: %v", err)
+	}
+	if st := h.status(); st.SyncError != "" || st.SyncErrorAt != nil {
+		t.Fatalf("inventory sync error not cleared: %+v", st)
+	}
+	jobs, err := store.ListJobSources(ctx, h.pool)
+	if err != nil {
+		t.Fatalf("ListJobSources: %v", err)
+	}
+	for _, js := range jobs {
+		if js.SyncError != "" || js.SyncErrorAt != nil {
+			t.Fatalf("job %d sync error not cleared: %+v", js.ID, js)
+		}
 	}
 }
 
@@ -683,5 +719,57 @@ func TestNoInventorySourceIsNotAnError(t *testing.T) {
 	}
 	if calls := h.src.headCallCount(); calls != 0 {
 		t.Fatalf("HeadCommit calls = %d, want 0", calls)
+	}
+}
+
+// An activation that removes a service must not lose its re-validation to a
+// SyncJob that read the old inventory before the activation and writes after.
+func TestActivationAndConcurrentJobSyncKeepJobNotRunnable(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	id := h.firstSync()
+
+	updated := strings.Replace(string(fixture(t, "jobs/deploy-backend.yaml")), "Backend and microservices", "Backend and microservices v2", 1)
+	h.pushJob(jobPath, "j2", []byte(updated))
+	h.pushInventory("c2")
+	h.src.remove(invRepo, "c2", invPath+"/services/orders.yaml")
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	h.src.onRead = func(repo, _ string) {
+		if repo == jobsRepo {
+			close(entered)
+			<-release
+		}
+	}
+	h.tick()
+
+	jobDone := make(chan error, 1)
+	go func() { jobDone <- h.engine.SyncJob(context.Background(), id) }()
+	<-entered // the job read is parked; it has seen the old inventory
+
+	inventoryDone := make(chan error, 1)
+	go func() { inventoryDone <- h.engine.SyncInventory(context.Background()) }()
+	// Without serialisation the activation finishes now; with it, it waits for
+	// the job sync. Either way the final state must be the same.
+	select {
+	case <-inventoryDone:
+		inventoryDone <- nil
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(release)
+
+	if err := <-jobDone; err != nil {
+		t.Fatalf("SyncJob: %v", err)
+	}
+	if err := <-inventoryDone; err != nil {
+		t.Fatalf("SyncInventory: %v", err)
+	}
+	if got := h.active().Commit; got != "c2" {
+		t.Fatalf("active commit = %q, want c2", got)
+	}
+	got := h.job(id)
+	if got.Runnable || !strings.Contains(problemsText(t, got.Problems), "orders") {
+		t.Fatalf("job must be not runnable with a reason naming orders: %+v", got)
 	}
 }

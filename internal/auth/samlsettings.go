@@ -31,6 +31,10 @@ const (
 	DefaultGroupsAttribute = "groups"
 	DefaultNameAttribute   = "displayName"
 
+	samlRelayKeyKey = "saml_relay_key"
+	// RelayKeyPurpose binds the ciphertext of the relay-state MAC key to its use.
+	RelayKeyPurpose = "saml-relay-key"
+
 	spKeyBits      = 2048
 	spCertValidity = 10 * 365 * 24 * time.Hour
 )
@@ -194,4 +198,74 @@ func newSPKey(ctx context.Context, cipher secrets.Cipher, now time.Time) (stored
 		Key:  encrypted,
 		Cert: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 	}, nil
+}
+
+// LoadSPCertificate returns the service provider's certificate without
+// decrypting the private key, for the public metadata endpoint. If no pair
+// exists yet it creates one first.
+func LoadSPCertificate(ctx context.Context, db store.DBTX, cipher secrets.Cipher, now time.Time) (*x509.Certificate, error) {
+	doc, found, err := readSPKey(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		_, cert, err := LoadSPKeyPair(ctx, db, cipher, now)
+		return cert, err
+	}
+	block, _ := pem.Decode([]byte(doc.Cert))
+	if block == nil {
+		return nil, errors.New("saml sp key: stored certificate is not PEM")
+	}
+	return x509.ParseCertificate(block.Bytes)
+}
+
+// LoadRelayKey returns the 32-byte key that authenticates the relay-state
+// cookie. It is random, created on first use (concurrent first calls end up
+// with one key) and stored encrypted under RelayKeyPurpose.
+func LoadRelayKey(ctx context.Context, db store.DBTX, cipher secrets.Cipher) ([]byte, error) {
+	read := func() ([]byte, bool, error) {
+		var raw []byte
+		err := db.QueryRow(ctx, "SELECT value FROM instance_settings WHERE key = $1", samlRelayKeyKey).Scan(&raw)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("saml relay key: read: %w", err)
+		}
+		var doc struct {
+			Key []byte `json:"key"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return nil, false, fmt.Errorf("saml relay key: decode: %w", err)
+		}
+		return doc.Key, true, nil
+	}
+	encrypted, found, err := read()
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		fresh := make([]byte, 32)
+		if _, err := rand.Read(fresh); err != nil {
+			return nil, fmt.Errorf("saml relay key: %w", err)
+		}
+		sealed, err := cipher.Encrypt(ctx, RelayKeyPurpose, fresh)
+		if err != nil {
+			return nil, fmt.Errorf("saml relay key: encrypt: %w", err)
+		}
+		raw, _ := json.Marshal(map[string][]byte{"key": sealed})
+		if _, err := db.Exec(ctx, "INSERT INTO instance_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING", samlRelayKeyKey, raw); err != nil {
+			return nil, fmt.Errorf("saml relay key: store: %w", err)
+		}
+		if encrypted, found, err = read(); err != nil {
+			return nil, err
+		} else if !found {
+			return nil, errors.New("saml relay key: missing right after it was stored")
+		}
+	}
+	key, err := cipher.Decrypt(ctx, RelayKeyPurpose, encrypted)
+	if err != nil {
+		return nil, fmt.Errorf("saml relay key: decrypt: %w", err)
+	}
+	return key, nil
 }

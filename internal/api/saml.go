@@ -3,7 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
@@ -14,6 +17,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,7 +77,7 @@ func (s *server) effectiveEntityID(settings auth.SAMLSettings) string {
 // newProvider builds the service provider from the stored settings and key.
 // With needIDP it also loads the identity provider's metadata and answers
 // errSSODisabled unless single sign-on is enabled.
-func (s *server) newProvider(ctx context.Context, needIDP bool) (*samlProvider, error) {
+func (s *server) newProvider(ctx context.Context, needIDP, needKey bool) (*samlProvider, error) {
 	settings, err := auth.LoadSAMLSettings(ctx, s.Pool)
 	if err != nil {
 		return nil, err
@@ -86,9 +91,21 @@ func (s *server) newProvider(ctx context.Context, needIDP bool) (*samlProvider, 
 			return nil, fmt.Errorf("stored identity provider metadata: %w", err)
 		}
 	}
-	key, cert, err := auth.LoadSPKeyPair(ctx, s.Pool, s.Cipher, s.Now())
+	// Anonymous metadata requests read the certificate only; the private key
+	// is decrypted for the routes that sign or decrypt with it.
+	var key *rsa.PrivateKey
+	var cert *x509.Certificate
+	if needKey {
+		key, cert, err = auth.LoadSPKeyPair(ctx, s.Pool, s.Cipher, s.Now())
+	} else {
+		cert, err = auth.LoadSPCertificate(ctx, s.Pool, s.Cipher, s.Now())
+	}
 	if err != nil {
 		return nil, err
+	}
+	var signer crypto.Signer // stays a nil interface without a key
+	if key != nil {
+		signer = key
 	}
 	base := strings.TrimRight(s.PublicURL, "/")
 	metadataURL, err := url.Parse(base + "/saml/metadata")
@@ -105,7 +122,7 @@ func (s *server) newProvider(ctx context.Context, needIDP bool) (*samlProvider, 
 	}
 	return &samlProvider{settings: settings, ServiceProvider: &saml.ServiceProvider{
 		EntityID:    s.effectiveEntityID(settings),
-		Key:         key,
+		Key:         signer,
 		Certificate: cert,
 		MetadataURL: *metadataURL,
 		AcsURL:      *acsURL,
@@ -123,7 +140,7 @@ func (s *server) newProvider(ctx context.Context, needIDP bool) (*samlProvider, 
 // samlMetadata serves the service provider metadata the administrator hands to
 // the identity provider. It works before single sign-on is enabled.
 func (s *server) samlMetadata(w http.ResponseWriter, r *http.Request) {
-	sp, err := s.newProvider(r.Context(), false)
+	sp, err := s.newProvider(r.Context(), false, false)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -158,11 +175,52 @@ func randomHandle() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func relayKey(handle string) string { return "saml-relay:" + handle }
+// sealRelayState makes the relay cookie: nonce, request id and expiry,
+// authenticated with an HMAC under a server key. Nothing is stored server-side,
+// so an anonymous start request costs no memory. The nonce is also the
+// RelayState the identity provider echoes, so a response can only be consumed
+// by the browser that holds the cookie.
+func sealRelayState(key []byte, nonce, requestID string, expires time.Time) string {
+	payload := nonce + "." + requestID + "." + strconv.FormatInt(expires.Unix(), 10)
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// openRelayState verifies a relay cookie (MAC in constant time, then expiry)
+// and returns its nonce and request id.
+func openRelayState(key []byte, value string, now time.Time) (nonce, requestID string, ok bool) {
+	encodedPayload, encodedMAC, found := strings.Cut(value, ".")
+	if !found {
+		return "", "", false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(encodedPayload)
+	if err != nil {
+		return "", "", false
+	}
+	got, err := base64.RawURLEncoding.DecodeString(encodedMAC)
+	if err != nil {
+		return "", "", false
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(payload)
+	if !hmac.Equal(got, mac.Sum(nil)) {
+		return "", "", false
+	}
+	parts := strings.Split(string(payload), ".")
+	if len(parts) != 3 {
+		return "", "", false
+	}
+	expiry, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || !now.Before(time.Unix(expiry, 0)) {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
 
 // samlStart sends the browser to the identity provider with a signed request.
 func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
-	sp, err := s.newProvider(r.Context(), true)
+	sp, err := s.newProvider(r.Context(), true, true)
 	switch {
 	case errors.Is(err, errSSODisabled):
 		notFound(w, "single sign-on")
@@ -186,20 +244,21 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	handle, err := randomHandle()
+	relayKey, err := auth.LoadRelayKey(r.Context(), s.Pool, s.Cipher)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)
-	defer cancel()
-	if err := s.Valkey.Do(ctx, s.Valkey.B().Set().Key(relayKey(handle)).Value(authnRequest.ID).Px(samlRelayTTL).Build()).Error(); err != nil {
-		s.valkeyFailed(w, "store saml relay state", err)
+	nonce, err := randomHandle()
+	if err != nil {
+		s.internalError(w, r, err)
 		return
 	}
+	handle := nonce // what the identity provider echoes as RelayState
+	cookieValue := sealRelayState(relayKey, nonce, authnRequest.ID, s.Now().Add(samlRelayTTL))
 	//nolint:gosec // SameSite=None is deliberate: the identity provider posts cross-site, see samlRelayCookie
 	http.SetCookie(w, &http.Cookie{
-		Name: samlRelayCookie, Value: handle, Path: samlACSPath,
+		Name: samlRelayCookie, Value: cookieValue, Path: samlACSPath,
 		MaxAge: int(samlRelayTTL / time.Second), Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
 	})
 	w.Header().Set("Cache-Control", "no-store")
@@ -212,14 +271,14 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, location.String(), http.StatusFound)
 		return
 	}
-	nonce, err := randomHandle()
+	scriptNonce, err := randomHandle()
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; form-action "+target)
-	_, _ = w.Write(authnRequest.PostWithNonce(handle, nonce))
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+scriptNonce+"'; form-action "+target)
+	_, _ = w.Write(authnRequest.PostWithNonce(handle, scriptNonce))
 }
 
 // valkeyReplayCache remembers assertion ids so that each is accepted once. It
@@ -315,7 +374,7 @@ func responseDestination(encoded string) (string, bool) {
 		}
 		if start, ok := token.(xml.StartElement); ok {
 			for _, attr := range start.Attr {
-				if attr.Name.Local == "Destination" {
+				if attr.Name.Space == "" && attr.Name.Local == "Destination" {
 					return attr.Value, true
 				}
 			}
@@ -328,7 +387,7 @@ func responseDestination(encoded string) (string, bool) {
 // Every check that can refuse the response runs before anything is written.
 func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxACSBodyBytes)
-	sp, err := s.newProvider(r.Context(), true)
+	sp, err := s.newProvider(r.Context(), true, true)
 	switch {
 	case errors.Is(err, errSSODisabled):
 		notFound(w, "single sign-on")
@@ -352,23 +411,25 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)
 	defer cancel()
 
-	// The response must answer a request this browser started: the cookie and
-	// the RelayState the identity provider echoes hold the same random handle,
-	// and the handle names a request id we stored.
-	cookie, err := r.Cookie(samlRelayCookie)
-	relayState := r.PostForm.Get("RelayState")
-	if err != nil || cookie.Value == "" || relayState == "" ||
-		subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(relayState)) != 1 {
-		s.samlReject(w, r, "relay_state", nil)
+	// The response must answer a request this browser started: the cookie is
+	// ours (MAC, unexpired) and its nonce is the RelayState the identity
+	// provider echoes; its request id is the only InResponseTo we accept.
+	relayKey, err := auth.LoadRelayKey(r.Context(), s.Pool, s.Cipher)
+	if err != nil {
+		s.internalError(w, r, err)
 		return
 	}
-	requestID, err := s.Valkey.Do(ctx, s.Valkey.B().Get().Key(relayKey(cookie.Value)).Build()).ToString()
-	switch {
-	case isNil(err):
+	cookie, err := r.Cookie(samlRelayCookie)
+	relayState := r.PostForm.Get("RelayState")
+	var requestID string
+	ok := false
+	if err == nil && relayState != "" {
+		var nonce string
+		nonce, requestID, ok = openRelayState(relayKey, cookie.Value, s.Now())
+		ok = ok && subtle.ConstantTimeCompare([]byte(nonce), []byte(relayState)) == 1
+	}
+	if !ok {
 		s.samlReject(w, r, "relay_state", nil)
-		return
-	case err != nil:
-		s.valkeyFailed(w, "read saml relay state", err)
 		return
 	}
 
@@ -400,7 +461,7 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		s.samlReject(w, r, "bad_email", nil)
 		return
 	}
-	user, err := s.samlUser(r.Context(), email, name)
+	user, err := s.provisionUser(r.Context(), email, name, groups)
 	switch {
 	case errors.Is(err, store.ErrDuplicate):
 		s.samlRefuse(w, r, "email_taken", email)
@@ -409,10 +470,6 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		s.samlRefuse(w, r, "user_disabled", email)
 		return
 	case err != nil:
-		s.internalError(w, r, err)
-		return
-	}
-	if err := s.mapGroups(r.Context(), user.ID, groups); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
@@ -446,10 +503,20 @@ func (s *server) samlRefuse(w http.ResponseWriter, r *http.Request, reason, emai
 	writeError(w, http.StatusForbidden, codeForbidden, "this account may not sign in")
 }
 
-// samlUser finds or creates the user for a validated response. A disabled user
-// is refused before anything about them is written.
-func (s *server) samlUser(ctx context.Context, email, name string) (store.User, error) {
-	existing, err := store.UserByEmail(ctx, s.Pool, email)
+// provisionUser creates or updates the user and replaces their identity-provider
+// memberships in one transaction together with the audit entries for what
+// changed (user.provision on first sign-in, sso.memberships when the set of
+// groups changed, with the group ids added and removed). A disabled user, or
+// an email owned by a local or service account, is refused before any write.
+func (s *server) provisionUser(ctx context.Context, email, name string, idpGroups []string) (store.User, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return store.User{}, fmt.Errorf("provision saml user: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	existing, err := store.UserByEmail(ctx, tx, email)
+	created := false
 	switch {
 	case err == nil:
 		if existing.Source != "saml" {
@@ -458,26 +525,70 @@ func (s *server) samlUser(ctx context.Context, email, name string) (store.User, 
 		if existing.Disabled {
 			return store.User{}, auth.ErrDisabled
 		}
-	case !errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, store.ErrNotFound):
+		created = true
+	default:
 		return store.User{}, err
 	}
-	return store.UpsertSAMLUser(ctx, s.Pool, email, name, s.Now())
-}
-
-// mapGroups makes the user's identity-provider memberships exactly the mapped
-// groups they were sent. Groups nobody mapped are ignored.
-func (s *server) mapGroups(ctx context.Context, userID int64, idpGroups []string) error {
-	mappings, err := store.ListIDPMappings(ctx, s.Pool)
+	user, err := store.UpsertSAMLUser(ctx, tx, email, name, s.Now())
 	if err != nil {
-		return err
+		return store.User{}, err
 	}
-	var ids []int64
-	for _, name := range idpGroups {
-		if id, ok := mappings[name]; ok {
-			ids = append(ids, id)
+	target := strconv.FormatInt(user.ID, 10)
+	if created {
+		if err := audit.Record(ctx, tx, nil, s.Now(), audit.Event{
+			Action: "user.provision", TargetType: "user", TargetID: target,
+			Detail: map[string]any{"email": email, "source": "saml"}}); err != nil {
+			return store.User{}, err
 		}
 	}
-	return store.ReplaceIDPMemberships(ctx, s.Pool, userID, ids)
+
+	mappings, err := store.ListIDPMappings(ctx, tx)
+	if err != nil {
+		return store.User{}, err
+	}
+	wanted := map[int64]bool{}
+	for _, group := range idpGroups {
+		if id, ok := mappings[group]; ok {
+			wanted[id] = true
+		}
+	}
+	current, err := store.IDPMembershipGroupIDs(ctx, tx, user.ID)
+	if err != nil {
+		return store.User{}, err
+	}
+	added, removed := []int64{}, []int64{}
+	have := map[int64]bool{}
+	for _, id := range current {
+		have[id] = true
+		if !wanted[id] {
+			removed = append(removed, id)
+		}
+	}
+	for id := range wanted {
+		if !have[id] {
+			added = append(added, id)
+		}
+	}
+	slices.Sort(added)
+	if len(added)+len(removed) > 0 {
+		ids := make([]int64, 0, len(wanted))
+		for id := range wanted {
+			ids = append(ids, id)
+		}
+		if err := store.ReplaceIDPMemberships(ctx, tx, user.ID, ids); err != nil {
+			return store.User{}, err
+		}
+		if err := audit.Record(ctx, tx, nil, s.Now(), audit.Event{
+			Action: "sso.memberships", TargetType: "user", TargetID: target,
+			Detail: map[string]any{"email": email, "added": added, "removed": removed}}); err != nil {
+			return store.User{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.User{}, fmt.Errorf("provision saml user: commit: %w", err)
+	}
+	return user, nil
 }
 
 // attributeValues returns the non-empty values of the attribute called name

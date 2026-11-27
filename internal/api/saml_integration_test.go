@@ -18,15 +18,20 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	gosync "sync"
 	"testing"
 	"time"
 
+	"errors"
+
 	"github.com/crewjam/saml"
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/cache"
+	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
@@ -223,6 +228,34 @@ func (f samlFlow) unsigned(t *testing.T) samlFlow {
 		t.Fatalf("the response held no signature to remove")
 	}
 	f.form = url.Values{"SAMLResponse": {base64.StdEncoding.EncodeToString([]byte(stripped))}, "RelayState": {f.form.Get("RelayState")}}
+	return f
+}
+
+// withoutResponseSignature removes only the signature of the Response element
+// (the first one), leaving the assertion's own signature in place.
+func (f samlFlow) withoutResponseSignature(t *testing.T) samlFlow {
+	t.Helper()
+	raw, _ := base64.StdEncoding.DecodeString(f.form.Get("SAMLResponse"))
+	loc := signatureElement.FindIndex(raw)
+	if loc == nil {
+		t.Fatalf("no signature to remove")
+	}
+	return f.withResponse(append(append([]byte{}, raw[:loc[0]]...), raw[loc[1]:]...))
+}
+
+// rewrite replaces the first match of re in the response XML.
+func (f samlFlow) rewrite(t *testing.T, re *regexp.Regexp, with string) samlFlow {
+	t.Helper()
+	raw, _ := base64.StdEncoding.DecodeString(f.form.Get("SAMLResponse"))
+	loc := re.FindIndex(raw)
+	if loc == nil {
+		t.Fatalf("pattern %q not found in the response", re)
+	}
+	return f.withResponse(append(append(append([]byte{}, raw[:loc[0]]...), with...), raw[loc[1]:]...))
+}
+
+func (f samlFlow) withResponse(raw []byte) samlFlow {
+	f.form = url.Values{"SAMLResponse": {base64.StdEncoding.EncodeToString(raw)}, "RelayState": {f.form.Get("RelayState")}}
 	return f
 }
 
@@ -458,6 +491,23 @@ func TestRejects(t *testing.T) {
 				req.ACSEndpoint = &endpoint
 			}
 			return idp.begin()
+		}, true, false},
+		{"unsigned response, namespaced destination only", "wrong_destination", func(t *testing.T) samlFlow {
+			// The only Destination is in another namespace: it must not count.
+			return idp.begin().withoutResponseSignature(t).rewrite(t, regexp.MustCompile(` Destination="`), ` xmlns:x="urn:x" x:Destination="`)
+		}, true, false},
+		{"unsigned response, no destination", "wrong_destination", func(t *testing.T) samlFlow {
+			return idp.begin().withoutResponseSignature(t).rewrite(t, regexp.MustCompile(` Destination="[^"]*"`), ``)
+		}, true, false},
+		{"unsigned response, wrong destination", "wrong_destination", func(t *testing.T) samlFlow {
+			return idp.begin().withoutResponseSignature(t).rewrite(t, regexp.MustCompile(`Destination="[^"]*"`), `Destination="https://yumdrake.test/saml/elsewhere"`)
+		}, true, false},
+		{"relay cookie with a forged MAC", "relay_state", func(t *testing.T) samlFlow {
+			f := idp.begin()
+			c := *f.relay
+			c.Value = c.Value[:len(c.Value)-2] + "AA"
+			f.relay = &c
+			return f
 		}, true, false},
 		{"no relay cookie", "relay_state", func(t *testing.T) samlFlow { return idp.begin() }, false, false},
 		{"relay state does not match the cookie", "relay_state", func(t *testing.T) samlFlow {
@@ -768,4 +818,165 @@ func TestStartPostsTheRequestWhenOnlyThePostBindingIsOffered(t *testing.T) {
 		!strings.Contains(rec.Header().Get("Content-Security-Policy"), "nonce-") {
 		t.Fatalf("start: status %d %s, want an auto-posting form with a CSP nonce", rec.Code, failure(rec))
 	}
+}
+
+// hookValkey wraps a client so a test can fail chosen commands and see what
+// was sent.
+type hookValkey struct {
+	valkey.Client
+	mu   gosync.Mutex
+	fail func(cmd []string) bool
+	sent [][]string
+}
+
+var errInjected = errors.New("injected valkey failure")
+
+func (v *hookValkey) check(cmds ...[]string) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	failed := false
+	for _, c := range cmds {
+		c = append([]string(nil), c...) // the client recycles the slice
+		v.sent = append(v.sent, c)
+		if v.fail != nil && v.fail(c) {
+			failed = true
+		}
+	}
+	return failed
+}
+
+func (v *hookValkey) Do(ctx context.Context, cmd valkey.Completed) valkey.ValkeyResult {
+	if v.check(cmd.Commands()) {
+		return valkey.NewErrorResult(errInjected)
+	}
+	return v.Client.Do(ctx, cmd)
+}
+
+func (v *hookValkey) DoMulti(ctx context.Context, cmds ...valkey.Completed) []valkey.ValkeyResult {
+	all := make([][]string, len(cmds))
+	for i, c := range cmds {
+		all[i] = c.Commands()
+	}
+	if v.check(all...) {
+		out := make([]valkey.ValkeyResult, len(cmds))
+		for i := range out {
+			out[i] = valkey.NewErrorResult(errInjected)
+		}
+		return out
+	}
+	return v.Client.DoMulti(ctx, cmds...)
+}
+
+func keyPrefix(prefix string) func([]string) bool {
+	return func(c []string) bool { return len(c) > 1 && strings.HasPrefix(c[1], prefix) && c[0] == "SET" }
+}
+
+func TestUnsignedResponseWithSignedAssertionIsAccepted(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	idp.signIn(uniqueEmail(t, "gina"), "Gina")
+	rec := h.postACS(idp.begin().withoutResponseSignature(t), true)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d %s, want 303 (a signed assertion in an unsigned response is the shape some IdPs send)", rec.Code, failure(rec))
+	}
+}
+
+func TestValkeyFailingOnlyAtTheReplayCheckIsA503AndCreatesNothing(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	email := uniqueEmail(t, "hank")
+	idp.signIn(email, "Hank", "eng-devops")
+	flow := idp.begin()
+	h.rebuild(func(d *Deps) { d.Valkey = &hookValkey{Client: d.Valkey, fail: keyPrefix("saml-assertion:")} })
+	users := h.userCount()
+	rec := h.postACS(flow, true)
+	if rec.Code != http.StatusServiceUnavailable || sessionCookie(rec) != nil {
+		t.Fatalf("status %d %s, want 503 and no session", rec.Code, failure(rec))
+	}
+	if h.userCount() != users || h.auditCount("auth.login") != 0 || h.auditCount("user.provision") != 0 {
+		t.Errorf("a response whose replay check failed changed state: %v", h.auditActions())
+	}
+}
+
+func TestStartWritesNothingToValkey(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	hook := &hookValkey{Client: h.deps.Valkey}
+	h.rebuild(func(d *Deps) { d.Valkey = hook })
+	idp.signIn(uniqueEmail(t, "ivy"), "Ivy")
+	idp.begin()
+	for _, c := range hook.sent {
+		t.Errorf("start sent %s to Valkey; an unauthenticated route must not store anything there", c[0])
+	}
+}
+
+func TestFirstSignInAndGroupChangesAreAudited(t *testing.T) {
+	h, idp, group := ssoSetup(t)
+	email := uniqueEmail(t, "jack")
+	idp.signIn(email, "Jack", "eng-devops")
+	h.ssoSignIn(idp)
+	user, _ := store.UserByEmail(context.Background(), h.pool, email)
+	if h.auditCount("user.provision") != 1 || h.auditCount("sso.memberships") != 1 {
+		t.Fatalf("first sign-in audit = %v, want user.provision and sso.memberships", h.auditActions())
+	}
+	detail := func(action string) map[string]any {
+		for _, e := range h.auditEntries() {
+			if e.Action == action {
+				var d map[string]any
+				_ = json.Unmarshal(e.Detail, &d)
+				if e.TargetID != strconv.FormatInt(user.ID, 10) {
+					t.Errorf("%s target = %q, want the user id", action, e.TargetID)
+				}
+				return d
+			}
+		}
+		return nil
+	}
+	if d := detail("sso.memberships"); len(d["added"].([]any)) != 1 || d["added"].([]any)[0] != float64(group.ID) || len(d["removed"].([]any)) != 0 {
+		t.Errorf("sso.memberships = %v, want group %d added", d, group.ID)
+	}
+	// Same groups again: nothing changed, nothing more is recorded.
+	h.ssoSignIn(idp)
+	if h.auditCount("user.provision") != 1 || h.auditCount("sso.memberships") != 1 {
+		t.Errorf("an unchanged sign-in wrote more entries: %v", h.auditActions())
+	}
+	idp.signIn(email, "Jack")
+	h.ssoSignIn(idp)
+	if h.auditCount("sso.memberships") != 2 {
+		t.Fatalf("a changed membership was not audited: %v", h.auditActions())
+	}
+	if d := detail("sso.memberships"); d["removed"].([]any)[0] != float64(group.ID) || len(d["added"].([]any)) != 0 {
+		t.Errorf("latest sso.memberships = %v, want group %d removed", d, group.ID)
+	}
+}
+
+func TestProvisioningIsKeptAndAuditedWhenTheSessionCannotBeCreated(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	email := uniqueEmail(t, "kate")
+	idp.signIn(email, "Kate", "eng-devops")
+	flow := idp.begin()
+	h.rebuild(func(d *Deps) {
+		hook := &hookValkey{Client: d.Valkey, fail: keyPrefix("session:")}
+		d.Valkey, d.Sessions = hook, session.NewManager(hook, time.Now)
+	})
+	rec := h.postACS(flow, true)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d %s, want 503", rec.Code, failure(rec))
+	}
+	if _, err := store.UserByEmail(context.Background(), h.pool, email); err != nil {
+		t.Fatalf("user: %v", err)
+	}
+	if h.auditCount("user.provision") != 1 || h.auditCount("sso.memberships") != 1 {
+		t.Errorf("user and memberships exist without audit entries: %v", h.auditActions())
+	}
+}
+
+type noDecryptCipher struct{ secrets.Cipher }
+
+func (noDecryptCipher) Decrypt(context.Context, string, []byte) ([]byte, error) {
+	return nil, errors.New("metadata must not decrypt the private key")
+}
+
+func TestMetadataNeverDecryptsThePrivateKey(t *testing.T) {
+	h := newHarness(t)
+	h.expect(h.send(sent{method: "GET", path: "/saml/metadata"}), http.StatusOK, "") // creates the key pair
+	h.rebuild(func(d *Deps) { d.Cipher = noDecryptCipher{d.Cipher} })
+	h.expect(h.send(sent{method: "GET", path: "/saml/metadata"}), http.StatusOK, "")
 }

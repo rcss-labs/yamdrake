@@ -163,3 +163,22 @@ func ListIDPMappings(ctx context.Context, db DBTX) (map[string]int64, error) {
 	}
 	return out, rows.Err()
 }
+
+// IDPMembershipGroupIDs returns the ids of the groups the user holds through the
+// identity provider, ascending.
+func IDPMembershipGroupIDs(ctx context.Context, db DBTX, userID int64) ([]int64, error) {
+	rows, err := db.Query(ctx, "SELECT group_id FROM group_members WHERE user_id = $1 AND source = 'idp' ORDER BY group_id", userID)
+	if err != nil {
+		return nil, fmt.Errorf("idp memberships: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("idp memberships: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

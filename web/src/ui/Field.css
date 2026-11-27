@@ -1,0 +1,22 @@
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.ui-field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink2);
+}
+.ui-field-hint,
+.ui-field-error {
+  margin: 0;
+  font-size: 13px;
+}
+.ui-field-hint {
+  color: var(--ink3);
+}
+.ui-field-error {
+  color: var(--bad-t);
+}

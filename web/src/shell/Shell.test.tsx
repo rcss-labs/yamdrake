@@ -92,16 +92,11 @@ describe('the application shell', () => {
     expect(location().pathname).toBe('/')
   })
 
-  it('shows each placeholder page with its title', async () => {
+  it('shows the placeholder pages that have no screen yet with their title', async () => {
     for (const [route, title] of [
-      ['/jobs', 'Jobs'],
-      ['/jobs/3', 'Job'],
       ['/runs', 'Runs'],
       ['/approvals', 'Approvals'],
       ['/versions', 'Versions'],
-      ['/inventory', 'Inventory'],
-      ['/cli', 'CLI'],
-      ['/cli/confirm', 'Confirm a CLI sign-in'],
     ] as const) {
       const { unmount } = renderApp(<App />, { route })
       expect(await screen.findByRole('heading', { level: 1, name: title })).toBeInTheDocument()

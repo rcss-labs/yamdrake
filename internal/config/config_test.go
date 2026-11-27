@@ -179,6 +179,48 @@ func TestRedactURL(t *testing.T) {
 	}
 }
 
+func TestRedactURLQueryPassword(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"query password", "postgres://u@h:5432/db?password=s3cret&sslmode=require", "postgres://u@h:5432/db?password=REDACTED&sslmode=require"},
+		{"percent-encoded query password", "postgres://u@h/db?password=p%40ss%2Fword", "postgres://u@h/db?password=REDACTED"},
+		{"percent-encoded user-info password", "postgres://u:p%40ss%2Fword@h/db", "postgres://u:REDACTED@h/db"},
+		{"both forms", "postgres://u:one@h/db?password=two", "postgres://u:REDACTED@h/db?password=REDACTED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RedactURL(tc.in)
+			if got != tc.want {
+				t.Errorf("RedactURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScrubRemovesEncodedAndPlainPassword(t *testing.T) {
+	cases := []struct{ name, url, password string }{
+		{"user-info", "postgres://u:p%40ss%2Fw%20rd@h:5432/db", "p@ss/w rd"},
+		{"query", "postgres://u@h:5432/db?password=p%40ss%2Fw%20rd", "p@ss/w rd"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			text := "dial failed for " + tc.url + "; saw " + tc.password +
+				" and p%40ss%2Fw%20rd and p%40ss%2Fw+rd and p@ss%2Fw%20rd"
+			got := Scrub(text, tc.url)
+			for _, leaked := range []string{tc.password, "p%40ss%2Fw%20rd", "p%40ss%2Fw+rd", "p@ss%2Fw%20rd", "ss/w"} {
+				if strings.Contains(got, leaked) {
+					t.Errorf("Scrub() = %q, still contains %q", got, leaked)
+				}
+			}
+			if !strings.Contains(got, "REDACTED") || !strings.Contains(got, "dial failed for") {
+				t.Errorf("Scrub() = %q, want surrounding text kept and REDACTED present", got)
+			}
+		})
+	}
+	if got := Scrub("nothing secret", "postgres://u@h/db"); got != "nothing secret" {
+		t.Errorf("Scrub() without a password = %q, want text unchanged", got)
+	}
+}
+
 func TestLoadRunnerDefaultsHealthAddrToLoopback(t *testing.T) {
 	cfg, err := LoadRunner(envFrom(requiredEnv()))
 	if err != nil {

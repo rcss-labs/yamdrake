@@ -7,6 +7,9 @@ COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -X $(MODULE)/internal/version.Commit=$(COMMIT)
 BINARY_PACKAGES := orchestrator runner
 
+# Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
+export VERSION COMMIT
+
 .PHONY: help build lint test dev-up dev-down test-integration images smoke
 
 help: ## List available targets
@@ -44,9 +47,13 @@ dev-up: ## Start local PostgreSQL and Valkey and wait until healthy
 dev-down: ## Stop local services and delete their volumes
 	docker compose down -v
 
+# Defaults point at the dev stack; CI and others may set these in the environment.
+YUMDRAKE_TEST_DATABASE_URL ?= postgres://yumdrake:yumdrake@localhost:5432/yumdrake?sslmode=disable
+YUMDRAKE_TEST_VALKEY_ADDR ?= localhost:6379
+# Exported (not written into the recipe) so make never echoes the URL.
+export YUMDRAKE_TEST_DATABASE_URL YUMDRAKE_TEST_VALKEY_ADDR
+
 test-integration: ## Run integration tests against the local services (see dev-up)
-	YUMDRAKE_TEST_DATABASE_URL='postgres://yumdrake:yumdrake@localhost:5432/yumdrake?sslmode=disable' \
-	YUMDRAKE_TEST_VALKEY_ADDR='localhost:6379' \
 	go test -race -tags integration ./...
 
 images: ## Build the yumdrake-orchestrator and yumdrake-runner images (tag :dev)

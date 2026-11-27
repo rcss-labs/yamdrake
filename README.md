@@ -95,6 +95,16 @@ printf '%s\n' "$PASSWORD" | yumdrake-orchestrator create-admin --email admin@exa
 
 The command creates a local user in the admin group `Administrators` and prints only `created`. It exits 0 on success, 1 on failure (for example, the email already exists) and 2 on a usage error.
 
+### Unlocking an account
+
+Anyone can keep an account locked by sending 5 wrong passwords within 15 minutes, which includes the break-glass admin. An operator clears the failure counter of one email on the orchestrator's command line, with the same environment as the orchestrator:
+
+```sh
+yumdrake-orchestrator unlock --email admin@example.com
+```
+
+It prints only `unlocked`, writes an `auth.unlock` audit entry, and exits 0 on success, 1 on failure (for example, no user has that email) and 2 on a usage error. The email is matched ignoring case and surrounding spaces.
+
 ### Password sign-in
 
 - `POST /api/v1/auth/login` with `{"email": ..., "password": ...}` sets the `yumdrake_session` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`). The session has an idle timeout of 8 hours and a maximum age of 24 hours.
@@ -113,7 +123,9 @@ These routes need no sign-in and should be rate-limited at the load balancer or 
 
 Tokens look like `ymd_...`. They are shown once and stored only as a SHA-256 hash. They expire (90 days by default, at most 365 days) and can be revoked. A token carries its owner's permissions. Send it as `Authorization: Bearer <token>`.
 
-- `GET /api/v1/tokens` and `POST /api/v1/tokens` (body `{"name": ..., "ttl_days": ...}`) list and create your own tokens. `DELETE /api/v1/tokens/{id}` revokes one.
+- `GET /api/v1/tokens` and `POST /api/v1/tokens` (body `{"name": ..., "ttl_days": ...}`) list and create your own tokens. `DELETE /api/v1/tokens/{id}` revokes one. Creating and revoking tokens needs a browser session: a request made with a token answers `403` "Sign in with your browser to manage tokens", so a token cannot renew itself.
+- A token of a SAML user works only while that user's last SSO sign-in is at most `YUMDRAKE_TOKEN_SSO_MAX_AGE` old (default 168 hours). After that it answers `401` "Sign in again with SSO: yumdrake login". Tokens of `local` and `service` users are not affected.
+- Disabling a user revokes all of that user's tokens; enabling the user again does not bring them back.
 
 Device sign-in for the CLI:
 
@@ -121,7 +133,7 @@ Device sign-in for the CLI:
 2. A signed-in user confirms the 8-character `user_code` in the browser (`POST /api/v1/cli/login/confirm`).
 3. The CLI polls `POST /api/v1/cli/login/token` with the `device_code`, no faster than every `interval` seconds. It receives a token once.
 
-Codes expire after 10 minutes.
+Codes expire after 10 minutes. A session may make at most 10 confirm attempts per 10 minutes; more answer `429` with `Retry-After`.
 
 ## Single sign-on (SAML)
 
@@ -201,6 +213,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_LOCAL_SECRET_KEY` | orchestrator, runner | none (required when the mode is `local`) | Base64 of exactly 32 bytes (for example `openssl rand -base64 32`). Encrypts stored GitHub credentials. For development and tests only; never printed. |
 | `YUMDRAKE_PUBLIC_URL` | orchestrator | none (required) | Address users reach the service at, such as `https://yumdrake.example.com`: scheme, host and optional port only. Must be `https://`, except `http://` for `localhost` and `127.0.0.1`. Requests that carry a session cookie and change state must come from this origin. |
 | `YUMDRAKE_VALKEY_KEY_PREFIX` | orchestrator | empty | At most 64 of letters, digits, `-`, `_`, `:`. Put in front of the Valkey keys of sessions and sign-in counters; set it only to separate services (or test runs) that share one Valkey. |
+| `YUMDRAKE_TOKEN_SSO_MAX_AGE` | orchestrator | `168h` | Go duration of at least `1h`. How recent a SAML user's last SSO sign-in must be for their CLI tokens to work. |
 | `YUMDRAKE_SYNC_INTERVAL` | orchestrator | `60s` | Go duration of at least `10s`. |
 | `YUMDRAKE_GITHUB_API_URL` | orchestrator | `https://api.github.com` | An `http://` or `https://` URL. Overridden in tests. |
 | `YUMDRAKE_TEST_DATABASE_URL` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_DATABASE_URL`. Set by `make test-integration` and CI. |

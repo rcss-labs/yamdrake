@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,9 +153,10 @@ func TestDisableUserDeletesSessions(t *testing.T) {
 	}
 	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: token}), http.StatusUnauthorized, "unauthorized")
 
-	// Enabling brings back the account (tokens work again), not the sessions.
+	// Enabling brings back the account, but neither the sessions nor the tokens
+	// (disabling revoked them for good).
 	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"disabled": false}), http.StatusOK, "")
-	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: token}), http.StatusOK, "")
+	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: token}), http.StatusUnauthorized, "unauthorized")
 }
 
 func TestDisableStandsWhenValkeyIsDown(t *testing.T) {
@@ -207,45 +209,75 @@ func TestCannotRemoveLastAdmin(t *testing.T) {
 	h.expect(rec, http.StatusConflict, "conflict")
 }
 
+// Two administrators each disable the other. Left alone the two requests could
+// both read "two administrators" before either writes; the admin lock makes the
+// second one count afresh. The test holds the lock itself, so both requests are
+// certainly waiting on it (checked in pg_locks) before either may go on, and the
+// outcome cannot depend on timing: one succeeds, the other is refused as the
+// removal of the last administrator.
 func TestTwoConcurrentRemovalsOfDifferentAdminsCannotBothSucceed(t *testing.T) {
 	h := newHarness(t)
+	ctx := context.Background()
 	second := h.newUser("second")
-	groups, _ := store.GroupsOfUser(context.Background(), h.pool, h.admin.ID)
+	groups, _ := store.GroupsOfUser(ctx, h.pool, h.admin.ID)
 	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(second.ID), map[string]any{"group_ids": []int64{groups[0].ID}}), http.StatusOK, "")
 	secondToken, _ := h.newToken(second.ID)
 
+	holder, err := h.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockAdminChanges(ctx, holder); err != nil {
+		t.Fatalf("LockAdminChanges: %v", err)
+	}
+
 	var wg sync.WaitGroup
 	codes := make([]int, 2)
-	for i, target := range []int64{h.admin.ID, second.ID} {
+	for i, request := range []struct{ actor, victim string }{
+		{h.adminToken, itoa(second.ID)}, // the first administrator disables the second ...
+		{secondToken, itoa(h.admin.ID)}, // ... and the second disables the first
+	} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Each admin disables the other: a different admin per request.
-			actor, victim := secondToken, target
-			if i == 1 {
-				actor = h.adminToken
-			}
-			req := httptest.NewRequest("PATCH", "/api/v1/admin/users/"+itoa(victim), strings.NewReader(`{"disabled":true}`))
-			req.Header.Set("Authorization", "Bearer "+actor)
-			rec := httptest.NewRecorder()
-			h.handler.ServeHTTP(rec, req)
+			rec := h.send(sent{method: "PATCH", path: "/api/v1/admin/users/" + request.victim, bearer: request.actor, body: map[string]any{"disabled": true}})
 			codes[i] = rec.Code
 		}()
 	}
-	wg.Wait()
-	ok := 0
-	for _, c := range codes {
-		if c == http.StatusOK {
-			ok++
+
+	// Both requests must be queued on the advisory lock before it is released.
+	waiters := func() int {
+		var n int
+		err := h.pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks
+WHERE locktype = 'advisory' AND NOT granted
+AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&n)
+		if err != nil {
+			t.Fatalf("read pg_locks: %v", err)
 		}
+		return n
 	}
-	// A request whose caller was disabled first answers 401: that is fine too.
-	if ok > 1 {
-		t.Fatalf("both removals succeeded (%v): no administrator is left", codes)
+	deadline := time.Now().Add(10 * time.Second)
+	for waiters() < 2 {
+		if time.Now().After(deadline) {
+			_ = holder.Rollback(ctx)
+			wg.Wait()
+			t.Fatalf("only %d requests waited on the admin lock (answers %v); both must take it before changing anything", waiters(), codes)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	admins, err := store.CountEnabledAdmins(context.Background(), h.pool)
-	if err != nil || admins < 1 {
-		t.Fatalf("enabled administrators = %d, %v; want at least 1", admins, err)
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release the lock: %v", err)
+	}
+	wg.Wait()
+
+	slices.Sort(codes)
+	if codes[0] != http.StatusOK || codes[1] != http.StatusConflict {
+		t.Fatalf("answers = %v, want exactly one 200 and one 409", codes)
+	}
+	admins, err := store.CountEnabledAdmins(ctx, h.pool)
+	if err != nil || admins != 1 {
+		t.Fatalf("enabled administrators = %d, %v; want exactly 1", admins, err)
 	}
 }
 
@@ -379,14 +411,16 @@ func TestEveryChangeIsAudited(t *testing.T) {
 		h.expect(h.asAdmin("DELETE", "/api/v1/admin/idp-mappings/aud-idp", nil), http.StatusNoContent, "")
 	})
 	var tokenID int64
+	adminSession := h.newSession(h.admin.ID)
 	e = wantAction("token.create", func() {
-		rec := h.asAdmin("POST", "/api/v1/tokens", map[string]any{"name": "audited"})
+		// Tokens are managed from a browser session only.
+		rec := h.send(sent{method: "POST", path: "/api/v1/tokens", sessionID: adminSession, origin: publicURL, body: map[string]any{"name": "audited"}})
 		h.expect(rec, http.StatusCreated, "")
 		tokenID = int64(decodeObject(t, rec)["id"].(float64))
 	})
 	_ = e
 	wantAction("token.revoke", func() {
-		h.expect(h.asAdmin("DELETE", "/api/v1/tokens/"+itoa(tokenID), nil), http.StatusNoContent, "")
+		h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(tokenID), sessionID: adminSession, origin: publicURL}), http.StatusNoContent, "")
 	})
 }
 
@@ -449,11 +483,12 @@ func TestAccessResponsesMatchTheWebContract(t *testing.T) {
 		t.Errorf("next_before on the last page = %v (present %v), want null", v, present)
 	}
 	// A token is listed with the contract's fields and no revoked ones.
-	created := decodeObject(t, h.asAdmin("POST", "/api/v1/tokens", map[string]any{"name": "w", "ttl_days": 1}))
+	adminSession := h.newSession(h.admin.ID)
+	created := decodeObject(t, h.send(sent{method: "POST", path: "/api/v1/tokens", sessionID: adminSession, origin: publicURL, body: map[string]any{"name": "w", "ttl_days": 1}}))
 	if p, _ := created["plaintext"].(string); !strings.HasPrefix(p, "ymd_") {
 		t.Errorf("created token has no plaintext")
 	}
-	h.expect(h.asAdmin("DELETE", "/api/v1/tokens/"+idString(int64(created["id"].(float64))), nil), http.StatusNoContent, "")
+	h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + idString(int64(created["id"].(float64))), sessionID: adminSession, origin: publicURL}), http.StatusNoContent, "")
 	if left := decodeObject(t, h.asAdmin("GET", "/api/v1/tokens", nil))["tokens"].([]any); len(left) != 1 {
 		t.Errorf("tokens listed after revoking one = %d, want only the admin's own", len(left))
 	}

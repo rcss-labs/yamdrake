@@ -65,6 +65,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Valkey:              client,
 			KeyPrefix:           cfg.ValkeyKeyPrefix,
 			PublicURL:           cfg.PublicURL,
+			TokenSSOMaxAge:      cfg.TokenSSOMaxAge,
 		})
 		return Extension{
 			Handlers: map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},

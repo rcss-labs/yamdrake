@@ -265,7 +265,7 @@ func TestDisabledUserCannotLogin(t *testing.T) {
 
 func TestFailedLoginIsAuditedWithEmailNotPassword(t *testing.T) {
 	h := newHarness(t)
-	email := uniqueEmail(t, "audited")
+	email := h.newUser("audited").Email // only existing accounts are audited
 	const attempt = "the-password-that-was-tried"
 	h.expect(h.login(email, attempt), http.StatusUnauthorized, "unauthorized")
 	var found bool
@@ -408,4 +408,20 @@ func TestFullVerificationLimiterAnswers503AndIsNotCounted(t *testing.T) {
 	if err != nil || int(count) != unauthorized {
 		t.Fatalf("failure counter = %d (%v), want %d: refused requests must not count", count, err, unauthorized)
 	}
+}
+
+// The operator's unlock command clears the counter by the key LoginFailureKey
+// names: it must be the key the sign-in really counts in.
+func TestLoginFailureKeyIsTheCounterSignInUses(t *testing.T) {
+	h := newHarness(t)
+	user := h.newUser("unlockable")
+	for i := range 5 {
+		h.expect(h.login(user.Email, "wrong password "+strconv.Itoa(i)), http.StatusUnauthorized, "unauthorized")
+	}
+	h.expect(h.login(user.Email, testPassword), http.StatusTooManyRequests, "")
+	key := LoginFailureKey(h.deps.KeyPrefix, "  "+strings.ToUpper(user.Email)+" ")
+	if err := h.valkey.Do(context.Background(), h.valkey.B().Del().Key(key).Build()).Error(); err != nil {
+		t.Fatalf("DEL: %v", err)
+	}
+	h.expect(h.login(user.Email, testPassword), http.StatusOK, "")
 }

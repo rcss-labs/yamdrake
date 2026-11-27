@@ -97,3 +97,13 @@ func ListTokens(ctx context.Context, db DBTX, userID int64) ([]Token, error) {
 	}
 	return out, rows.Err()
 }
+
+// RevokeAllTokens revokes every token of the user that is not revoked yet and
+// returns how many it revoked. Earlier revocation times are kept.
+func RevokeAllTokens(ctx context.Context, db DBTX, userID int64, at time.Time) (int64, error) {
+	tag, err := db.Exec(ctx, "UPDATE api_tokens SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL", userID, dbTime(at))
+	if err != nil {
+		return 0, fmt.Errorf("revoke all tokens: %w", mapError(err))
+	}
+	return tag.RowsAffected(), nil
+}

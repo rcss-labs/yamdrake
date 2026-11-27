@@ -310,6 +310,13 @@ func TestTokenCheckDatabaseFailureIs503Not401(t *testing.T) {
 // Every registered route: without credentials 401; without the grant 403 (or
 // allowed, for view); with the grant never 403. A route added without a
 // decision, or wired to the wrong action, shows up here.
+// sessionOnlyRoutes answer 403 to any request made with a token.
+var sessionOnlyRoutes = map[string]bool{
+	"POST /api/v1/cli/login/confirm": true,
+	"POST /api/v1/tokens":            true,
+	"DELETE /api/v1/tokens/{id}":     true,
+}
+
 func TestEveryRouteEnforcesItsAction(t *testing.T) {
 	h := newHarness(t)
 	h.withSyncer(stubSyncer{})
@@ -377,8 +384,9 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		}
 		rec := h.send(sent{method: method, path: path, bearer: plainToken})
 		if route.action == auth.View {
-			// Confirming a device sign-in needs a session: a token gets 403 by design.
-			if rec.Code == http.StatusForbidden && route.pattern != "POST /api/v1/cli/login/confirm" {
+			// Confirming a device sign-in and minting or revoking a token need a
+			// browser session: a token gets 403 by design.
+			if rec.Code == http.StatusForbidden && !sessionOnlyRoutes[route.pattern] {
 				t.Errorf("%s needs only view but a plain user got 403", name)
 			}
 			continue

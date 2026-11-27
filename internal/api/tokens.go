@@ -20,6 +20,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/audit"
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
@@ -71,9 +72,14 @@ func (s *server) listTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 // createToken makes a token for the caller. Its plaintext is in this response
-// and nowhere else.
+// and nowhere else. Only a browser session may do it: a token that could mint
+// tokens would renew itself for ever and outlive its owner's removal.
 func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 	principal, _ := PrincipalFrom(r.Context())
+	if principal.Via != viaSession {
+		writeError(w, http.StatusForbidden, codeForbidden, messageTokensNeedSession)
+		return
+	}
 	var req struct {
 		Name          string `json:"name"`
 		ExpiresInDays int    `json:"ttl_days"`
@@ -132,10 +138,15 @@ func (s *server) issueToken(r *http.Request, principal auth.Principal, name stri
 	return plaintext, created, nil
 }
 
-// revokeToken revokes one of the caller's own tokens. A token of someone else
-// is a 404, the same as an unknown id, so its existence is not revealed.
+// revokeToken revokes one of the caller's own tokens (from a browser session
+// only, like creating one). A token of someone else is a 404, the same as an
+// unknown id, so its existence is not revealed.
 func (s *server) revokeToken(w http.ResponseWriter, r *http.Request) {
 	principal, _ := PrincipalFrom(r.Context())
+	if principal.Via != viaSession {
+		writeError(w, http.StatusForbidden, codeForbidden, messageTokensNeedSession)
+		return
+	}
 	id, ok := pathID(r)
 	if !ok {
 		notFound(w, "token")
@@ -266,6 +277,9 @@ func (s *server) confirmDeviceLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, codeForbidden, "a device sign-in is confirmed from a browser session")
 		return
 	}
+	if !s.allowConfirmAttempt(w, r) {
+		return
+	}
 	var req struct {
 		UserCode string `json:"user_code"`
 	}
@@ -309,6 +323,41 @@ func (s *server) confirmDeviceLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+const (
+	maxConfirmAttempts = 10
+	confirmWindow      = 10 * time.Minute
+)
+
+// confirmCountScript counts one attempt and starts the window with the first.
+var confirmCountScript = valkey.NewLuaScript(`
+local n = redis.call('INCR', KEYS[1])
+if n == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+return {n, redis.call('PTTL', KEYS[1])}`)
+
+// allowConfirmAttempt counts a confirm attempt of this session (every attempt,
+// whatever the code) and answers 429 once there are more than
+// maxConfirmAttempts in confirmWindow, so a user code cannot be guessed. The
+// key holds a hash of the session id, never the id.
+func (s *server) allowConfirmAttempt(w http.ResponseWriter, r *http.Request) bool {
+	id, _ := session.IDFromRequest(r)
+	sum := sha256.Sum256([]byte(id))
+	key := s.KeyPrefix + "device-confirm:" + hex.EncodeToString(sum[:])
+	ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)
+	defer cancel()
+	reply, err := confirmCountScript.Exec(ctx, s.Valkey, []string{key}, []string{strconv.FormatInt(confirmWindow.Milliseconds(), 10)}).AsIntSlice()
+	if err != nil || len(reply) != 2 {
+		s.valkeyFailed(w, "count device confirm attempt", errors.Join(err, errors.New("confirm counter")))
+		return false
+	}
+	if reply[0] > maxConfirmAttempts {
+		wait := max(time.Duration(reply[1])*time.Millisecond, time.Second)
+		w.Header().Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
+		writeError(w, http.StatusTooManyRequests, codeTooMany, "too many attempts; try again later")
+		return false
+	}
+	return true
 }
 
 // pollScript returns the device state and, when it is confirmed, deletes it in

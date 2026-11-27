@@ -2,7 +2,11 @@
 // rule that decides what a Principal may do, and password hashing.
 package auth
 
-import "github.com/rcss-labs/yamdrake/internal/store"
+import (
+	"time"
+
+	"github.com/rcss-labs/yamdrake/internal/store"
+)
 
 // Action is something a principal may be allowed to do.
 type Action string
@@ -44,6 +48,10 @@ type Principal struct {
 	Admin  bool
 	Grants []store.Grant
 	Via    string // "session" or "token"
+	// Source is where the account comes from: "saml", "local" or "service".
+	Source string
+	// LastSignInAt is the user's last SSO sign-in (nil when they never signed in that way).
+	LastSignInAt *time.Time
 }
 
 // Can reports whether the principal may perform a on t. An unknown action is

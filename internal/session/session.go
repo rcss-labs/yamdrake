@@ -42,19 +42,17 @@ var (
 
 // Session is a signed-in browser session.
 type Session struct {
-	ID              string
-	UserID          int64
-	CreatedAt       time.Time
-	LastSeenAt      time.Time
-	GroupsCheckedAt time.Time
+	ID         string
+	UserID     int64
+	CreatedAt  time.Time
+	LastSeenAt time.Time
 }
 
 // stored is the JSON document kept under session:<id>. The id is the key, not part of the value.
 type stored struct {
-	UserID          int64     `json:"user_id"`
-	CreatedAt       time.Time `json:"created_at"`
-	LastSeenAt      time.Time `json:"last_seen_at"`
-	GroupsCheckedAt time.Time `json:"groups_checked_at"`
+	UserID     int64     `json:"user_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastSeenAt time.Time `json:"last_seen_at"`
 }
 
 // Manager creates, reads and deletes sessions.
@@ -100,8 +98,7 @@ func validID(id string) bool {
 	return err == nil && len(raw) == idBytes
 }
 
-// Create starts a session for userID. GroupsCheckedAt starts at creation time
-// because sign-in has just resolved the user's groups.
+// Create starts a session for userID.
 func (m *Manager) Create(ctx context.Context, userID int64) (Session, error) {
 	raw := make([]byte, idBytes)
 	if _, err := rand.Read(raw); err != nil {
@@ -109,13 +106,12 @@ func (m *Manager) Create(ctx context.Context, userID int64) (Session, error) {
 	}
 	now := m.now()
 	s := Session{
-		ID:              base64.RawURLEncoding.EncodeToString(raw),
-		UserID:          userID,
-		CreatedAt:       now,
-		LastSeenAt:      now,
-		GroupsCheckedAt: now,
+		ID:         base64.RawURLEncoding.EncodeToString(raw),
+		UserID:     userID,
+		CreatedAt:  now,
+		LastSeenAt: now,
 	}
-	doc, err := json.Marshal(stored{UserID: userID, CreatedAt: now, LastSeenAt: now, GroupsCheckedAt: now})
+	doc, err := json.Marshal(stored{UserID: userID, CreatedAt: now, LastSeenAt: now})
 	if err != nil {
 		return Session{}, fmt.Errorf("session: encode: %w", err)
 	}
@@ -178,11 +174,10 @@ func (m *Manager) Get(ctx context.Context, id string) (Session, error) {
 		return Session{}, unavailable(setErr)
 	}
 	return Session{
-		ID:              id,
-		UserID:          st.UserID,
-		CreatedAt:       st.CreatedAt,
-		LastSeenAt:      now,
-		GroupsCheckedAt: st.GroupsCheckedAt,
+		ID:         id,
+		UserID:     st.UserID,
+		CreatedAt:  st.CreatedAt,
+		LastSeenAt: now,
 	}, nil
 }
 

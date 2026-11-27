@@ -33,7 +33,7 @@ func TestTokenPlaintextReturnedOnceAndListNeverShowsIt(t *testing.T) {
 	// The plaintext works.
 	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: plaintext}), http.StatusOK, "")
 
-	// A bearer token may list and create too ("signed in").
+	// A bearer token may list its owner's tokens (but not mint or revoke any).
 	rec = h.send(sent{method: "GET", path: "/api/v1/tokens", bearer: plaintext})
 	h.expect(rec, http.StatusOK, "")
 	if strings.Contains(rec.Body.String(), plaintext) || strings.Contains(rec.Body.String(), plaintext[4:]) {
@@ -48,7 +48,7 @@ func TestTokenPlaintextReturnedOnceAndListNeverShowsIt(t *testing.T) {
 	}
 	// Bad requests.
 	for _, body := range []map[string]any{{"name": ""}, {"name": "x", "ttl_days": -1}, {"name": strings.Repeat("n", 101)}} {
-		h.expect(h.send(sent{method: "POST", path: "/api/v1/tokens", bearer: plaintext, body: body}), http.StatusBadRequest, "invalid")
+		h.expect(h.send(sent{method: "POST", path: "/api/v1/tokens", sessionID: sessionID, origin: publicURL, body: body}), http.StatusBadRequest, "invalid")
 	}
 	// Revoking ends it.
 	id := itoa(int64(created["id"].(float64)))
@@ -61,17 +61,58 @@ func TestUserCannotRevokeAnotherUsersToken(t *testing.T) {
 	victim := h.newUser("victim")
 	_, victimToken := h.newToken(victim.ID)
 	attacker := h.newUser("attacker")
-	attackerToken, _ := h.newToken(attacker.ID)
+	attackerSession := h.newSession(attacker.ID)
+	adminSession := h.newSession(h.admin.ID)
 
-	rec := h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(victimToken.ID), bearer: attackerToken})
+	rec := h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(victimToken.ID), sessionID: attackerSession, origin: publicURL})
 	h.expect(rec, http.StatusNotFound, "not_found")
 	// Even an administrator manages only their own tokens here.
-	h.expect(h.asAdmin("DELETE", "/api/v1/tokens/"+itoa(victimToken.ID), nil), http.StatusNotFound, "not_found")
+	h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(victimToken.ID), sessionID: adminSession, origin: publicURL}), http.StatusNotFound, "not_found")
 	tokens, err := store.ListTokens(context.Background(), h.pool, victim.ID)
 	if err != nil || len(tokens) != 1 || tokens[0].RevokedAt != nil {
 		t.Fatalf("the victim's token was touched: %v, %v", tokens, err)
 	}
-	h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/abc", bearer: attackerToken}), http.StatusNotFound, "not_found")
+	h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/abc", sessionID: attackerSession, origin: publicURL}), http.StatusNotFound, "not_found")
+}
+
+// A token cannot mint, renew or revoke tokens: a stolen token (or one whose
+// owner was removed from the identity provider) must not be able to outlive
+// its own expiry or the SSO rule by creating a successor.
+func TestTokenCannotManageTokens(t *testing.T) {
+	h := newHarness(t)
+	user := h.newUser("tokenmanager")
+	bearer, own := h.newToken(user.ID)
+	sessionID := h.newSession(user.ID)
+	const message = "Sign in with your browser to manage tokens"
+
+	rec := h.send(sent{method: "POST", path: "/api/v1/tokens", bearer: bearer, body: map[string]any{"name": "successor", "ttl_days": 365}})
+	h.expect(rec, http.StatusForbidden, "forbidden")
+	if got := errorMessage(decodeObject(t, rec)); got != message {
+		t.Errorf("message = %q, want %q", got, message)
+	}
+	rec = h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(own.ID), bearer: bearer})
+	h.expect(rec, http.StatusForbidden, "forbidden")
+	if got := errorMessage(decodeObject(t, rec)); got != message {
+		t.Errorf("message = %q, want %q", got, message)
+	}
+	// The bypass to try: a token request that also carries a valid session
+	// cookie and origin. The bearer header decides who the caller is, so it is
+	// still a token.
+	both := sent{method: "POST", path: "/api/v1/tokens", bearer: bearer, sessionID: sessionID, origin: publicURL, body: map[string]any{"name": "sneaky"}}
+	h.expect(h.send(both), http.StatusForbidden, "forbidden")
+	both = sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(own.ID), bearer: bearer, sessionID: sessionID, origin: publicURL}
+	h.expect(h.send(both), http.StatusForbidden, "forbidden")
+	// Confirming a CLI sign-in is refused to a token alike.
+	h.expect(h.send(sent{method: "POST", path: "/api/v1/cli/login/confirm", bearer: bearer, sessionID: sessionID, origin: publicURL,
+		body: map[string]any{"user_code": "ABCDEFGH"}}), http.StatusForbidden, "forbidden")
+
+	tokens, err := store.ListTokens(context.Background(), h.pool, user.ID)
+	if err != nil || len(tokens) != 1 || tokens[0].RevokedAt != nil {
+		t.Fatalf("tokens after the refused requests = %v, %v; want only the original, not revoked", tokens, err)
+	}
+	// A session still can.
+	h.expect(h.send(sent{method: "POST", path: "/api/v1/tokens", sessionID: sessionID, origin: publicURL, body: map[string]any{"name": "from the browser"}}), http.StatusCreated, "")
+	h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(own.ID), sessionID: sessionID, origin: publicURL}), http.StatusNoContent, "")
 }
 
 // deviceHarness is a harness whose poll interval is short enough to wait out.
@@ -259,4 +300,54 @@ func TestDevicePollTooFastIs429(t *testing.T) {
 	h.expect(h.pollDevice(other), http.StatusOK, "")
 	time.Sleep(350 * time.Millisecond)
 	h.expect(h.pollDevice(deviceCode), http.StatusOK, "")
+}
+
+// The user code is 8 characters of a 31-letter alphabet: guessing is possible
+// only without a limit, so a session gets 10 confirm attempts per 10 minutes.
+func TestDeviceConfirmAttemptsAreLimitedPerSession(t *testing.T) {
+	h := newDeviceHarness(t)
+	user := h.newUser("guesser")
+	sessionID := h.newSession(user.ID)
+	start := h.startDeviceLogin()
+	userCode, deviceCode := start["user_code"].(string), start["device_code"].(string)
+
+	// Wrong guesses, and malformed ones (which an attacker could use to probe
+	// for free), all count.
+	for i := range 10 {
+		code := "AAAAAAAA"
+		if i%2 == 1 {
+			code = "not a code"
+		}
+		rec := h.confirmDevice(sessionID, code)
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusBadRequest {
+			t.Fatalf("attempt %d: %s, want 404 or 400", i+1, failure(rec))
+		}
+	}
+	// The 11th is refused, even with the right code, and the code stays unused.
+	rec := h.confirmDevice(sessionID, userCode)
+	h.expect(rec, http.StatusTooManyRequests, "too_many_requests")
+	if rec.Header().Get("Retry-After") == "" {
+		t.Errorf("a 429 without Retry-After")
+	}
+	// Spelling the code differently does not get a fresh allowance.
+	h.expect(h.confirmDevice(sessionID, strings.ToLower(userCode[:4]+"-"+userCode[4:])), http.StatusTooManyRequests, "too_many_requests")
+	// Another session has its own allowance, and the code was never consumed.
+	other := h.newSession(user.ID)
+	h.expect(h.confirmDevice(other, userCode), http.StatusNoContent, "")
+	time.Sleep(350 * time.Millisecond)
+	h.expect(h.pollDevice(deviceCode), http.StatusOK, "")
+
+	// The counter lives about ten minutes and its key uses the prefix.
+	keys, err := h.valkey.Do(context.Background(), h.valkey.B().Keys().Pattern(h.deps.KeyPrefix+"device-confirm:*").Build()).AsStrSlice()
+	if err != nil || len(keys) != 2 {
+		t.Fatalf("confirm counters = %v, %v; want one per session", keys, err)
+	}
+	for _, key := range keys {
+		if strings.Contains(key, sessionID) {
+			t.Errorf("a Valkey key contains the session id")
+		}
+		if secs, err := h.valkey.Do(context.Background(), h.valkey.B().Ttl().Key(key).Build()).AsInt64(); err != nil || secs < 590 || secs > 600 {
+			t.Errorf("TTL of %s = %d, %v; want about 600", key, secs, err)
+		}
+	}
 }

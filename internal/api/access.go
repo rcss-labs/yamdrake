@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/mail"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,16 +21,45 @@ import (
 )
 
 const (
-	maxNameLength      = 200
+	maxNameLength      = 100
 	maxGroupNameLength = 100
 	maxIDPGroupLength  = 255
 	defaultAuditLimit  = 50
 	maxAuditLimit      = 200
 )
 
+// environmentPattern is what an environment name looks like in the inventory.
+var environmentPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
 // errLastAdmin is returned when a change would leave no enabled user in an
 // admin group.
 var errLastAdmin = errors.New("at least one enabled user must stay in an admin group")
+
+// errAdminRequired is returned when a change touches administrator power and
+// the caller is not a global administrator: manage_access alone is not enough.
+var errAdminRequired = errors.New("only an administrator may change administrator access")
+
+// isAdmin reports whether the request's principal is a global administrator.
+func isAdmin(r *http.Request) bool {
+	principal, ok := PrincipalFrom(r.Context())
+	return ok && principal.Admin
+}
+
+// adminGroupIDs returns the ids of the admin groups, read inside the caller's
+// transaction (and so under its admin lock).
+func adminGroupIDs(ctx context.Context, db store.DBTX) (map[int64]bool, error) {
+	groups, err := store.ListGroups(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]bool{}
+	for _, g := range groups {
+		if g.Admin {
+			out[g.ID] = true
+		}
+	}
+	return out, nil
+}
 
 // writeAccessError maps the store's sentinels to API answers. The messages of
 // store.ErrInvalid describe a rule and never repeat a secret.
@@ -37,6 +67,8 @@ func (s *server) writeAccessError(w http.ResponseWriter, r *http.Request, err er
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		notFound(w, what)
+	case errors.Is(err, errAdminRequired):
+		writeError(w, http.StatusForbidden, codeForbidden, errAdminRequired.Error())
 	case errors.Is(err, errLastAdmin):
 		writeError(w, http.StatusConflict, codeConflict, errLastAdmin.Error())
 	case errors.Is(err, store.ErrDuplicate):
@@ -145,7 +177,7 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Name     string `json:"name"`
 		Source   string `json:"source"`
-		Password string `json:"password"`
+		Password string `json:"password" text:"any"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
@@ -156,8 +188,8 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request) {
 		invalid(w, "email must be a plain email address")
 		return
 	}
-	if len(name) > maxNameLength {
-		invalid(w, "name is too long")
+	if name == "" || len(name) > maxNameLength {
+		invalid(w, fmt.Sprintf("name is required and at most %d characters", maxNameLength))
 		return
 	}
 	if req.Source != "local" && req.Source != "service" {
@@ -226,6 +258,11 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
+			if !isAdmin(r) {
+				if err := refuseAdminPowerInUserChange(ctx, tx, id, req.Disabled != nil, beforeManual, req.ManualGroupIDs); err != nil {
+					return err
+				}
+			}
 			before := map[string]any{"disabled": user.Disabled, "group_ids": beforeManual}
 			after := map[string]any{"disabled": user.Disabled, "group_ids": beforeManual}
 			if req.Disabled != nil {
@@ -233,6 +270,14 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 					return err
 				}
 				after["disabled"] = *req.Disabled
+				if *req.Disabled {
+					// Revoked, not just refused: enabling the user again must not bring the tokens back.
+					revoked, err := store.RevokeAllTokens(ctx, tx, id, s.Now())
+					if err != nil {
+						return err
+					}
+					after["cli_logins_revoked"] = revoked
+				}
 			}
 			if req.ManualGroupIDs != nil {
 				wanted := slices.Clone(*req.ManualGroupIDs)
@@ -286,6 +331,40 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+// refuseAdminPowerInUserChange is the check a caller without Admin passes
+// before a user change: it may not disable or enable someone who is in an admin
+// group (through any source), nor add or remove a membership of an admin group.
+func refuseAdminPowerInUserChange(ctx context.Context, tx pgx.Tx, userID int64, touchesDisabled bool, beforeManual []int64, wantedManual *[]int64) error {
+	admins, err := adminGroupIDs(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if touchesDisabled {
+		memberOf, err := store.GroupsOfUser(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		for _, g := range memberOf {
+			if admins[g.ID] {
+				return errAdminRequired
+			}
+		}
+	}
+	if wantedManual != nil {
+		for _, groupID := range *wantedManual {
+			if admins[groupID] && !slices.Contains(beforeManual, groupID) {
+				return errAdminRequired
+			}
+		}
+		for _, groupID := range beforeManual {
+			if admins[groupID] && !slices.Contains(*wantedManual, groupID) {
+				return errAdminRequired
+			}
+		}
+	}
+	return nil
+}
+
 func (s *server) deleteUserSessions(r *http.Request, userID int64) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), valkeyTimeout)
 	defer cancel()
@@ -326,6 +405,10 @@ func (s *server) createGroup(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" || len(name) > maxGroupNameLength {
 		invalid(w, fmt.Sprintf("name is required and at most %d characters", maxGroupNameLength))
+		return
+	}
+	if req.Admin && !isAdmin(r) {
+		s.writeAccessError(w, r, errAdminRequired, "group")
 		return
 	}
 	var created store.Group
@@ -371,6 +454,9 @@ func (s *server) updateGroup(w http.ResponseWriter, r *http.Request) {
 				return store.ErrNotFound
 			}
 			updated = groups[index]
+			if (updated.Admin || *req.Admin) && !isAdmin(r) {
+				return errAdminRequired
+			}
 			if err := store.SetGroupAdmin(ctx, tx, id, *req.Admin); err != nil {
 				return err
 			}
@@ -463,6 +549,16 @@ func (s *server) putIDPMapping(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return audit.Event{}, err
 		}
+		if !isAdmin(r) {
+			admins, err := adminGroupIDs(ctx, tx)
+			if err != nil {
+				return audit.Event{}, err
+			}
+			// Neither the group it points to now nor the one it will point to may be an admin group.
+			if previous, had := mappings[name]; admins[req.GroupID] || (had && admins[previous]) {
+				return audit.Event{}, errAdminRequired
+			}
+		}
 		before := any(nil)
 		if previous, had := mappings[name]; had {
 			before = previous
@@ -487,6 +583,15 @@ func (s *server) deleteIDPMapping(w http.ResponseWriter, r *http.Request) {
 		mappings, err := store.ListIDPMappings(ctx, tx)
 		if err != nil {
 			return audit.Event{}, err
+		}
+		if !isAdmin(r) {
+			admins, err := adminGroupIDs(ctx, tx)
+			if err != nil {
+				return audit.Event{}, err
+			}
+			if previous, had := mappings[name]; had && admins[previous] {
+				return audit.Event{}, errAdminRequired
+			}
 		}
 		if err := store.DeleteIDPMapping(ctx, tx, name); err != nil {
 			return audit.Event{}, err
@@ -540,6 +645,10 @@ func (s *server) createGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ID != 0 {
 		invalid(w, "id is assigned by the server")
+		return
+	}
+	if req.Environment != "" && !environmentPattern.MatchString(req.Environment) {
+		invalid(w, "environment must be an environment name: lower case letters, digits and hyphens, at most 63 characters")
 		return
 	}
 	var created store.Grant

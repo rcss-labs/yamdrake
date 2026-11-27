@@ -546,6 +546,11 @@ func TestRejects(t *testing.T) {
 			}
 			usersBefore, rejectedBefore := h.userCount(), h.auditCount("saml.rejected")
 			rec := h.postACS(flow, row.cookie)
+			// A response that is not tied to a sign-in we started is logged, not audited.
+			audited := 1
+			if row.reason == "relay_state" {
+				audited = 0
+			}
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status %d %s, want 400", rec.Code, failure(rec))
 			}
@@ -563,8 +568,11 @@ func TestRejects(t *testing.T) {
 					t.Errorf("a rejected response created the user")
 				}
 			}
-			if got := h.auditCount("saml.rejected"); got != rejectedBefore+1 {
-				t.Fatalf("saml.rejected entries: %d before, %d after, want one more", rejectedBefore, got)
+			if got := h.auditCount("saml.rejected"); got != rejectedBefore+audited {
+				t.Fatalf("saml.rejected entries: %d before, %d after, want %d more", rejectedBefore, got, audited)
+			}
+			if audited == 0 {
+				return
 			}
 			var entry *store.AuditEntry
 			for _, e := range h.auditEntries() {

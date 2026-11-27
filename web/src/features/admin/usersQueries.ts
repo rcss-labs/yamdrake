@@ -18,7 +18,11 @@ export function useGroups(enabled: boolean) {
 }
 
 export function useCreateUser() {
-  return useApiMutation<AdminUser, CreateUserRequest>('POST', '/api/v1/admin/users', { invalidate: [usersKey, groupsKey] })
+  return useApiMutation<AdminUser, CreateUserRequest>('POST', '/api/v1/admin/users', {
+    invalidate: [usersKey, groupsKey],
+    // The request body holds the new password: drop the mutation from the cache once nothing observes it.
+    gcTime: 0,
+  })
 }
 
 export type UserChange = UpdateUserRequest & { id: number }

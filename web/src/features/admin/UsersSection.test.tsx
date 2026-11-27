@@ -15,12 +15,17 @@ import {
   viewerMe,
 } from '../../test/server'
 
+let queryClient: ReturnType<typeof renderApp>['queryClient']
+
 async function openUsers(me = accessManagerMe) {
   const user = userEvent.setup()
-  renderApp(<App />, { route: '/admin/users', me })
+  queryClient = renderApp(<App />, { route: '/admin/users', me }).queryClient
   await screen.findByRole('table', { name: 'Users' })
   return user
 }
+
+// TanStack keeps a mutation's variables in its state; the password must not be left there.
+const mutationCacheText = () => JSON.stringify(queryClient.getMutationCache().getAll().map((mutation) => mutation.state))
 
 function rowOf(name: string) {
   return screen.getByRole('row', { name: new RegExp(name) })
@@ -117,6 +122,23 @@ describe('the users section', () => {
       })
       expect(screen.getByLabelText('Password')).toHaveValue('')
       expect(screen.getByLabelText('Name')).toHaveValue('')
+    })
+
+    it('keeps the password out of the mutation cache after a successful create', async () => {
+      const user = await openUsers()
+      await fillCreateForm(user, { name: 'Robot Two', email: 'robot2@example.com', password: 'a-long-enough-pass' })
+      await user.click(screen.getByRole('button', { name: 'Create user' }))
+      await screen.findByRole('row', { name: /Robot Two/ })
+      await waitFor(() => expect(mutationCacheText()).not.toContain('a-long-enough-pass'))
+    })
+
+    it('keeps the password out of the mutation cache after a failed create, and still shows the error', async () => {
+      const user = await openUsers()
+      failNext('POST', '/api/v1/admin/users', 500, 'internal', 'The database is down')
+      await fillCreateForm(user, { name: 'Robot Two', email: 'robot2@example.com', password: 'a-long-enough-pass' })
+      await user.click(screen.getByRole('button', { name: 'Create user' }))
+      expect(await screen.findByText('The database is down')).toBeInTheDocument()
+      await waitFor(() => expect(mutationCacheText()).not.toContain('a-long-enough-pass'))
     })
 
     it('shows field errors on their fields and sends nothing', async () => {

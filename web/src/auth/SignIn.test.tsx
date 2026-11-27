@@ -76,6 +76,18 @@ describe('SignIn', () => {
     expect(login?.body).toEqual({ email: adminMe.email, password: knownPassword })
   })
 
+  it('keeps the password out of the query cache after a failed and a successful sign-in', async () => {
+    const { queryClient } = renderSignIn()
+    const user = await fillAndSubmit(adminMe.email, 'not-the-password')
+    await screen.findByRole('alert')
+    const cached = () => JSON.stringify([queryClient.getMutationCache().getAll().map((m) => m.state), queryClient.getQueryCache().getAll().map((q) => q.state)])
+    expect(cached()).not.toContain('not-the-password')
+    await user.type(screen.getByLabelText('Password'), knownPassword)
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    await screen.findByText('The signed-in page')
+    expect(cached()).not.toContain(knownPassword)
+  })
+
   it('says the email or password is not correct, keeps the email and empties the password', async () => {
     renderSignIn()
     await fillAndSubmit(adminMe.email, 'not-the-password')

@@ -77,7 +77,7 @@ describe('a rejected newer commit', () => {
     expect(screen.getByText('ffee001')).toBeInTheDocument()
     expect(screen.getByText('services/billing.yaml:14')).toBeInTheDocument()
     expect(screen.getByText('ecs_service is required')).toBeInTheDocument()
-    expect(screen.getByText('environments.yaml:0')).toBeInTheDocument()
+    expect(screen.getByText('environments.yaml')).toBeInTheDocument()
     expect(await environmentsTable()).toBeInTheDocument()
   })
 

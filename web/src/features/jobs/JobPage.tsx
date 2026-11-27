@@ -55,6 +55,7 @@ export function JobPage() {
   const activeLabel = tabs.find((tab) => tab.id === active)?.label ?? ''
   const definition = job.definition
   const count = serviceCount(job)
+  const jobId = job.job_id || definition?.id || ''
 
   return (
     <>
@@ -68,11 +69,11 @@ export function JobPage() {
         }
         title={job.title || job.path}
         lead={
-          definition && (
+          (jobId || definition) && (
             <span className="job-meta">
-              <span className="mono">{definition.id}</span>
-              <span>{`Deploys ${count} ${count === 1 ? 'service' : 'services'}`}</span>
-              <span>{approvalText(job)}</span>
+              {jobId && <span className="mono">{jobId}</span>}
+              {definition && <span>{`Deploys ${count} ${count === 1 ? 'service' : 'services'}`}</span>}
+              {definition && <span>{approvalText(job)}</span>}
             </span>
           )
         }

@@ -1,8 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
+import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router-dom'
-import { delayNext, failNext, jobManagerMe, mockState, requests, viewerMe } from '../../test/server'
+import { delayNext, failNext, jobManagerMe, mockState, requests, server, viewerMe } from '../../test/server'
 import { renderApp } from '../../test/render'
 import { JobPage } from './JobPage'
 
@@ -114,6 +115,25 @@ describe('the job page', () => {
     const panel = await definitionPanel()
     expect(within(panel).getByRole('alert')).toHaveTextContent('was not found or the connection has no access')
     expect(screen.queryByText('No approval needed')).not.toBeInTheDocument()
+  })
+
+  it('says no good version exists yet, with the id and problems, for a job that never had a good read', async () => {
+    const never = {
+      ...mockState().jobs[3]!,
+      job_id: 'new-job',
+      problem_count: 1,
+      sync_error: '',
+      problems: [{ file: 'release/yumdrake.yaml', line: 3, message: 'id is missing' }],
+      problems_commit: '5555555555555555555555555555555555555555',
+    }
+    server.use(http.get('/api/v1/jobs/4', () => HttpResponse.json(never)))
+    renderJob('/jobs/4')
+    const panel = await definitionPanel()
+    expect(within(panel).getByText(/no good version has been read yet/i)).toBeInTheDocument()
+    expect(panel).not.toHaveTextContent('last good version')
+    expect(within(panel).getByText('release/yumdrake.yaml:3')).toBeInTheDocument()
+    expect(within(panel).getByText('5555555')).toBeInTheDocument()
+    expect(screen.getByText('new-job')).toBeInTheDocument()
   })
 
   it('shows no file block when the response carries no source', async () => {

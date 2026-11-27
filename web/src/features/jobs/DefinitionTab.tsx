@@ -72,7 +72,14 @@ export function DefinitionTab({ job, routeId, canSync }: DefinitionTabProps) {
       {job.problems.length > 0 && (
         <Note tone="warning" className="job-problems">
           <p>
-            The last good version (<span className="mono">{shortCommit(job.commit)}</span>) is still in use. The newest commit
+            {job.commit ? (
+              <>
+                The last good version (<span className="mono">{shortCommit(job.commit)}</span>) is still in use.
+              </>
+            ) : (
+              <>No good version has been read yet.</>
+            )}{' '}
+            The newest commit
             {job.problems_commit && (
               <>
                 {' '}

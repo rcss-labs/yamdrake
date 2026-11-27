@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
@@ -33,7 +34,7 @@ func runWithHandler(t *testing.T, ctx context.Context, shutdown time.Duration, h
 			ShutdownTimeout: shutdown, StartupTimeout: 20 * time.Second,
 		},
 		Addr: addr,
-		Extend: func(context.Context, *slog.Logger, *pgxpool.Pool) (Extension, error) {
+		Extend: func(context.Context, *slog.Logger, *pgxpool.Pool, valkey.Client) (Extension, error) {
 			return Extension{Handlers: map[string]http.Handler{"/hold": hold}}, nil
 		},
 	}

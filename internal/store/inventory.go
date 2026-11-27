@@ -21,6 +21,14 @@ type InventorySource struct{ Repo, Branch, Path string }
 // source again even if the branch head has not moved; "already seen" is only
 // meaningful for the source it was seen with.
 func SetInventorySource(ctx context.Context, db DBTX, s InventorySource) error {
+	return SetInventorySourceWith(ctx, db, s, nil)
+}
+
+// SetInventorySourceWith is SetInventorySource that also calls inTx, when it
+// is not nil, with the transaction just before it commits. A hook error rolls
+// the change back and is returned (wrapped). Callers use it to write the audit
+// entry in the same transaction.
+func SetInventorySourceWith(ctx context.Context, db DBTX, s InventorySource, inTx func(context.Context, DBTX) error) error {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("set inventory source: begin: %w", err)
@@ -49,6 +57,11 @@ func SetInventorySource(ctx context.Context, db DBTX, s InventorySource) error {
 		if _, err := tx.Exec(ctx,
 			"UPDATE inventory_status SET checked_at = NULL, problems = NULL, problems_commit = '' WHERE id = 1"); err != nil {
 			return fmt.Errorf("set inventory source: reset status: %w", err)
+		}
+	}
+	if inTx != nil {
+		if err := inTx(ctx, tx); err != nil {
+			return fmt.Errorf("set inventory source: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

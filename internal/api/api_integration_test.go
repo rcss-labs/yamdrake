@@ -18,27 +18,32 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	gosync "sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	valkey "github.com/valkey-io/valkey-go"
 
-	"github.com/rcss-labs/yamdrake/internal/config"
+	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/cache"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
 )
 
 const (
-	bootstrapToken = "test-bootstrap-token-0123456789-abcdef"
-	invRepo        = "acme/inventory"
-	invPath        = "inv"
-	jobsRepo       = "acme/jobs"
-	jobPath        = "jobs/deploy-backend.yaml"
+	// publicURL is what the harness's API believes its public address is.
+	publicURL = "https://yumdrake.test"
+	invRepo   = "acme/inventory"
+	invPath   = "inv"
+	jobsRepo  = "acme/jobs"
+	jobPath   = "jobs/deploy-backend.yaml"
 )
 
 // fakeSource serves files from memory keyed "repo@commit/path".
@@ -106,6 +111,127 @@ type harness struct {
 	src     *fakeSource
 	handler http.Handler
 	bodies  []string // every response body, for the secret checks
+	// bodiesMu guards bodies: some tests send requests from several goroutines.
+	bodiesMu gosync.Mutex
+
+	dbURL      string
+	deps       Deps
+	valkey     valkey.Client
+	sessions   *session.Manager
+	admin      store.User // a member of an admin group
+	adminToken string
+}
+
+func valkeyAddr(t *testing.T) string {
+	t.Helper()
+	addr := os.Getenv("YUMDRAKE_TEST_VALKEY_ADDR")
+	if addr == "" {
+		t.Fatal("YUMDRAKE_TEST_VALKEY_ADDR must be set for integration tests")
+	}
+	return addr
+}
+
+func openValkey(t *testing.T, addr string) valkey.Client {
+	t.Helper()
+	c, err := cache.Open(addr)
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	t.Cleanup(c.Close)
+	return c
+}
+
+// uniqueEmail keeps tests apart in the Valkey instance they share.
+func uniqueEmail(t *testing.T, label string) string {
+	t.Helper()
+	raw := make([]byte, 6)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("random: %v", err)
+	}
+	return fmt.Sprintf("%s-%x@example.test", label, raw)
+}
+
+// testLockoutWindow is long enough that five sign-ins in a row (each costs an
+// argon2 check, slow under -race) fit in it, and short enough to wait out.
+const testLockoutWindow = 5 * time.Second
+
+// testPassword is a valid password for users made by the harness.
+const testPassword = "correct horse battery staple"
+
+// newUser creates a local user with testPassword.
+func (h *harness) newUser(label string) store.User {
+	h.t.Helper()
+	hash, err := auth.HashPassword(testPassword)
+	if err != nil {
+		h.t.Fatalf("HashPassword: %v", err)
+	}
+	u, err := store.CreateLocalUser(context.Background(), h.pool, uniqueEmail(h.t, label), label, "local", hash)
+	if err != nil {
+		h.t.Fatalf("CreateLocalUser: %v", err)
+	}
+	return u
+}
+
+func (h *harness) newToken(userID int64) (plaintext string, tok store.Token) {
+	h.t.Helper()
+	plaintext, tok, err := auth.NewToken(context.Background(), h.pool, userID, "test", time.Hour, time.Now())
+	if err != nil {
+		h.t.Fatalf("NewToken: %v", err)
+	}
+	return plaintext, tok
+}
+
+func (h *harness) newSession(userID int64) string {
+	h.t.Helper()
+	s, err := h.sessions.Create(context.Background(), userID)
+	if err != nil {
+		h.t.Fatalf("session Create: %v", err)
+	}
+	return s.ID
+}
+
+// grant gives userID a new group holding the action.
+func (h *harness) grant(userID int64, action string) {
+	h.t.Helper()
+	ctx := context.Background()
+	group, err := store.CreateGroup(ctx, h.pool, "g-"+uniqueEmail(h.t, action), false)
+	if err != nil {
+		h.t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := store.SetManualMembership(ctx, h.pool, userID, group.ID, true); err != nil {
+		h.t.Fatalf("SetManualMembership: %v", err)
+	}
+	if _, err := store.CreateGrant(ctx, h.pool, store.Grant{GroupID: group.ID, Action: action}); err != nil {
+		h.t.Fatalf("CreateGrant: %v", err)
+	}
+}
+
+// rebuild replaces the handler with one built from the harness's deps after
+// change has adjusted them.
+func (h *harness) rebuild(change func(*Deps)) {
+	h.t.Helper()
+	deps := h.deps
+	change(&deps)
+	h.handler = New(deps)
+}
+
+func (h *harness) auditEntries() []store.AuditEntry {
+	h.t.Helper()
+	entries, err := store.ListAudit(context.Background(), h.pool, 0, 200)
+	if err != nil {
+		h.t.Fatalf("ListAudit: %v", err)
+	}
+	return entries
+}
+
+// auditActions lists the actions of the audit entries, oldest first.
+func (h *harness) auditActions() []string {
+	entries := h.auditEntries()
+	out := make([]string, 0, len(entries))
+	for i := len(entries) - 1; i >= 0; i-- {
+		out = append(out, entries[i].Action)
+	}
+	return out
 }
 
 func newHarness(t *testing.T) *harness {
@@ -129,9 +255,25 @@ func newHarness(t *testing.T) *harness {
 	engine := yumsync.NewEngine(pool,
 		func(context.Context, string) (yumsync.Source, error) { return src, nil },
 		log, time.Now)
-	return &harness{t: t, pool: pool, cipher: cipher, src: src, handler: New(Deps{
-		Pool: pool, Engine: engine, Cipher: cipher, BootstrapToken: config.Secret(bootstrapToken), Log: log,
-	})}
+	client := openValkey(t, valkeyAddr(t))
+	sessions := session.NewManager(client, time.Now)
+	deps := Deps{
+		Pool: pool, Engine: engine, Cipher: cipher, Log: log,
+		Sessions: sessions, Valkey: client, PublicURL: publicURL,
+		LockoutWindow: testLockoutWindow,
+	}
+	h := &harness{t: t, dbURL: url, pool: pool, cipher: cipher, src: src, handler: New(deps),
+		deps: deps, valkey: client, sessions: sessions}
+	h.admin = h.newUser("admin")
+	adminGroup, err := store.CreateGroup(ctx, pool, "Admins", true)
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := store.SetManualMembership(ctx, pool, h.admin.ID, adminGroup.ID, true); err != nil {
+		t.Fatalf("SetManualMembership: %v", err)
+	}
+	h.adminToken, _ = h.newToken(h.admin.ID)
+	return h
 }
 
 func fixture(t *testing.T, rel string) []byte {
@@ -158,7 +300,7 @@ func (h *harness) pushJob(commit string) {
 // do sends an authorised JSON request and records the body.
 func (h *harness) do(method, path string, body any) (int, map[string]any) {
 	h.t.Helper()
-	code, raw := h.doRaw(method, path, bootstrapToken, body)
+	code, raw := h.doRaw(method, path, h.adminToken, body)
 	var decoded map[string]any
 	if len(bytes.TrimSpace(raw)) > 0 {
 		_ = json.Unmarshal(raw, &decoded)
@@ -230,51 +372,10 @@ func (h *harness) registerJob(folderID int64) map[string]any {
 	}, http.StatusCreated)
 }
 
-func TestRoutesRequireBootstrapToken(t *testing.T) {
-	h := newHarness(t)
-	for _, tc := range []struct {
-		name, token string
-		want        int
-	}{
-		{"no header", "", http.StatusUnauthorized},
-		{"wrong token", "not-the-token", http.StatusUnauthorized},
-		{"right token", bootstrapToken, http.StatusOK},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			code, raw := h.doRaw("GET", "/api/v1/folders", tc.token, nil)
-			if code != tc.want {
-				t.Fatalf("status = %d, want %d (body %s)", code, tc.want, raw)
-			}
-			if tc.want == http.StatusUnauthorized {
-				var body map[string]any
-				_ = json.Unmarshal(raw, &body)
-				if errorCode(t, body) != "unauthorized" {
-					t.Errorf("error code = %q, want unauthorized (body %s)", errorCode(t, body), raw)
-				}
-			}
-		})
-	}
-}
-
 func TestUnknownPathWithoutTokenIsUnauthorized(t *testing.T) {
 	h := newHarness(t)
 	if code, _ := h.doRaw("GET", "/api/v1/nope", "", nil); code != http.StatusUnauthorized {
 		t.Errorf("unknown path without token = %d, want 401", code)
-	}
-}
-
-func TestEmptyBootstrapTokenDisablesAPI(t *testing.T) {
-	handler := New(Deps{BootstrapToken: "", Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
-	for _, header := range []string{"", "Bearer ", "Bearer anything"} {
-		req := httptest.NewRequest("GET", "/api/v1/folders", nil)
-		if header != "" {
-			req.Header.Set("Authorization", header)
-		}
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("Authorization %q: status = %d, want 404", header, rec.Code)
-		}
 	}
 }
 
@@ -648,13 +749,14 @@ func TestFoldersCreateListAndRejectDuplicates(t *testing.T) {
 // stubSyncer returns fixed errors from the on-demand syncs.
 type stubSyncer struct{ err error }
 
-func (s stubSyncer) SyncInventory(context.Context) error                             { return s.err }
-func (s stubSyncer) SetInventorySource(context.Context, store.InventorySource) error { return s.err }
-func (s stubSyncer) SyncJob(context.Context, int64) error                            { return s.err }
+func (s stubSyncer) SyncInventory(context.Context) error { return s.err }
+func (s stubSyncer) SetInventorySource(context.Context, store.InventorySource, func(context.Context, store.DBTX) error) error {
+	return s.err
+}
+func (s stubSyncer) SyncJob(context.Context, int64) error { return s.err }
 
 func (h *harness) withSyncer(syncer Syncer) {
-	h.handler = New(Deps{Pool: h.pool, Engine: syncer, Cipher: h.cipher,
-		BootstrapToken: config.Secret(bootstrapToken), Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	h.rebuild(func(d *Deps) { d.Engine = syncer })
 }
 
 func TestInternalSyncFailureIsInternalError(t *testing.T) {
@@ -681,4 +783,14 @@ func TestSourceSyncFailureIsShownNotFailed(t *testing.T) {
 	if code, body := h.do("POST", "/api/v1/inventory/sync", nil); code != http.StatusOK {
 		t.Errorf("inventory sync with a source error = %d %v, want 200", code, body)
 	}
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// shortenValkeyTimeout makes a dead Valkey answer quickly in a test.
+func shortenValkeyTimeout(t *testing.T) {
+	t.Helper()
+	previous := valkeyTimeout
+	valkeyTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { valkeyTimeout = previous })
 }

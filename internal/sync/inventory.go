@@ -25,10 +25,12 @@ func (e *Engine) SyncInventory(ctx context.Context) error {
 
 // SetInventorySource stores the source and syncs it while holding the lock, so
 // a poll that read the old source cannot record its outcome after the change.
-// A failed sync is returned, but the new source stays stored.
-func (e *Engine) SetInventorySource(ctx context.Context, source store.InventorySource) error {
+// A failed sync is returned, but the new source stays stored. inTx, when not
+// nil, runs in the transaction that stores the source (the API writes its
+// audit entry there); if it fails nothing is stored and nothing is synced.
+func (e *Engine) SetInventorySource(ctx context.Context, source store.InventorySource, inTx func(context.Context, store.DBTX) error) error {
 	return e.withLock(ctx, func(ctx context.Context) error {
-		if err := store.SetInventorySource(ctx, e.pool, source); err != nil {
+		if err := store.SetInventorySourceWith(ctx, e.pool, source, inTx); err != nil {
 			return err
 		}
 		return e.syncInventory(ctx)

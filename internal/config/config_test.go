@@ -26,6 +26,7 @@ func requiredEnv() map[string]string {
 		"YUMDRAKE_VALKEY_ADDR":  validValkeyAddr,
 
 		"YUMDRAKE_LOCAL_SECRET_KEY": validSecretKey,
+		"YUMDRAKE_PUBLIC_URL":       "https://yumdrake.example.com",
 	}
 }
 
@@ -79,6 +80,7 @@ func TestLoadOrchestratorOverrides(t *testing.T) {
 		"YUMDRAKE_STARTUP_TIMEOUT":  "2m",
 		"YUMDRAKE_HTTP_ADDR":        "0.0.0.0:9090",
 		"YUMDRAKE_MIGRATE_ON_START": "false",
+		"YUMDRAKE_PUBLIC_URL":       "http://localhost:8080",
 	}
 	cfg, err := LoadOrchestrator(envFrom(env))
 	if err != nil {
@@ -278,9 +280,6 @@ func TestSecretAndSyncDefaults(t *testing.T) {
 	if got := cfg.LocalSecretKey.Reveal(); got != strings.Repeat("*", 32) {
 		t.Errorf("LocalSecretKey did not decode to the 32 key bytes")
 	}
-	if cfg.BootstrapToken != "" {
-		t.Error("BootstrapToken is not empty by default")
-	}
 	if cfg.SyncInterval != 60*time.Second {
 		t.Errorf("SyncInterval = %v, want 60s", cfg.SyncInterval)
 	}
@@ -297,7 +296,6 @@ func TestSecretAndSyncDefaults(t *testing.T) {
 }
 
 func TestSecretAndSyncRules(t *testing.T) {
-	longToken := strings.Repeat("t", 32)
 	tests := []struct {
 		name    string
 		set     map[string]string
@@ -307,8 +305,6 @@ func TestSecretAndSyncRules(t *testing.T) {
 		{"key not base64", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": "not base64 !!"}, "YUMDRAKE_LOCAL_SECRET_KEY"},
 		{"key wrong length", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": "c2hvcnQ="}, "YUMDRAKE_LOCAL_SECRET_KEY"}, //nolint:gosec // test value
 		{"mode not local", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms"}, "YUMDRAKE_SECRETS_MODE"},
-		{"short token", map[string]string{"YUMDRAKE_BOOTSTRAP_TOKEN": "0123456789"}, "YUMDRAKE_BOOTSTRAP_TOKEN"},
-		{"token ok", map[string]string{"YUMDRAKE_BOOTSTRAP_TOKEN": longToken}, ""},
 		{"interval too short", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "9s"}, "YUMDRAKE_SYNC_INTERVAL"},
 		{"interval minimum", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "10s"}, ""},
 		{"interval not duration", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "soon"}, "YUMDRAKE_SYNC_INTERVAL"},
@@ -346,40 +342,82 @@ func TestRunnerRejectsBadSecretKey(t *testing.T) {
 
 func TestSecretsNeverAppearInErrorsOrFormatting(t *testing.T) {
 	badKey := "c2VjcmV0LWtleS12YWx1ZS10b28tc2hvcnQ="
-	shortToken := "tok-short-9"
 	env := requiredEnv()
 	env["YUMDRAKE_LOCAL_SECRET_KEY"] = badKey
-	env["YUMDRAKE_BOOTSTRAP_TOKEN"] = shortToken
 	env["YUMDRAKE_SYNC_INTERVAL"] = "bad"
 	_, err := LoadOrchestrator(envFrom(env))
 	if err == nil {
 		t.Fatal("expected errors")
 	}
-	for _, secret := range []string{badKey, shortToken, "secret-key-value"} {
+	for _, secret := range []string{badKey, "secret-key-value"} {
 		if strings.Contains(err.Error(), secret) {
 			t.Errorf("error text contains a secret value: %q", err.Error())
 		}
 	}
 
 	env = requiredEnv()
-	env["YUMDRAKE_BOOTSTRAP_TOKEN"] = "bootstrap-token-with-32-characters!"
 	cfg, err := LoadOrchestrator(envFrom(env))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var buf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	logger.Info("config", "config", cfg, "key", cfg.LocalSecretKey, "token", cfg.BootstrapToken)
+	logger.Info("config", "config", cfg, "key", cfg.LocalSecretKey)
 	rendered := []string{
 		buf.String(),
 		fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg),
-		fmt.Sprint(cfg.LocalSecretKey), fmt.Sprint(cfg.BootstrapToken),
+		fmt.Sprint(cfg.LocalSecretKey),
 	}
 	for _, text := range rendered {
-		for _, secret := range []string{validSecretKey, strings.Repeat("*", 32), "bootstrap-token-with-32-characters!"} {
+		for _, secret := range []string{validSecretKey, strings.Repeat("*", 32)} {
 			if strings.Contains(text, secret) {
 				t.Errorf("formatted output leaks a secret: %q", text)
 			}
 		}
+	}
+}
+
+func TestPublicURLRules(t *testing.T) {
+	tests := []struct {
+		name, value string
+		wantErr     bool
+		want        string
+	}{
+		{"missing", "", true, ""},
+		{"https host", "https://yumdrake.example.com", false, "https://yumdrake.example.com"},
+		{"https with port", "https://yumdrake.example.com:8443", false, "https://yumdrake.example.com:8443"},
+		{"trailing slash dropped", "https://yumdrake.example.com/", false, "https://yumdrake.example.com"},
+		{"http on a public host", "http://yumdrake.example.com", true, ""},
+		{"http on localhost", "http://localhost:8080", false, "http://localhost:8080"},
+		{"http on 127.0.0.1", "http://127.0.0.1:8080", false, "http://127.0.0.1:8080"},
+		{"http on a lookalike host", "http://localhost.example.com", true, ""},
+		{"other scheme", "ftp://localhost", true, ""},
+		{"no host", "https://", true, ""},
+		{"path", "https://yumdrake.example.com/app", true, ""},
+		{"query", "https://yumdrake.example.com/?a=b", true, ""},
+		{"user info", "https://user:pw@yumdrake.example.com", true, ""},
+		{"not a url", "::::", true, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := requiredEnv()
+			env["YUMDRAKE_PUBLIC_URL"] = tc.value
+			cfg, err := LoadOrchestrator(envFrom(env))
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "YUMDRAKE_PUBLIC_URL") {
+					t.Fatalf("error = %v, want it to name YUMDRAKE_PUBLIC_URL", err)
+				}
+				if tc.value != "" && strings.Contains(err.Error(), "pw@") {
+					t.Errorf("error text echoes the user info: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("error = %v, want none", err)
+			}
+			if cfg.PublicURL != tc.want {
+				t.Errorf("PublicURL = %q, want %q", cfg.PublicURL, tc.want)
+			}
+		})
 	}
 }

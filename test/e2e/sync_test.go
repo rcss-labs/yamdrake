@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -19,20 +18,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/rcss-labs/yamdrake/internal/app"
+	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
+	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
 	"github.com/rcss-labs/yamdrake/test/e2e/fakegithub"
 )
 
 const (
 	// Dev-only values; the key is the same fixed public key compose.yaml uses.
-	bootstrapToken = "e2e-bootstrap-token-0123456789abcdef"
 	localSecretKey = "ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE="
 	githubToken    = "e2e-fake-github-token"
+
+	adminEmail    = "admin@e2e.example.test"
+	adminPassword = "e2e admin passphrase"
 
 	repo         = "acme/platform"
 	branch       = "main"
@@ -79,13 +80,68 @@ type jobView struct {
 	SyncErrorAt apiTime `json:"sync_error_at"`
 }
 
+// client talks to the API as a signed-in admin. The session cookie is Secure,
+// so it is sent by hand: a plain-http client would not replay it.
 type client struct {
-	t    *testing.T
-	base string
+	t       *testing.T
+	base    string
+	session string
+}
+
+// signIn creates the first admin directly in the database (the same rows the
+// create-admin command writes) and signs in over HTTP. The public URL of the
+// orchestrator is its own address, which is what cookie writes must come from.
+func signIn(t *testing.T, base, databaseURL string) client {
+	t.Helper()
+	ctx := context.Background()
+	pool, err := db.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer pool.Close()
+	hash, err := auth.HashPassword(adminPassword)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	user, err := store.CreateLocalUser(ctx, pool, adminEmail, "E2E Admin", "local", hash)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	group, err := store.CreateGroup(ctx, pool, "Administrators", true)
+	if err != nil {
+		t.Fatalf("create admin group: %v", err)
+	}
+	if err := store.SetManualMembership(ctx, pool, user.ID, group.ID, true); err != nil {
+		t.Fatalf("add admin to group: %v", err)
+	}
+
+	c := client{t: t, base: base}
+	var me struct {
+		Email string `json:"email"`
+		Admin bool   `json:"admin"`
+	}
+	resp := c.do(http.MethodPost, "/api/v1/auth/login", map[string]string{"email": adminEmail, "password": adminPassword}, &me)
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == "yumdrake_session" {
+			c.session = cookie.Value
+		}
+	}
+	if c.session == "" || me.Email != adminEmail || !me.Admin {
+		t.Fatalf("sign-in did not give an admin session (cookie set: %v, admin: %v)", c.session != "", me.Admin)
+	}
+	return c
 }
 
 // call sends one API request and decodes a JSON answer into out (when non-nil).
 func (c client) call(method, path string, body, out any) {
+	c.t.Helper()
+	c.do(method, path, body, out)
+}
+
+// do is call that also returns the response (its body already read). A failure
+// reports the status and the API's error code only, never the body: it may
+// hold a credential.
+func (c client) do(method, path string, body, out any) *http.Response {
 	c.t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -99,7 +155,11 @@ func (c client) call(method, path string, body, out any) {
 	if err != nil {
 		c.t.Fatalf("build %s %s: %v", method, path, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+bootstrapToken)
+	if c.session != "" {
+		req.AddCookie(&http.Cookie{Name: "yumdrake_session", Value: c.session})
+	}
+	// Browsers send the Origin of the page on writes; the API checks it.
+	req.Header.Set("Origin", c.base)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -110,13 +170,20 @@ func (c client) call(method, path string, body, out any) {
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		c.t.Fatalf("%s %s: status %d: %s", method, path, resp.StatusCode, raw)
+		var failure struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &failure)
+		c.t.Fatalf("%s %s: status %d, error code %q", method, path, resp.StatusCode, failure.Error.Code)
 	}
 	if out != nil {
 		if err := json.Unmarshal(raw, out); err != nil {
-			c.t.Fatalf("decode %s %s: %v (%s)", method, path, err, raw)
+			c.t.Fatalf("decode %s %s: %v", method, path, err)
 		}
 	}
+	return resp
 }
 
 func (c client) inventory() inventoryView {
@@ -171,19 +238,20 @@ func freeAddr(t *testing.T) string {
 
 // startOrchestrator runs the orchestrator through app.Run, the way
 // cmd/orchestrator does, and stops it (expecting a clean exit) at cleanup.
-func startOrchestrator(t *testing.T, githubURL string) string {
+func startOrchestrator(t *testing.T, githubURL string) client {
 	t.Helper()
 	valkeyAddr := os.Getenv("YUMDRAKE_TEST_VALKEY_ADDR")
 	if valkeyAddr == "" {
 		t.Fatal("YUMDRAKE_TEST_VALKEY_ADDR must be set for end-to-end tests")
 	}
 	addr := freeAddr(t)
+	databaseURL := testdb.New(t)
 	env := map[string]string{
-		"YUMDRAKE_DATABASE_URL":     testdb.New(t),
+		"YUMDRAKE_DATABASE_URL":     databaseURL,
 		"YUMDRAKE_VALKEY_ADDR":      valkeyAddr,
 		"YUMDRAKE_HTTP_ADDR":        addr,
 		"YUMDRAKE_LOCAL_SECRET_KEY": localSecretKey,
-		"YUMDRAKE_BOOTSTRAP_TOKEN":  bootstrapToken,
+		"YUMDRAKE_PUBLIC_URL":       "http://" + addr,
 		"YUMDRAKE_SYNC_INTERVAL":    syncInterval.String(),
 		"YUMDRAKE_GITHUB_API_URL":   githubURL,
 		"YUMDRAKE_LOG_LEVEL":        "warn",
@@ -196,15 +264,7 @@ func startOrchestrator(t *testing.T, githubURL string) string {
 	ctx, cancel := context.WithCancel(context.Background())
 	exited := make(chan int, 1)
 	go func() {
-		exited <- app.Run(ctx, app.Service{
-			Name:   "yumdrake-orchestrator",
-			Common: cfg.Common,
-			Addr:   cfg.HTTPAddr,
-			Extend: app.OrchestratorExtension(cfg),
-			Prepare: func(ctx context.Context, _ *slog.Logger, _ *pgxpool.Pool) error {
-				return db.Migrate(ctx, cfg.DatabaseURL)
-			},
-		}, io.Discard)
+		exited <- app.Run(ctx, app.NewOrchestratorService(cfg), io.Discard)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -227,7 +287,7 @@ func startOrchestrator(t *testing.T, githubURL string) string {
 		_ = resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	})
-	return base
+	return signIn(t, base, databaseURL)
 }
 
 // fixtureCommits builds the three commits from the shared valid fixture: the
@@ -266,7 +326,7 @@ func TestInventoryAndJobFlowEndToEnd(t *testing.T) {
 	fixtureCommits(t, gh)
 	gh.SetHead(repo, branch, goodCommit)
 
-	api := client{t: t, base: startOrchestrator(t, gh.URL())}
+	api := startOrchestrator(t, gh.URL())
 
 	// Set-up through the API; each step syncs at once.
 	api.call(http.MethodPost, "/api/v1/admin/github-connections",

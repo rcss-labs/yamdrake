@@ -33,6 +33,13 @@ type Orchestrator struct {
 	MigrateOnStart bool
 	// MigrateTimeout bounds the schema migration, separately from StartupTimeout.
 	MigrateTimeout time.Duration
+	// PublicURL is the address users reach the service at (scheme, host and
+	// optional port, no trailing slash). Cookie requests must come from it.
+	PublicURL string
+	// ValkeyKeyPrefix goes in front of the Valkey keys of sessions and sign-in
+	// counters. Empty by default; set it to tell apart services (or test runs)
+	// that share one Valkey.
+	ValkeyKeyPrefix string
 
 	SyncSettings
 }
@@ -45,6 +52,8 @@ type Runner struct {
 }
 
 const redactedPassword = "REDACTED"
+
+var keyPrefixPattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{0,64}$`)
 
 // loader collects problems so that every one is reported at once.
 type loader struct {
@@ -100,6 +109,11 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 		l.fail("YUMDRAKE_MIGRATE_ON_START", `must be "true" or "false"`)
 	}
 
+	cfg.PublicURL = l.publicURL("YUMDRAKE_PUBLIC_URL")
+	cfg.ValkeyKeyPrefix = l.getenv("YUMDRAKE_VALKEY_KEY_PREFIX")
+	if !keyPrefixPattern.MatchString(cfg.ValkeyKeyPrefix) {
+		l.fail("YUMDRAKE_VALKEY_KEY_PREFIX", "must be at most 64 letters, digits, '-', '_' or ':'")
+	}
 	cfg.SyncSettings = l.loadSyncSettings()
 
 	if err := l.err(); err != nil {
@@ -128,6 +142,33 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 		return Runner{}, err
 	}
 	return cfg, nil
+}
+
+// publicURL reads the address users reach the service at. It must be https,
+// except for http on localhost or 127.0.0.1 (development), and consist of
+// scheme, host and optional port only. A trailing slash is dropped. Messages
+// never echo the value because it could carry user info.
+func (l *loader) publicURL(variable string) string {
+	raw := l.getenv(variable)
+	if raw == "" {
+		l.fail(variable, "is required")
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Hostname() == "" {
+		l.fail(variable, "must be a URL such as https://yumdrake.example.com")
+		return ""
+	}
+	loopback := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"
+	switch {
+	case u.Scheme != "https" && (u.Scheme != "http" || !loopback):
+		l.fail(variable, "must use https:// (http:// is allowed only for localhost and 127.0.0.1)")
+		return ""
+	case u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "":
+		l.fail(variable, "must be only a scheme, host and optional port")
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 func (l *loader) valueOr(variable, fallback string) string {

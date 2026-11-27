@@ -16,6 +16,10 @@ import (
 // other code in this database may use it.
 const advisoryLockKey int64 = 0x79756d6472616b65
 
+// maxRateLimitWait caps the pause after a rate limited round, whatever
+// Retry-After says.
+const maxRateLimitWait = 15 * time.Minute
+
 // SyncAll syncs the inventory, then every job source. A failure in one does not
 // stop the others; the errors are joined.
 func (e *Engine) SyncAll(ctx context.Context) error {
@@ -27,6 +31,9 @@ func (e *Engine) syncAll(ctx context.Context) error {
 	var errs []error
 	if err := e.syncInventory(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("sync inventory: %w", err))
+		if isRateLimited(err) {
+			return errors.Join(errs...)
+		}
 	}
 	jobs, err := store.ListJobSources(ctx, e.pool)
 	if err != nil {
@@ -39,6 +46,9 @@ func (e *Engine) syncAll(ctx context.Context) error {
 		}
 		if err := e.syncJob(ctx, job.ID); err != nil {
 			errs = append(errs, fmt.Errorf("sync job source %d (%s %s): %w", job.ID, job.Repo, job.Path, err))
+			if isRateLimited(err) {
+				break // more calls would only extend the limit
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -63,11 +73,18 @@ func (e *Engine) Run(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// nextWait is the pause before the next round.
+func isRateLimited(err error) bool {
+	var limited *github.RateLimitError
+	return errors.As(err, &limited)
+}
+
+// nextWait is the pause before the next round: the interval, or after a rate
+// limited round the delay GitHub asked for, never shorter than the interval and
+// never longer than maxRateLimitWait (unless the interval itself is longer).
 func nextWait(roundErr error, interval time.Duration) time.Duration {
 	var limited *github.RateLimitError
-	if errors.As(roundErr, &limited) && limited.RetryAfter > 0 {
-		return limited.RetryAfter
+	if errors.As(roundErr, &limited) {
+		return max(interval, min(limited.RetryAfter, maxRateLimitWait))
 	}
 	return interval
 }

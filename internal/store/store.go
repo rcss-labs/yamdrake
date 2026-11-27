@@ -20,6 +20,9 @@ var (
 	// ErrInvalidReference is returned when a row refers to one that does not
 	// exist (for example a job source in an unknown folder).
 	ErrInvalidReference = errors.New("referenced row does not exist")
+	// ErrInvalid is returned when a value breaks a rule the store enforces
+	// (for example a grant with an unknown action).
+	ErrInvalid = errors.New("invalid value")
 )
 
 // DBTX is satisfied by *pgxpool.Pool and pgx.Tx. Begin starts a transaction on
@@ -34,10 +37,11 @@ type DBTX interface {
 const (
 	uniqueViolation     = "23505"
 	foreignKeyViolation = "23503"
+	checkViolation      = "23514"
 )
 
 // mapError converts PostgreSQL unique violations to ErrDuplicate, foreign key
-// violations to ErrInvalidReference and missing
+// violations to ErrInvalidReference, check violations to ErrInvalid and missing
 // rows to ErrNotFound; other errors pass through unchanged.
 func mapError(err error) error {
 	if err == nil {
@@ -53,6 +57,8 @@ func mapError(err error) error {
 			return ErrDuplicate
 		case foreignKeyViolation:
 			return ErrInvalidReference
+		case checkViolation:
+			return ErrInvalid
 		}
 	}
 	return err

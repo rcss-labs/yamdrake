@@ -48,7 +48,20 @@ func LoadDir(inventoryDir string, jobFiles []string) (Inventory, []Job, Problems
 			}
 			service, parseProblems := ParseService(path, data)
 			problems = append(problems, parseProblems...)
+			if len(parseProblems) > 0 {
+				// A file that did not parse is only a zero Service; passing it
+				// on would add problems that name no file.
+				continue
+			}
 			services = append(services, service)
+		}
+		ymlPaths, err := filepath.Glob(filepath.Join(inventoryDir, "services", "*.yml"))
+		if err != nil {
+			readFailure(filepath.Join(inventoryDir, "services"), err)
+		}
+		sort.Strings(ymlPaths)
+		for _, path := range ymlPaths {
+			problems = append(problems, YmlExtensionProblem(path))
 		}
 
 		var inventoryProblems Problems
@@ -72,6 +85,12 @@ func LoadDir(inventoryDir string, jobFiles []string) (Inventory, []Job, Problems
 		jobs = append(jobs, job)
 	}
 	return inv, jobs, problems.Sorted()
+}
+
+// YmlExtensionProblem is the problem for a service file named *.yml, which the
+// loaders would otherwise skip without a word.
+func YmlExtensionProblem(file string) Problem {
+	return Problem{File: file, Message: "this file is ignored; use the .yaml extension"}
 }
 
 // readFile reads a file the user named on the command line; reading

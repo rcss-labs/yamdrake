@@ -1,13 +1,18 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/rcss-labs/yamdrake/internal/audit"
 	"github.com/rcss-labs/yamdrake/internal/github"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -107,8 +112,15 @@ func (s *server) createConnection(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, fmt.Errorf("encrypt connection secret: %w", err))
 		return
 	}
-	created, err := store.CreateConnection(r.Context(), s.Pool, store.Connection{
-		Owner: owner, Method: req.Method, AppID: req.AppID, InstallationID: req.InstallationID}, ciphertext)
+	var created store.Connection
+	err = s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+		var err error
+		created, err = store.CreateConnection(ctx, tx, store.Connection{
+			Owner: owner, Method: req.Method, AppID: req.AppID, InstallationID: req.InstallationID}, ciphertext)
+		// Never the token or the key, only what identifies the connection.
+		return audit.Event{Action: "connection.create", TargetType: "github_connection", TargetID: strconv.FormatInt(created.ID, 10),
+			Detail: map[string]any{"owner": owner, "method": req.Method, "app_id": req.AppID, "installation_id": req.InstallationID}}, err
+	})
 	switch {
 	case errors.Is(err, store.ErrDuplicate):
 		writeError(w, http.StatusConflict, codeConflict, fmt.Sprintf("owner %q already has a connection", owner))

@@ -39,9 +39,9 @@ services:
       YUMDRAKE_VALKEY_ADDR: valkey:6379
       # Development only: a fixed, public key. Real deployments must set their own secret.
       YUMDRAKE_LOCAL_SECRET_KEY: ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=
-      # The /api/v1 routes are only registered when a bootstrap token (32+
-      # characters) is set. Unset here; export YUMDRAKE_BOOTSTRAP_TOKEN to try the API.
-      YUMDRAKE_BOOTSTRAP_TOKEN: ${YUMDRAKE_BOOTSTRAP_TOKEN:-}
+      # Development only: the address the browser uses; https:// is required
+      # everywhere except localhost and 127.0.0.1.
+      YUMDRAKE_PUBLIC_URL: http://localhost:${YUMDRAKE_ORCHESTRATOR_PORT:-8080}
       YUMDRAKE_SYNC_INTERVAL: ${YUMDRAKE_SYNC_INTERVAL:-60s}
       YUMDRAKE_GITHUB_API_URL: ${YUMDRAKE_GITHUB_API_URL:-https://api.github.com}
     ports:

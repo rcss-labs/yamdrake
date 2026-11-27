@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,6 +22,8 @@ type Common struct {
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	StartupTimeout  time.Duration
+
+	SecretSettings
 }
 
 // Orchestrator holds the settings of the orchestrator service.
@@ -27,6 +31,10 @@ type Orchestrator struct {
 	Common
 	HTTPAddr       string
 	MigrateOnStart bool
+	// MigrateTimeout bounds the schema migration, separately from StartupTimeout.
+	MigrateTimeout time.Duration
+
+	SyncSettings
 }
 
 // Runner holds the settings of the runner service.
@@ -70,6 +78,7 @@ func (l *loader) loadCommon() Common {
 	c.LogLevel = l.logLevel("YUMDRAKE_LOG_LEVEL", "info")
 	c.ShutdownTimeout = l.duration("YUMDRAKE_SHUTDOWN_TIMEOUT", "20s")
 	c.StartupTimeout = l.duration("YUMDRAKE_STARTUP_TIMEOUT", "60s")
+	c.SecretSettings = l.loadSecretSettings()
 	return c
 }
 
@@ -80,6 +89,8 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	cfg.Common = l.loadCommon()
 	cfg.HTTPAddr = l.hostPort("YUMDRAKE_HTTP_ADDR", ":8080")
 
+	cfg.MigrateTimeout = l.duration("YUMDRAKE_MIGRATE_TIMEOUT", "10m")
+
 	switch raw := l.valueOr("YUMDRAKE_MIGRATE_ON_START", "true"); raw {
 	case "true":
 		cfg.MigrateOnStart = true
@@ -88,6 +99,8 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	default:
 		l.fail("YUMDRAKE_MIGRATE_ON_START", `must be "true" or "false"`)
 	}
+
+	cfg.SyncSettings = l.loadSyncSettings()
 
 	if err := l.err(); err != nil {
 		return Orchestrator{}, err
@@ -205,19 +218,86 @@ func validateDatabaseURL(raw string) string {
 	return ""
 }
 
-// RedactURL replaces the password in raw with REDACTED. It returns
-// "invalid URL" when raw cannot be parsed, so a bad value is never echoed.
+// RedactURL replaces the password in raw with REDACTED, whether it is given
+// as user info or as a "password" query parameter. It returns "invalid URL"
+// when raw cannot be parsed, so a bad value is never echoed.
 func RedactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "invalid URL"
 	}
-	if u.User == nil {
-		return raw
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword(u.User.Username(), redactedPassword)
+		}
 	}
-	if _, hasPassword := u.User.Password(); !hasPassword {
-		return raw
-	}
-	u.User = url.UserPassword(u.User.Username(), redactedPassword)
+	u.RawQuery = redactQueryPasswords(u.RawQuery)
 	return u.String()
+}
+
+// redactQueryPasswords replaces the value of every "password" parameter in
+// rawQuery, leaving the order and encoding of the other parameters untouched.
+func redactQueryPasswords(rawQuery string) string {
+	if rawQuery == "" {
+		return rawQuery
+	}
+	pairs := strings.Split(rawQuery, "&")
+	for i, pair := range pairs {
+		name, _, found := strings.Cut(pair, "=")
+		if !found {
+			continue
+		}
+		if decoded, err := url.QueryUnescape(name); err == nil && decoded == "password" {
+			pairs[i] = name + "=" + redactedPassword
+		}
+	}
+	return strings.Join(pairs, "&")
+}
+
+// Scrub removes the connection URL and every form of its password from text:
+// the plain password, and any mix of percent-encoded characters ("%40" or
+// "%2f" for "@" or "/", "+" or "%20" for a space). Driver errors may echo any
+// of these, so callers use Scrub on error text before logging or returning it.
+func Scrub(text, rawURL string) string {
+	if rawURL == "" {
+		return text
+	}
+	text = strings.ReplaceAll(text, rawURL, RedactURL(rawURL))
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return text
+	}
+	var passwords []string
+	if u.User != nil {
+		if password, ok := u.User.Password(); ok {
+			passwords = append(passwords, password)
+		}
+	}
+	passwords = append(passwords, u.Query()["password"]...)
+	for _, password := range passwords {
+		if password == "" {
+			continue
+		}
+		text = passwordPattern(password).ReplaceAllLiteralString(text, redactedPassword)
+	}
+	return text
+}
+
+// passwordPattern matches password where each character may appear literally
+// or as percent escapes of its UTF-8 bytes (any hex case), and a space may
+// also appear as "+".
+func passwordPattern(password string) *regexp.Regexp {
+	var pattern strings.Builder
+	for _, r := range password {
+		var escaped strings.Builder
+		for _, b := range []byte(string(r)) {
+			fmt.Fprintf(&escaped, "%%(?i:%02x)", b)
+		}
+		alternatives := []string{regexp.QuoteMeta(string(r)), escaped.String()}
+		if r == ' ' {
+			alternatives = append(alternatives, `\+`)
+		}
+		pattern.WriteString("(?:" + strings.Join(alternatives, "|") + ")")
+	}
+	return regexp.MustCompile(pattern.String())
 }

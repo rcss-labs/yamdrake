@@ -49,6 +49,9 @@ func envFrom(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
+// Development only: base64 of a fixed, public 32-byte key. Never use outside tests.
+const devSecretKey = "ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE="
+
 func runnerEnv(t *testing.T, databaseURL, healthAddr, startupTimeout string) map[string]string {
 	t.Helper()
 	valkeyAddr := os.Getenv("YUMDRAKE_TEST_VALKEY_ADDR")
@@ -58,6 +61,7 @@ func runnerEnv(t *testing.T, databaseURL, healthAddr, startupTimeout string) map
 	return map[string]string{
 		"YUMDRAKE_DATABASE_URL":     databaseURL,
 		"YUMDRAKE_VALKEY_ADDR":      valkeyAddr,
+		"YUMDRAKE_LOCAL_SECRET_KEY": devSecretKey,
 		"YUMDRAKE_HEALTH_ADDR":      healthAddr,
 		"YUMDRAKE_RUNNER_ID":        "runner-test",
 		"YUMDRAKE_SHUTDOWN_TIMEOUT": "5s",

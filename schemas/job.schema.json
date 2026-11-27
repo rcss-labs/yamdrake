@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yumdrake.dev/schemas/job.schema.json",
+  "title": "yumdrake Job file",
+  "description": "A deployment job. The Go validator is the authority; this schema is for editor completion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "job", "title", "environment", "groups", "steps"],
+  "properties": {
+    "apiVersion": {
+      "const": "yumdrake/v1"
+    },
+    "kind": {
+      "const": "Job"
+    },
+    "job": {
+      "type": "string",
+      "description": "Job name, unique across the job files.",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable title shown in the UI."
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["labels"],
+      "description": "Environments the job may run in, selected by label.",
+      "properties": {
+        "labels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": ["dev", "preprod", "prod"]
+          }
+        }
+      }
+    },
+    "groups": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "description": "Named sets of services. Keys are group ids.",
+      "patternProperties": {
+        "^[a-z0-9][a-z0-9-]{0,62}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["services"],
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional display label for the group."
+            },
+            "services": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when"],
+      "description": "Optional approval gate.",
+      "properties": {
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["labels"],
+          "properties": {
+            "labels": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "enum": ["dev", "preprod", "prod"]
+              }
+            }
+          }
+        },
+        "expires": {
+          "type": "string",
+          "description": "Go duration such as 15m or 24h. Default 24h.",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$"
+        }
+      }
+    },
+    "notify": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slack"],
+      "description": "Optional notifications.",
+      "properties": {
+        "slack": {
+          "type": "string",
+          "description": "Slack channel, starting with #.",
+          "pattern": "^#.+$"
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "use", "group"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Step name, unique within the job.",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "use": {
+            "description": "Step type.",
+            "enum": ["copy-config", "ecs-deploy"]
+          },
+          "group": {
+            "type": "string",
+            "description": "Group id the step runs against.",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "max_parallel": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "timeout": {
+            "type": "string",
+            "description": "Go duration such as 15m. Only valid for use: ecs-deploy; the Go validator enforces that.",
+            "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$"
+          },
+          "needs": {
+            "type": "array",
+            "description": "Steps that must finish first.",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "description": "Bare step name.",
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["step"],
+                  "properties": {
+                    "step": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+                    },
+                    "scope": {
+                      "description": "step waits for the whole step; service waits per service. Default step.",
+                      "enum": ["step", "service"]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

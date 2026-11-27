@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yumdrake.dev/schemas/environments.schema.json",
+  "title": "yumdrake Environments file",
+  "description": "The inventory's environments.yaml. The Go validator is the authority; this schema is for editor completion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "environments"],
+  "properties": {
+    "apiVersion": {
+      "const": "yumdrake/v1"
+    },
+    "kind": {
+      "const": "Environments"
+    },
+    "environments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "label", "aws_account"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Environment name, lowercase with digits and hyphens.",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "label": {
+            "description": "Deployment label of the environment.",
+            "enum": ["dev", "preprod", "prod"]
+          },
+          "aws_account": {
+            "type": "string",
+            "description": "Twelve-digit AWS account id. Quote it in YAML.",
+            "pattern": "^\\d{12}$"
+          }
+        }
+      }
+    }
+  }
+}

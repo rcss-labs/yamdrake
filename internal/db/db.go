@@ -5,8 +5,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -133,12 +131,5 @@ func (e *scrubbedError) Unwrap() error { return e.err }
 // redactedError wraps err with context and removes the raw URL and password
 // from the message, since driver errors may echo connection details.
 func redactedError(context, rawURL string, err error) error {
-	text := context + ": " + err.Error()
-	text = strings.ReplaceAll(text, rawURL, config.RedactURL(rawURL))
-	if parsed, parseErr := url.Parse(rawURL); parseErr == nil && parsed.User != nil {
-		if password, ok := parsed.User.Password(); ok && password != "" {
-			text = strings.ReplaceAll(text, password, "REDACTED")
-		}
-	}
-	return &scrubbedError{message: text, err: err}
+	return &scrubbedError{message: config.Scrub(context+": "+err.Error(), rawURL), err: err}
 }

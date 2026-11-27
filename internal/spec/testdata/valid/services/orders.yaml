@@ -1,0 +1,10 @@
+apiVersion: yumdrake/v1
+kind: Service
+name: orders
+environments:
+  dev-02:
+    ecs_service: arn:aws:ecs:eu-central-1:222222222222:service/dev-02/orders
+    ecr_repository: 222222222222.dkr.ecr.eu-central-1.amazonaws.com/orders
+  prod-01:
+    ecs_service: arn:aws:ecs:eu-west-1:333333333333:service/prod-01/orders
+    ecr_repository: 333333333333.dkr.ecr.eu-west-1.amazonaws.com/orders

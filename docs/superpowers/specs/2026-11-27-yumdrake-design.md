@@ -493,6 +493,7 @@ S3 holds manifest artifacts and the log archive, with lifecycle rules for each.
 - Cancellation in each leg state of the table in 7.9.
 - Manifest: a tag, branch or S3 object changed after resolve does not change what is deployed; a changed target invalidates the run.
 - AWS and GitHub sit behind interfaces with fakes that return real error shapes.
+- End to end, the whole system runs against Floci, a local AWS emulator, for STS, ECR, ECS, S3 and KMS (`docs/research/2026-11-27-floci.md`). Floci never reports a failed rollout, so failure paths are driven by a stub ECS client in unit tests and by a response-rewriting proxy in front of Floci in end-to-end tests.
 - Web: component tests for the plan, run and job pages, and a browser test of the main path: sign in, plan, run, watch a failure, open the failed service's log, restore.
 
 ## 17. Order of delivery

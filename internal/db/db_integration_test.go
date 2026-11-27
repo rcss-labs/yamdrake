@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -148,7 +149,7 @@ func TestWaitSchemaTimesOutNamingVersions(t *testing.T) {
 	if err == nil {
 		t.Fatal("WaitSchema returned nil on an unmigrated database")
 	}
-	for _, want := range []string{"0", "1"} {
+	for _, want := range []string{"0", strconv.FormatInt(LatestVersion(), 10)} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention version %s", err, want)
 		}

@@ -7,8 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -25,7 +23,7 @@ const (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := app.SignalContext(context.Background())
 	code := run(ctx, os.Args, os.Getenv, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)

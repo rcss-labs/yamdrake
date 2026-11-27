@@ -11,8 +11,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
-	"strings"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,7 +32,59 @@ const (
 	ExitOK      = 0
 	ExitFailure = 1
 	ExitUsage   = 2
+	// ExitForced is the exit code when a second shutdown signal cuts a
+	// graceful shutdown short (128 + SIGINT, the shell convention). The
+	// published codes are therefore 0, 1, 2 and 130.
+	ExitForced = 130
 )
+
+// ShutdownContext returns a context that is cancelled by the first value on
+// signals, which starts the graceful shutdown. A second value while the
+// shutdown is running calls exit(ExitForced) so an operator can always force a
+// stuck process down. The returned stop function releases the watcher; call it
+// when the service has returned.
+func ShutdownContext(parent context.Context, signals <-chan os.Signal, exit func(code int)) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	go func() {
+		select {
+		case <-signals:
+			cancel()
+		case <-ctx.Done():
+			return
+		case <-stopped:
+			return
+		}
+		select {
+		case <-signals:
+			// select picks randomly when stop and a signal are both ready;
+			// stop wins because a stopped service is no longer shutting down.
+			select {
+			case <-stopped:
+			default:
+				exit(ExitForced)
+			}
+		case <-stopped:
+		}
+	}()
+	return ctx, func() {
+		stopOnce.Do(func() { close(stopped) })
+		cancel()
+	}
+}
+
+// SignalContext is ShutdownContext fed by SIGINT and SIGTERM, with os.Exit as
+// the forced exit.
+func SignalContext(parent context.Context) (context.Context, context.CancelFunc) {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := ShutdownContext(parent, signals, os.Exit)
+	return ctx, func() {
+		signal.Stop(signals)
+		stop()
+	}
+}
 
 const probeTimeout = 3 * time.Second
 
@@ -89,6 +143,19 @@ func Serve(ctx context.Context, log *slog.Logger, shutdownTimeout time.Duration,
 	return errors.Join(errs...)
 }
 
+// newHTTPServer returns the server with the shared timeouts. It deliberately
+// sets no WriteTimeout: a server-wide write deadline would cut off long-lived
+// responses such as Server-Sent Events streams.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 // PostgresCheck is the readiness check for the database pool. databaseURL is
 // the configured URL; it is used only to scrub the password from errors,
 // because the health handler logs check errors verbatim.
@@ -99,21 +166,10 @@ func PostgresCheck(pool *pgxpool.Pool, databaseURL string) health.Check {
 func postgresCheck(ping func(context.Context) error, databaseURL string) health.Check {
 	return health.Check{Name: "postgres", Fn: func(ctx context.Context) error {
 		if err := ping(ctx); err != nil {
-			return errors.New("postgres ping failed: " + scrubSecrets(err.Error(), databaseURL))
+			return errors.New("postgres ping failed: " + config.Scrub(err.Error(), databaseURL))
 		}
 		return nil
 	}}
-}
-
-// scrubSecrets removes the raw database URL and its password from text.
-func scrubSecrets(text, databaseURL string) string {
-	text = strings.ReplaceAll(text, databaseURL, config.RedactURL(databaseURL))
-	if parsed, err := url.Parse(databaseURL); err == nil && parsed.User != nil {
-		if password, ok := parsed.User.Password(); ok && password != "" {
-			text = strings.ReplaceAll(text, password, "REDACTED")
-		}
-	}
-	return text
 }
 
 // ValkeyCheck is the readiness check for the Valkey client.
@@ -136,17 +192,29 @@ type Service struct {
 	Fields []any
 	// Prepare runs after the database is open and before serving (migrate or
 	// wait for the schema). It receives the service context and must bound
-	// itself by the start-up timeout.
+	// itself with its own timeout.
 	Prepare func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) error
+	// Extend runs after Prepare and returns what the service adds to the
+	// shared health server: extra routes and background loops.
+	Extend func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) (Extension, error)
+}
+
+// Extension is what a service adds to the health server.
+type Extension struct {
+	// Handlers maps a ServeMux pattern (for example "/api/v1/") to its handler.
+	// The health handler keeps every path not claimed here.
+	Handlers map[string]http.Handler
+	// Background functions run in their own goroutines until the context they
+	// receive is cancelled; Run waits for them before it closes the pool.
+	Background []func(ctx context.Context)
 }
 
 // Run executes the shared start-up sequence and serves until ctx is cancelled.
 // It returns ExitOK on a clean shutdown (including a signal during start-up)
 // and ExitFailure otherwise.
 //
-// The start-up timeout bounds each phase separately: waiting for the database
-// gets Common.StartupTimeout, and then Prepare may take up to another
-// Common.StartupTimeout, so the worst case before serving is twice the setting.
+// Waiting for the database is bounded by Common.StartupTimeout. Prepare bounds
+// itself (the orchestrator's migration has its own, longer timeout).
 func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 	log := logging.New(stdout, svc.Common.LogLevel, svc.Name)
 	log.Info("starting", append([]any{
@@ -187,15 +255,50 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 	}
 	defer client.Close()
 
-	server := &http.Server{
-		Addr: svc.Addr,
-		Handler: health.Handler(
-			[]health.Check{PostgresCheck(pool, svc.Common.DatabaseURL), ValkeyCheck(client)},
-			health.WithLogger(log),
-		),
-		ReadHeaderTimeout: 5 * time.Second,
+	var ext Extension
+	if svc.Extend != nil {
+		ext, err = svc.Extend(ctx, log, pool)
+		if err != nil {
+			log.Error("start-up failed", "error", err.Error())
+			return ExitFailure
+		}
 	}
-	if err := Serve(ctx, log, svc.Common.ShutdownTimeout, server); err != nil {
+
+	healthHandler := health.Handler(
+		[]health.Check{PostgresCheck(pool, svc.Common.DatabaseURL), ValkeyCheck(client)},
+		health.WithLogger(log),
+	)
+	handler := http.Handler(healthHandler)
+	if len(ext.Handlers) > 0 {
+		mux := http.NewServeMux()
+		mux.Handle("/", healthHandler)
+		for pattern, extra := range ext.Handlers {
+			mux.Handle(pattern, extra)
+		}
+		handler = mux
+	}
+
+	background, stopBackground := context.WithCancel(ctx)
+	var running sync.WaitGroup
+	for _, fn := range ext.Background {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			fn(background)
+		}()
+	}
+	server := newHTTPServer(svc.Addr, handler)
+	// Requests must not see the shutdown signal: Serve drains them first. Their
+	// context is cancelled once Serve has returned (drained, or timed out and
+	// closed), so none is still running when the pool closes.
+	requests, cancelRequests := context.WithCancel(context.WithoutCancel(ctx))
+	server.BaseContext = func(net.Listener) context.Context { return requests }
+	err = Serve(ctx, log, svc.Common.ShutdownTimeout, server)
+	cancelRequests()
+	// Stop the loops and wait for them while the pool is still open.
+	stopBackground()
+	running.Wait()
+	if err != nil {
 		log.Error("serve failed", "error", err.Error())
 		return ExitFailure
 	}

@@ -1,0 +1,18 @@
+apiVersion: yumdrake/v1
+kind: Environments
+environments:
+  - name: hetzner-01
+    label: dev
+    aws_account: "111111111111"
+  - name: dev-02
+    label: dev
+    aws_account: "222222222222"
+  - name: dev-03
+    label: dev
+    aws_account: "222222222222"
+  - name: preprod-01
+    label: preprod
+    aws_account: "333333333333"
+  - name: prod-01
+    label: prod
+    aws_account: "333333333333"

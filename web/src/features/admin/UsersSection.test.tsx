@@ -212,6 +212,45 @@ describe('the users section', () => {
       expect(patches()[1]?.body).toEqual({ disabled: false })
     })
 
+    it('shows the server message for a 409 that is not about the last admin', async () => {
+      const user = await openUsers()
+      failNext('PATCH', '/api/v1/admin/users/3', 409, 'conflict', 'Another change to this user is in progress')
+      await user.click(screen.getByRole('button', { name: 'Disable Omer Katz' }))
+      await user.click(screen.getByRole('button', { name: 'Confirm disable of Omer Katz' }))
+      expect(await screen.findByText('Another change to this user is in progress')).toBeInTheDocument()
+      expect(screen.queryByText('At least one enabled admin must remain')).not.toBeInTheDocument()
+    })
+
+    it('uses the last-admin wording when the server says so by code', async () => {
+      const user = await openUsers()
+      failNext('PATCH', '/api/v1/admin/users/3', 409, 'last_admin', 'Refused')
+      await user.click(screen.getByRole('button', { name: 'Disable Omer Katz' }))
+      await user.click(screen.getByRole('button', { name: 'Confirm disable of Omer Katz' }))
+      expect(await screen.findByText('At least one enabled admin must remain')).toBeInTheDocument()
+    })
+
+    it('shows the busy state only on the row being enabled', async () => {
+      for (const person of mockState().users.filter((candidate) => candidate.id === 3 || candidate.id === 4)) {
+        person.disabled = true
+      }
+      const user = await openUsers()
+      const [first, second] = screen.getAllByRole('button', { name: /^Enable / })
+      delayNext('PATCH', '/api/v1/admin/users/3', 100)
+      await user.click(first!)
+      expect(first).toHaveAttribute('aria-busy', 'true')
+      expect(second).toBeEnabled()
+      expect(second).not.toHaveAttribute('aria-busy')
+      await waitFor(() => expect(first).not.toHaveAttribute('aria-busy'))
+    })
+
+    it('asks for the updated permissions after any change to users', async () => {
+      const user = await openUsers()
+      const before = requests.filter((r) => r.method === 'GET' && r.path === '/api/v1/me').length
+      await user.click(screen.getByRole('button', { name: 'Disable Omer Katz' }))
+      await user.click(screen.getByRole('button', { name: 'Confirm disable of Omer Katz' }))
+      await waitFor(() => expect(requests.filter((r) => r.method === 'GET' && r.path === '/api/v1/me')).toHaveLength(before + 1))
+    })
+
     it('explains that at least one enabled admin must remain', async () => {
       const user = await openUsers()
       await user.click(screen.getByRole('button', { name: 'Disable Dana Levi' }))

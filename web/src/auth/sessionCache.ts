@@ -19,3 +19,11 @@ export function startSession(queryClient: QueryClient, me: Me): void {
   forgetEverythingButTheSession(queryClient)
   queryClient.setQueryData(meQueryKey, me)
 }
+
+/**
+ * What the person may do can change when users, groups, grants or mappings change (including their own),
+ * so the cached answer of GET /api/v1/me is refreshed after any such change.
+ */
+export function refreshMe(queryClient: QueryClient): Promise<void> {
+  return queryClient.invalidateQueries({ queryKey: meQueryKey })
+}

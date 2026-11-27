@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { refreshMe } from '../../auth/sessionCache'
 import { api } from '../../api/client'
 import type { ApiError } from '../../api/error'
 import { useApiGet } from '../../api/hooks'
@@ -33,7 +34,7 @@ export function useCreateGroup() {
   const queryClient = useQueryClient()
   return useMutation<AdminGroup, ApiError, CreateGroupRequest>({
     mutationFn: (body) => api<AdminGroup>('POST', '/api/v1/admin/groups', body),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: groupsKey }),
+    onSuccess: () => Promise.all([queryClient.invalidateQueries({ queryKey: groupsKey }), refreshMe(queryClient)]),
   })
 }
 
@@ -41,7 +42,7 @@ export function useSetGroupAdmin() {
   const queryClient = useQueryClient()
   return useMutation<AdminGroup, ApiError, { id: number } & UpdateGroupRequest>({
     mutationFn: ({ id, admin }) => api<AdminGroup>('PATCH', `/api/v1/admin/groups/${id}`, { admin }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: groupsKey }),
+    onSuccess: () => Promise.all([queryClient.invalidateQueries({ queryKey: groupsKey }), refreshMe(queryClient)]),
   })
 }
 
@@ -49,7 +50,7 @@ export function useAddGrant() {
   const queryClient = useQueryClient()
   return useMutation<AdminGrant, ApiError, CreateGrantRequest>({
     mutationFn: (body) => api<AdminGrant>('POST', '/api/v1/admin/grants', body),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: grantsKey }),
+    onSuccess: () => Promise.all([queryClient.invalidateQueries({ queryKey: grantsKey }), refreshMe(queryClient)]),
   })
 }
 
@@ -57,7 +58,7 @@ export function useRemoveGrant() {
   const queryClient = useQueryClient()
   return useMutation<void, ApiError, number>({
     mutationFn: (id) => api<void>('DELETE', `/api/v1/admin/grants/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: grantsKey }),
+    onSuccess: () => Promise.all([queryClient.invalidateQueries({ queryKey: grantsKey }), refreshMe(queryClient)]),
   })
 }
 
@@ -66,7 +67,7 @@ export function usePutMapping() {
   return useMutation<IdpMapping, ApiError, { idpGroup: string } & PutIdpMappingRequest>({
     mutationFn: ({ idpGroup, group_id }) =>
       api<IdpMapping>('PUT', `/api/v1/admin/idp-mappings/${encodeURIComponent(idpGroup)}`, { group_id }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: mappingsKey }),
+    onSuccess: () => Promise.all([queryClient.invalidateQueries({ queryKey: mappingsKey }), refreshMe(queryClient)]),
   })
 }
 
@@ -74,6 +75,6 @@ export function useRemoveMapping() {
   const queryClient = useQueryClient()
   return useMutation<void, ApiError, string>({
     mutationFn: (idpGroup) => api<void>('DELETE', `/api/v1/admin/idp-mappings/${encodeURIComponent(idpGroup)}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: mappingsKey }),
+    onSuccess: () => Promise.all([queryClient.invalidateQueries({ queryKey: mappingsKey }), refreshMe(queryClient)]),
   })
 }

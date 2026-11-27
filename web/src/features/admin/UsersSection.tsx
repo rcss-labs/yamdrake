@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { errorMessage } from '../../api/client'
 import type { AdminUser, UserSource } from '../../api/types'
 import { Button, Card, Checkbox, DataTable, EmptyState, ErrorState, Field, Loading, Note, Select, StatusPill, Tag, TextInput, type DataColumn } from '../../ui'
+import { changeConflictMessage } from './messages'
 import { useCreateUser, useGroups, useUpdateUser, useUsers } from './usersQueries'
 import './users.css'
 
@@ -11,7 +12,6 @@ const sourceWords: Record<UserSource, string> = {
   service: 'Service',
 }
 
-const lastAdminMessage = 'At least one enabled admin must remain'
 const MIN_PASSWORD_LENGTH = 12
 
 function formatLastSignIn(value: string | null) {
@@ -19,12 +19,6 @@ function formatLastSignIn(value: string | null) {
     return 'Never'
   }
   return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })
-}
-
-function changeMessage(error: unknown): string {
-  return typeof error === 'object' && error !== null && 'status' in error && error.status === 409
-    ? lastAdminMessage
-    : errorMessage(error)
 }
 
 export function UsersSection() {
@@ -62,7 +56,7 @@ function UsersTable({ users, onEditGroups }: { users: AdminUser[]; onEditGroups:
         onSuccess: () => setConfirmingId(null),
         onError: (error) => {
           setConfirmingId(null)
-          setFailure({ id: user.id, message: changeMessage(error) })
+          setFailure({ id: user.id, message: changeConflictMessage(error) })
         },
       },
     )
@@ -97,7 +91,7 @@ function UsersTable({ users, onEditGroups }: { users: AdminUser[]; onEditGroups:
           <RowActions
             user={user}
             confirming={confirmingId === user.id}
-            busy={update.isPending}
+            busy={update.isPending && update.variables?.id === user.id}
             onEditGroups={() => onEditGroups(user.id)}
             onAskDisable={() => {
               setFailure(null)
@@ -223,7 +217,7 @@ function GroupEditor({ user, onClose }: { user: AdminUser; onClose: () => void }
               ))}
             </fieldset>
           ))}
-        {update.isError && <Note tone="error">{changeMessage(update.error)}</Note>}
+        {update.isError && <Note tone="error">{changeConflictMessage(update.error)}</Note>}
         <div className="users-buttons">
           <Button type="submit" variant="primary" loading={update.isPending} disabled={!groups.data}>
             Save groups

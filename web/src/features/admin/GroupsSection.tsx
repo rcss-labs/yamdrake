@@ -16,6 +16,7 @@ import {
   useRemoveMapping,
   useSetGroupAdmin,
 } from './groupsQueries'
+import { changeConflictMessage } from './messages'
 import './groups.css'
 
 // The permission rule (Plan 3): these four actions apply everywhere and take no scope.
@@ -146,7 +147,7 @@ function GroupCard({ group, grants, folders, environmentNames, labels }: GroupCa
 
   const adminError = setAdmin.error
     ? setAdmin.error.status === 409
-      ? 'At least one enabled admin must remain'
+      ? changeConflictMessage(setAdmin.error)
       : describeError(setAdmin.error)
     : undefined
 

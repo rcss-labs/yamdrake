@@ -83,6 +83,33 @@ describe('the groups and permissions section', () => {
     expect(patch?.body).toEqual({ admin: true })
   })
 
+  it.each([
+    ['makes a group an admin group', async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.click(within(group('QA')).getByRole('switch', { name: 'Administrator group: QA' }))
+    }],
+    ['creates a group', async (user: ReturnType<typeof userEvent.setup>) => {
+      await user.type(screen.getByLabelText('Group name'), 'Release managers')
+      await user.click(screen.getByRole('button', { name: 'Create group' }))
+    }],
+    ['removes a grant', async (user: ReturnType<typeof userEvent.setup>) => {
+      const row = within(group('QA')).getByRole('row', { name: /View logs/ })
+      await user.click(within(row).getByRole('button', { name: 'Remove grant' }))
+      await user.click(within(row).getByRole('button', { name: 'Confirm remove' }))
+    }],
+    ['removes a mapping', async (user: ReturnType<typeof userEvent.setup>) => {
+      const row = screen.getByRole('row', { name: /eng-qa/ })
+      await user.click(within(row).getByRole('button', { name: 'Remove mapping' }))
+      await user.click(within(row).getByRole('button', { name: 'Confirm remove' }))
+    }],
+  ])('asks for the updated permissions after the person %s', async (_name, act) => {
+    const user = userEvent.setup()
+    await openGroups()
+    const meRequests = () => requests.filter((r) => r.method === 'GET' && r.path === '/api/v1/me').length
+    const before = meRequests()
+    await act(user)
+    await waitFor(() => expect(meRequests()).toBe(before + 1))
+  })
+
   it('says at least one admin must remain when the last admin group is turned off', async () => {
     const user = userEvent.setup()
     await openGroups()

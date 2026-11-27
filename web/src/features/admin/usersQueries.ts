@@ -1,5 +1,6 @@
 import { useMutation } from '@tanstack/react-query'
 import { useQueryClient } from '@tanstack/react-query'
+import { meQueryKey } from '../../auth/sessionCache'
 import { api } from '../../api/client'
 import type { ApiError } from '../../api/error'
 import { useApiGet, useApiMutation } from '../../api/hooks'
@@ -19,7 +20,7 @@ export function useGroups(enabled: boolean) {
 
 export function useCreateUser() {
   return useApiMutation<AdminUser, CreateUserRequest>('POST', '/api/v1/admin/users', {
-    invalidate: [usersKey, groupsKey],
+    invalidate: [usersKey, groupsKey, meQueryKey],
     // The request body holds the new password: drop the mutation from the cache once nothing observes it.
     gcTime: 0,
   })
@@ -33,7 +34,7 @@ export function useUpdateUser() {
   return useMutation<AdminUser, ApiError, UserChange>({
     mutationFn: ({ id, ...change }) => api<AdminUser>('PATCH', `/api/v1/admin/users/${id}`, change),
     onSuccess: async () => {
-      await Promise.all([usersKey, groupsKey].map((queryKey) => queryClient.invalidateQueries({ queryKey })))
+      await Promise.all([usersKey, groupsKey, meQueryKey].map((queryKey) => queryClient.invalidateQueries({ queryKey })))
     },
   })
 }

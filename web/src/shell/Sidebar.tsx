@@ -32,7 +32,6 @@ const adminItem: NavItem = { to: '/admin', label: 'Admin', icon: 'admin' }
 function seesAdmin(me: Me): boolean {
   return (
     me.admin ||
-    canSomewhere(me, 'manage_jobs') ||
     canSomewhere(me, 'manage_connections') ||
     canSomewhere(me, 'manage_access') ||
     canSomewhere(me, 'view_audit')

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
-import { adminMe, failNext, jobManagerMe, requests, server, viewerMe } from '../test/server'
+import { accessManagerMe, adminMe, auditorMe, connectionsManagerMe, failNext, jobManagerMe, requests, server, viewerMe } from '../test/server'
 import { ErrorBoundary } from './ErrorBoundary'
 import { renderApp } from '../test/render'
 
@@ -34,8 +34,13 @@ describe('the application shell', () => {
     expect(nav.queryByRole('link', { name: 'Admin' })).not.toBeInTheDocument()
   })
 
-  it('shows Admin to a person who manages jobs', async () => {
+  it('hides Admin from a person who only manages jobs, as no Admin section is open to them', async () => {
     renderApp(<App />, { me: jobManagerMe })
+    expect((await mainNav()).queryByRole('link', { name: 'Admin' })).not.toBeInTheDocument()
+  })
+
+  it.each([accessManagerMe, connectionsManagerMe, auditorMe])('shows Admin to $name', async (person) => {
+    renderApp(<App />, { me: person })
     expect((await mainNav()).getByRole('link', { name: 'Admin' })).toBeInTheDocument()
   })
 

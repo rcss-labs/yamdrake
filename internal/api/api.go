@@ -100,8 +100,8 @@ var dummyPasswordHash = sync.OnceValues(func() (string, error) {
 	return auth.HashPassword("a password nobody has chosen")
 })
 
-// New returns the handler for the whole /api/v1 tree (full paths are
-// registered, so mount it at "/api/v1/"). Every route except sign-in needs an
+// New returns the handler for the whole /api/v1 tree and the /saml endpoints
+// (full paths are registered, so mount it at "/api/v1/" and "/saml/"). Every route except sign-in needs an
 // authenticated principal, and every route states the action it needs.
 func New(deps Deps) http.Handler {
 	if deps.Pool == nil || deps.Sessions == nil || deps.Valkey == nil || deps.PublicURL == "" {
@@ -137,6 +137,15 @@ func New(deps Deps) http.Handler {
 	// Sign-in is the one route that is open to everyone; it carries no session
 	// cookie to check, so it has its own origin check (login CSRF).
 	root.HandleFunc("POST /api/v1/auth/login", s.login)
+	// Single sign-on. These are open to everyone by nature: the identity
+	// provider's browser post carries no session of ours, so /saml/acs is exempt
+	// from the same-origin check (and only from that); it is protected by the
+	// signed response, the relay state cookie and the replay check instead.
+	// Mount this handler at "/saml/" as well as "/api/v1/".
+	root.HandleFunc("GET /api/v1/auth/methods", s.authMethods)
+	root.HandleFunc("GET /saml/metadata", s.samlMetadata)
+	root.HandleFunc("POST /saml/acs", s.samlACS)
+	root.HandleFunc("GET /api/v1/auth/saml/start", s.samlStart)
 	// The CLI's device sign-in starts and finishes without credentials (the
 	// CLI has none yet). Neither route reads a cookie, so neither can be used
 	// cross-site to act as a signed-in browser user; confirm is authenticated.
@@ -192,6 +201,9 @@ func (s *server) routes() []routeDef {
 		{"PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource},
 		{"GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections},
 		{"POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection},
+		{"GET /api/v1/admin/sso", auth.ManageAccess, s.getSSO},
+		{"PUT /api/v1/admin/sso", auth.ManageAccess, s.putSSO},
+		{"POST /api/v1/admin/sso/test", auth.ManageAccess, s.testSSO},
 		{"GET /api/v1/folders", auth.View, s.listFolders},
 		{"POST /api/v1/folders", auth.ManageJobs, s.createFolder},
 		{"GET /api/v1/jobs", auth.View, s.listJobs},

@@ -165,7 +165,7 @@ func TestDeviceCodeYieldsTokenOnce(t *testing.T) {
 	// may see "confirmed:...".
 	racing := h.startDeviceLogin()
 	h.expect(h.confirmDevice(sessionID, racing["user_code"].(string)), http.StatusNoContent, "")
-	key := deviceKey(deviceHash(racing["device_code"].(string)))
+	key := (&server{Deps: h.deps}).deviceKey(deviceHash(racing["device_code"].(string)))
 	const readers = 16
 	results := make(chan bool, readers)
 	for range readers {
@@ -210,7 +210,7 @@ func TestDeviceLoginExpires(t *testing.T) {
 	deviceCode, userCode := start["device_code"].(string), start["user_code"].(string)
 
 	// Remove the state the way its 10 minute expiry does.
-	keys, err := h.valkey.Do(context.Background(), h.valkey.B().Keys().Pattern("device:*").Build()).AsStrSlice()
+	keys, err := h.valkey.Do(context.Background(), h.valkey.B().Keys().Pattern(h.deps.KeyPrefix+"device:*").Build()).AsStrSlice()
 	if err != nil {
 		t.Fatalf("list device keys: %v", err)
 	}
@@ -220,11 +220,11 @@ func TestDeviceLoginExpires(t *testing.T) {
 		}
 	}
 	// TTL is about ten minutes on the code's keys.
-	ttl := h.valkey.Do(context.Background(), h.valkey.B().Ttl().Key("device-user:"+userCode).Build())
+	ttl := h.valkey.Do(context.Background(), h.valkey.B().Ttl().Key(h.deps.KeyPrefix+"device-user:"+userCode).Build())
 	if secs, err := ttl.AsInt64(); err != nil || secs < 590 || secs > 600 {
 		t.Errorf("TTL of the user code = %d, %v; want about 600 seconds", secs, err)
 	}
-	if err := h.valkey.Do(context.Background(), h.valkey.B().Del().Key("device-user:"+userCode).Build()).Error(); err != nil {
+	if err := h.valkey.Do(context.Background(), h.valkey.B().Del().Key(h.deps.KeyPrefix+"device-user:"+userCode).Build()).Error(); err != nil {
 		t.Fatalf("expire user code: %v", err)
 	}
 	h.expect(h.confirmDevice(sessionID, userCode), http.StatusNotFound, "not_found")
@@ -235,7 +235,7 @@ func TestDeviceLoginExpires(t *testing.T) {
 	// An unknown device code and an expired one answer alike.
 	h.expect(h.pollDevice(strings.Repeat("A", 43)), http.StatusBadRequest, "expired_token")
 	for _, key := range keys {
-		if strings.HasPrefix(key, "device:") {
+		if strings.HasPrefix(key, h.deps.KeyPrefix+"device:") {
 			_ = h.valkey.Do(context.Background(), h.valkey.B().Del().Key(key).Build()).Error()
 		}
 	}

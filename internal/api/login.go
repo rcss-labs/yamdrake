@@ -189,41 +189,50 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		s.valkeyFailed(w, "reset sign-in failure counter", err)
 		return
 	}
-	// Whatever session the client already holds ends here, and the new one gets
-	// an id of our own making: a planted session id is never adopted.
-	if old, has := session.IDFromRequest(r); has {
-		ctx, cancel = s.valkeyContext(r)
-		err = s.Sessions.Delete(ctx, old)
-		cancel()
-		if err != nil {
-			s.valkeyFailed(w, "delete previous session", err)
-			return
-		}
-	}
-	ctx, cancel = s.valkeyContext(r)
-	created, err := s.Sessions.Create(ctx, user.ID)
-	cancel()
-	if err != nil {
-		s.valkeyFailed(w, "create session", err)
+	principal, err := s.startSession(w, r, user.ID, map[string]any{"method": "password"})
+	switch {
+	case errors.Is(err, session.ErrUnavailable):
+		s.valkeyFailed(w, "start session", err)
 		return
-	}
-	principal, err := auth.Resolve(r.Context(), s.Pool, user.ID, viaSession)
-	if err == nil {
-		err = audit.Record(r.Context(), s.Pool, &principal, s.Now(), audit.Event{
-			Action: "auth.login", TargetType: "user", TargetID: strconv.FormatInt(user.ID, 10),
-			Detail: map[string]any{"method": "password"}})
-	}
-	if err != nil {
-		s.deleteSession(r, created.ID)
-		if errors.Is(err, auth.ErrDisabled) {
-			writeError(w, http.StatusUnauthorized, codeUnauthorized, "invalid email or password")
-			return
-		}
+	case errors.Is(err, auth.ErrDisabled):
+		writeError(w, http.StatusUnauthorized, codeUnauthorized, "invalid email or password")
+		return
+	case err != nil:
 		s.internalError(w, r, err)
 		return
 	}
-	session.SetCookie(w, created)
 	writeJSON(w, http.StatusOK, principalView(principal))
+}
+
+// startSession signs the user in whichever way they proved who they are: the
+// session the client already holds ends, a new one with an id of our own making
+// is created (a planted session id is never adopted), the sign-in is audited
+// with detail and the cookie is set. It writes nothing but that cookie; the
+// caller answers. Errors wrap session.ErrUnavailable (Valkey), auth.ErrDisabled
+// or are internal.
+func (s *server) startSession(w http.ResponseWriter, r *http.Request, userID int64, detail map[string]any) (auth.Principal, error) {
+	ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)
+	defer cancel()
+	if old, has := session.IDFromRequest(r); has {
+		if err := s.Sessions.Delete(ctx, old); err != nil {
+			return auth.Principal{}, err
+		}
+	}
+	created, err := s.Sessions.Create(ctx, userID)
+	if err != nil {
+		return auth.Principal{}, err
+	}
+	principal, err := auth.Resolve(r.Context(), s.Pool, userID, viaSession)
+	if err == nil {
+		err = audit.Record(r.Context(), s.Pool, &principal, s.Now(), audit.Event{
+			Action: "auth.login", TargetType: "user", TargetID: strconv.FormatInt(userID, 10), Detail: detail})
+	}
+	if err != nil {
+		s.deleteSession(r, created.ID)
+		return auth.Principal{}, err
+	}
+	session.SetCookie(w, created)
+	return principal, nil
 }
 
 // checkPassword reports whether email and password name an enabled user who

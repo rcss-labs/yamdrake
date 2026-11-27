@@ -67,7 +67,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			PublicURL:           cfg.PublicURL,
 		})
 		return Extension{
-			Handlers: map[string]http.Handler{"/api/v1/": handler},
+			Handlers: map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},
 			Background: []func(context.Context){func(ctx context.Context) {
 				log.Info("sync loop started", "interval", cfg.SyncInterval.String(), "github_api_url", cfg.GitHubAPIURL)
 				engine.Run(ctx, cfg.SyncInterval)

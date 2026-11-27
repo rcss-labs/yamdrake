@@ -16,6 +16,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
 // maxBodyBytes limits every request body.
@@ -34,6 +35,8 @@ const (
 // is passed through, so a slow sync ends with its request.
 type Syncer interface {
 	SyncInventory(ctx context.Context) error
+	// SetInventorySource stores the source and syncs it as one serialised step.
+	SetInventorySource(ctx context.Context, source store.InventorySource) error
 	SyncJob(ctx context.Context, jobSourceID int64) error
 }
 

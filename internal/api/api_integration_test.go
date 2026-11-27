@@ -427,6 +427,28 @@ func TestSetInventorySourceSyncsAndInventoryIsServed(t *testing.T) {
 	}
 }
 
+func TestCorrectingTheInventoryPathActivatesAtTheSameHead(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	put := func(path string) map[string]any {
+		return h.mustDo("PUT", "/api/v1/admin/inventory-source", map[string]string{"repo": invRepo, "branch": "main", "path": path}, http.StatusOK)
+	}
+	if inv := put("typo"); inv["commit"] != "" || inv["rejected"] == nil {
+		t.Fatalf("typo path: commit %v rejected %v, want no commit and a problem", inv["commit"], inv["rejected"])
+	}
+	if inv := put(invPath); inv["commit"] != "c1" || inv["rejected"] != nil {
+		t.Fatalf("corrected path: commit %v rejected %v, want c1 and none", inv["commit"], inv["rejected"])
+	}
+
+	// Moving to another path at the same head serves the new path's inventory.
+	h.src.put(invRepo, "c1", "other/environments.yaml", fixture(t, "environments.yaml"))
+	h.src.put(invRepo, "c1", "other/services/orders.yaml", fixture(t, "services/orders.yaml"))
+	inv := put("other")
+	if services, _ := inv["services"].([]any); len(services) != 1 {
+		t.Fatalf("services after moving = %v, want only orders", inv["services"])
+	}
+}
+
 func TestInventoryBeforeAnySourceIsEmptyNotAnError(t *testing.T) {
 	h := newHarness(t)
 	inv := h.mustDo("GET", "/api/v1/inventory", nil, http.StatusOK)
@@ -626,8 +648,9 @@ func TestFoldersCreateListAndRejectDuplicates(t *testing.T) {
 // stubSyncer returns fixed errors from the on-demand syncs.
 type stubSyncer struct{ err error }
 
-func (s stubSyncer) SyncInventory(context.Context) error  { return s.err }
-func (s stubSyncer) SyncJob(context.Context, int64) error { return s.err }
+func (s stubSyncer) SyncInventory(context.Context) error                             { return s.err }
+func (s stubSyncer) SetInventorySource(context.Context, store.InventorySource) error { return s.err }
+func (s stubSyncer) SyncJob(context.Context, int64) error                            { return s.err }
 
 func (h *harness) withSyncer(syncer Syncer) {
 	h.handler = New(Deps{Pool: h.pool, Engine: syncer, Cipher: h.cipher,

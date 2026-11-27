@@ -839,3 +839,111 @@ func TestWaitingSyncCallsDoNotStarveTheLockHolder(t *testing.T) {
 
 // micro is the precision PostgreSQL (and therefore the store) keeps.
 func micro(t time.Time) time.Time { return t.Truncate(time.Microsecond) }
+
+// setSource changes the inventory source the way the API does.
+func (h *harness) setSource(path string) {
+	h.t.Helper()
+	if err := store.SetInventorySource(context.Background(), h.pool, store.InventorySource{Repo: invRepo, Branch: "main", Path: path}); err != nil {
+		h.t.Fatalf("SetInventorySource: %v", err)
+	}
+}
+
+func TestCorrectedInventoryPathIsReadAtTheSameHead(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.setSource("typo")
+	h.pushInventory("c1")
+	if err := h.engine.SyncInventory(context.Background()); err != nil {
+		t.Fatalf("SyncInventory: %v", err)
+	}
+	if st := h.status(); st.ProblemsCommit != "c1" || !strings.Contains(problemsText(t, st.Problems), "not found") {
+		t.Fatalf("expected the missing-file problem, got %+v", st)
+	}
+
+	h.tick()
+	h.setSource(invPath)
+	if err := h.engine.SyncInventory(context.Background()); err != nil {
+		t.Fatalf("SyncInventory after the fix: %v", err)
+	}
+	if got := h.active().Commit; got != "c1" {
+		t.Fatalf("active commit = %q, want c1", got)
+	}
+	if st := h.status(); st.Problems != nil || st.ProblemsCommit != "" {
+		t.Fatalf("stale problems remain: %+v", st)
+	}
+}
+
+func TestMovedInventoryPathReplacesTheActiveInventoryAtTheSameHead(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.firstSync()
+	before := h.active()
+
+	// A second, smaller inventory at the same commit under another path.
+	h.src.put(invRepo, "c1", "other/environments.yaml", fixture(t, "environments.yaml"))
+	h.src.put(invRepo, "c1", "other/services/orders.yaml", fixture(t, "services/orders.yaml"))
+	h.tick()
+	h.setSource("other")
+	if err := h.engine.SyncInventory(context.Background()); err != nil {
+		t.Fatalf("SyncInventory: %v", err)
+	}
+	after := h.active()
+	if after.ID == before.ID {
+		t.Fatal("the active snapshot still serves the old path's inventory")
+	}
+	if got := strings.Join(h.inventoryOf(after).ServiceNames(), ","); got != "orders" {
+		t.Fatalf("services = %q, want the new path's orders only", got)
+	}
+	var active int
+	if err := h.pool.QueryRow(context.Background(), "SELECT count(*) FROM inventory_snapshots WHERE active").Scan(&active); err != nil || active != 1 {
+		t.Fatalf("active snapshots = %d, %v; want exactly one", active, err)
+	}
+}
+
+func TestSourceChangeIsReadByThePollEvenAfterAFailedAttempt(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.firstSync()
+	h.src.put(invRepo, "c1", "other/environments.yaml", fixture(t, "environments.yaml"))
+	h.src.put(invRepo, "c1", "other/services/orders.yaml", fixture(t, "services/orders.yaml"))
+	h.setSource("other")
+
+	h.src.setErr(errors.New("github is down"))
+	if err := h.engine.SyncInventory(context.Background()); err == nil {
+		t.Fatal("expected the source error")
+	}
+	h.src.setErr(nil)
+	h.tick()
+	if err := h.syncAll(); err != nil {
+		t.Fatalf("SyncAll: %v", err)
+	}
+	if got := strings.Join(h.inventoryOf(h.active()).ServiceNames(), ","); got != "orders" {
+		t.Fatalf("services = %q, want the new path's orders only", got)
+	}
+}
+
+func TestUnchangedSourceKeepsTheStatus(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.firstSync()
+	before := h.status()
+	h.setSource(invPath) // the same value again
+	if after := h.status(); after.CheckedAt == nil || !after.CheckedAt.Equal(*before.CheckedAt) {
+		t.Fatalf("status reset by an unchanged source: %+v -> %+v", before, after)
+	}
+}
+
+func TestYmlServiceFileIsReportedNotIgnored(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.configureInventory()
+	h.pushInventory("c1")
+	h.src.put(invRepo, "c1", invPath+"/services/payments.yml", fixture(t, "services/orders.yaml"))
+	if err := h.engine.SyncInventory(context.Background()); err != nil {
+		t.Fatalf("SyncInventory: %v", err)
+	}
+	text := problemsText(t, h.status().Problems)
+	if !strings.Contains(text, "services/payments.yml") || !strings.Contains(text, ".yaml extension") {
+		t.Fatalf("problems do not name the .yml file:\n%s", text)
+	}
+}

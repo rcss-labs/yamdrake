@@ -94,23 +94,37 @@ export function InventoryPage() {
   }
 
   const data = inventory.data
+  const notes = (
+    <>
+      {data.sync_error !== '' && (
+        <Note tone="warning" className="inv-note">
+          The last check on {formatTime(data.sync_error_at)} failed: <span className="mono">{data.sync_error}</span>
+        </Note>
+      )}
+      {data.rejected && <RejectedNote rejected={data.rejected} />}
+    </>
+  )
   if (data.commit === '') {
+    // Without an active commit there is either no source, or a source whose first sync failed or was rejected.
+    const sourceProblem = data.sync_error !== '' || data.rejected !== null
+    const link = canManage ? (
+      <Link className="inv-link" to="/admin/sources">
+        Set the inventory source
+      </Link>
+    ) : undefined
     return (
       <>
         {header}
+        {notes}
         <EmptyState
-          title="No inventory source is set"
-          action={
-            canManage ? (
-              <Link className="inv-link" to="/admin/sources">
-                Set the inventory source
-              </Link>
-            ) : undefined
-          }
+          title={sourceProblem ? 'No inventory is active yet' : 'No inventory source is set'}
+          action={link}
         >
-          {canManage
-            ? 'Point Yumdrake at the git repository that holds the environments and services, then sync.'
-            : 'Ask someone who manages connections to set the git repository the inventory is read from.'}
+          {sourceProblem
+            ? 'Fix the problems above in git, then sync again.'
+            : canManage
+              ? 'Point Yumdrake at the git repository that holds the environments and services, then sync.'
+              : 'Ask someone who manages connections to set the git repository the inventory is read from.'}
         </EmptyState>
       </>
     )
@@ -127,12 +141,7 @@ export function InventoryPage() {
           { label: 'Last checked', value: formatTime(data.checked_at) },
         ]}
       />
-      {data.sync_error !== '' && (
-        <Note tone="warning" className="inv-note">
-          The last check on {formatTime(data.sync_error_at)} failed: <span className="mono">{data.sync_error}</span>
-        </Note>
-      )}
-      {data.rejected && <RejectedNote rejected={data.rejected} />}
+      {notes}
       <Tabs label="Inventory sections" tabs={tabs} active={active} onChange={selectTab} panelId={panelId} />
       <div role="tabpanel" id={panelId(active)} className="inv-panel">
         {active === 'environments' ? <EnvironmentsTab inventory={data} /> : <ServicesTab inventory={data} />}

@@ -101,6 +101,32 @@ describe('no inventory source', () => {
     expect(screen.getByRole('link', { name: 'Set the inventory source' })).toHaveAttribute('href', '/admin/sources')
   })
 
+  it('shows a rejected first commit and its problems instead of claiming no source is set', async () => {
+    server.use(
+      http.get('/api/v1/inventory', () =>
+        HttpResponse.json({ ...noSourceInventory, rejected: inventoryFixture.rejected }),
+      ),
+    )
+    showInventory('/inventory', connectionsManagerMe)
+    expect(await screen.findByText('ecs_service is required')).toBeInTheDocument()
+    expect(screen.getByText('ffee001')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'No inventory source is set' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'No inventory is active yet' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Set the inventory source' })).toHaveAttribute('href', '/admin/sources')
+  })
+
+  it('shows the sync error instead of claiming no source is set', async () => {
+    server.use(
+      http.get('/api/v1/inventory', () =>
+        HttpResponse.json({ ...noSourceInventory, sync_error: 'GitHub could not be reached', sync_error_at: '2026-11-27T09:00:00Z' }),
+      ),
+    )
+    showInventory()
+    expect(await screen.findByText('GitHub could not be reached')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'No inventory source is set' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'No inventory is active yet' })).toBeInTheDocument()
+  })
+
   it('tells anyone else to ask an administrator, with no link', async () => {
     withoutSource()
     showInventory()

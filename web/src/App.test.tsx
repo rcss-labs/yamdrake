@@ -7,7 +7,7 @@ import { renderApp } from './test/render'
 describe('App', () => {
   it('shows the product name and who is signed in', async () => {
     renderApp(<App />, { me: adminMe })
-    expect(await screen.findByText(`Signed in as ${adminMe.name}`)).toBeInTheDocument()
+    expect(await screen.findByText(adminMe.name)).toBeInTheDocument()
     expect(screen.getByText('Yumdrake')).toBeInTheDocument()
   })
 
@@ -15,6 +15,6 @@ describe('App', () => {
     renderApp(<App />, { me: null })
     expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument()
     expect(screen.getByText('Yumdrake')).toBeInTheDocument()
-    expect(screen.queryByText(/Signed in as/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument()
   })
 })

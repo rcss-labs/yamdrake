@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,6 +41,9 @@ type Orchestrator struct {
 	// counters. Empty by default; set it to tell apart services (or test runs)
 	// that share one Valkey.
 	ValkeyKeyPrefix string
+	// LogArchiveDir is the directory settled legs' logs are archived to. Empty
+	// means archiving is off (until object storage arrives in Plan 5).
+	LogArchiveDir string
 
 	SyncSettings
 }
@@ -113,6 +117,10 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	cfg.ValkeyKeyPrefix = l.getenv("YUMDRAKE_VALKEY_KEY_PREFIX")
 	if !keyPrefixPattern.MatchString(cfg.ValkeyKeyPrefix) {
 		l.fail("YUMDRAKE_VALKEY_KEY_PREFIX", "must be at most 64 letters, digits, '-', '_' or ':'")
+	}
+	cfg.LogArchiveDir = l.getenv("YUMDRAKE_LOG_ARCHIVE_DIR")
+	if cfg.LogArchiveDir != "" && !filepath.IsAbs(cfg.LogArchiveDir) {
+		l.fail("YUMDRAKE_LOG_ARCHIVE_DIR", "must be an absolute path")
 	}
 	cfg.SyncSettings = l.loadSyncSettings()
 

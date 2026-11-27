@@ -11,6 +11,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,7 +32,52 @@ const (
 	ExitOK      = 0
 	ExitFailure = 1
 	ExitUsage   = 2
+	// ExitForced is returned when a second shutdown signal cuts a graceful
+	// shutdown short (128 + SIGINT, the shell convention).
+	ExitForced = 130
 )
+
+// ShutdownContext returns a context that is cancelled by the first value on
+// signals, which starts the graceful shutdown. A second value while the
+// shutdown is running calls exit(ExitForced) so an operator can always force a
+// stuck process down. The returned stop function releases the watcher; call it
+// when the service has returned.
+func ShutdownContext(parent context.Context, signals <-chan os.Signal, exit func(code int)) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	go func() {
+		select {
+		case <-signals:
+			cancel()
+		case <-ctx.Done():
+			return
+		case <-stopped:
+			return
+		}
+		select {
+		case <-signals:
+			exit(ExitForced)
+		case <-stopped:
+		}
+	}()
+	return ctx, func() {
+		stopOnce.Do(func() { close(stopped) })
+		cancel()
+	}
+}
+
+// SignalContext is ShutdownContext fed by SIGINT and SIGTERM, with os.Exit as
+// the forced exit.
+func SignalContext(parent context.Context) (context.Context, context.CancelFunc) {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := ShutdownContext(parent, signals, os.Exit)
+	return ctx, func() {
+		signal.Stop(signals)
+		stop()
+	}
+}
 
 const probeTimeout = 3 * time.Second
 
@@ -87,6 +136,19 @@ func Serve(ctx context.Context, log *slog.Logger, shutdownTimeout time.Duration,
 	return errors.Join(errs...)
 }
 
+// newHTTPServer returns the server with the shared timeouts. It deliberately
+// sets no WriteTimeout: a server-wide write deadline would cut off long-lived
+// responses such as Server-Sent Events streams.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 // PostgresCheck is the readiness check for the database pool. databaseURL is
 // the configured URL; it is used only to scrub the password from errors,
 // because the health handler logs check errors verbatim.
@@ -123,7 +185,7 @@ type Service struct {
 	Fields []any
 	// Prepare runs after the database is open and before serving (migrate or
 	// wait for the schema). It receives the service context and must bound
-	// itself by the start-up timeout.
+	// itself with its own timeout.
 	Prepare func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) error
 }
 
@@ -131,9 +193,8 @@ type Service struct {
 // It returns ExitOK on a clean shutdown (including a signal during start-up)
 // and ExitFailure otherwise.
 //
-// The start-up timeout bounds each phase separately: waiting for the database
-// gets Common.StartupTimeout, and then Prepare may take up to another
-// Common.StartupTimeout, so the worst case before serving is twice the setting.
+// Waiting for the database is bounded by Common.StartupTimeout. Prepare bounds
+// itself (the orchestrator's migration has its own, longer timeout).
 func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 	log := logging.New(stdout, svc.Common.LogLevel, svc.Name)
 	log.Info("starting", append([]any{
@@ -174,14 +235,10 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 	}
 	defer client.Close()
 
-	server := &http.Server{
-		Addr: svc.Addr,
-		Handler: health.Handler(
-			[]health.Check{PostgresCheck(pool, svc.Common.DatabaseURL), ValkeyCheck(client)},
-			health.WithLogger(log),
-		),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	server := newHTTPServer(svc.Addr, health.Handler(
+		[]health.Check{PostgresCheck(pool, svc.Common.DatabaseURL), ValkeyCheck(client)},
+		health.WithLogger(log),
+	))
 	if err := Serve(ctx, log, svc.Common.ShutdownTimeout, server); err != nil {
 		log.Error("serve failed", "error", err.Error())
 		return ExitFailure

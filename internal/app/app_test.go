@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -188,5 +189,70 @@ func TestPostgresCheckFailureNeverLeaksPassword(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), password) || strings.Contains(rec.Body.String(), password) {
 		t.Errorf("password leaked: logs=%q body=%q", logs.String(), rec.Body.String())
+	}
+}
+
+func TestNewHTTPServerSetsTimeouts(t *testing.T) {
+	handler := okHandler()
+	srv := newHTTPServer("127.0.0.1:0", handler)
+	if srv.Addr != "127.0.0.1:0" || srv.Handler == nil {
+		t.Errorf("addr/handler not carried over: %q %v", srv.Addr, srv.Handler)
+	}
+	if srv.ReadHeaderTimeout != 5*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 5s", srv.ReadHeaderTimeout)
+	}
+	if srv.ReadTimeout != 30*time.Second {
+		t.Errorf("ReadTimeout = %v, want 30s", srv.ReadTimeout)
+	}
+	if srv.IdleTimeout != 120*time.Second {
+		t.Errorf("IdleTimeout = %v, want 120s", srv.IdleTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0 (Server-Sent Events must not be cut off)", srv.WriteTimeout)
+	}
+}
+
+func TestShutdownContextFirstSignalCancelsSecondForcesExit(t *testing.T) {
+	signals := make(chan os.Signal, 2)
+	exitCodes := make(chan int, 1)
+	ctx, stop := ShutdownContext(context.Background(), signals, func(code int) { exitCodes <- code })
+	defer stop()
+
+	signals <- os.Interrupt
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("context not cancelled by the first signal")
+	}
+	select {
+	case code := <-exitCodes:
+		t.Fatalf("exit(%d) called after only one signal", code)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	signals <- os.Interrupt
+	select {
+	case code := <-exitCodes:
+		if code == 0 || code != ExitForced {
+			t.Errorf("exit code = %d, want %d", code, ExitForced)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second signal did not force an exit")
+	}
+}
+
+func TestShutdownContextStopReleasesWatcherWithoutExiting(t *testing.T) {
+	signals := make(chan os.Signal, 2)
+	exitCodes := make(chan int, 1)
+	ctx, stop := ShutdownContext(context.Background(), signals, func(code int) { exitCodes <- code })
+
+	signals <- os.Interrupt
+	<-ctx.Done()
+	stop()
+	signals <- os.Interrupt
+	select {
+	case code := <-exitCodes:
+		t.Fatalf("exit(%d) called after stop", code)
+	case <-time.After(100 * time.Millisecond):
 	}
 }

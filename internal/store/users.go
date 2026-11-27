@@ -35,23 +35,34 @@ func normalizeEmail(email string) string { return strings.ToLower(strings.TrimSp
 // name and last login time. A local or service user with the same email is not
 // taken over: the result is ErrDuplicate.
 func UpsertSAMLUser(ctx context.Context, db DBTX, email, name string, at time.Time) (User, error) {
+	u, _, err := UpsertSAMLUserCreated(ctx, db, email, name, at)
+	return u, err
+}
+
+// UpsertSAMLUserCreated is UpsertSAMLUser that also reports whether this call
+// inserted the row. The answer comes from the statement itself, so of two
+// concurrent first sign-ins exactly one sees true.
+func UpsertSAMLUserCreated(ctx context.Context, db DBTX, email, name string, at time.Time) (User, bool, error) {
 	email = normalizeEmail(email)
 	if email == "" {
-		return User{}, fmt.Errorf("upsert saml user: %w: empty email", ErrInvalid)
+		return User{}, false, fmt.Errorf("upsert saml user: %w: empty email", ErrInvalid)
 	}
-	u, err := scanUser(db.QueryRow(ctx, `
+	var created bool
+	row := db.QueryRow(ctx, `
 INSERT INTO users (email, name, source, last_login_at) VALUES ($1, $2, 'saml', $3)
 ON CONFLICT (lower(email)) DO UPDATE SET name = EXCLUDED.name, last_login_at = EXCLUDED.last_login_at
 WHERE users.source = 'saml'
-RETURNING `+userColumns, email, name, dbTime(at)))
+RETURNING `+userColumns+`, (xmax = 0)`, email, name, dbTime(at))
+	var u User
+	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Source, &u.Disabled, &u.LastLoginAt, &u.CreatedAt, &created)
 	if err != nil {
 		if mapped := mapError(err); errors.Is(mapped, ErrNotFound) {
 			// The conflicting row exists but is not a SAML user.
-			return User{}, fmt.Errorf("upsert saml user: %w", ErrDuplicate)
+			return User{}, false, fmt.Errorf("upsert saml user: %w", ErrDuplicate)
 		}
-		return User{}, fmt.Errorf("upsert saml user: %w", mapError(err))
+		return User{}, false, fmt.Errorf("upsert saml user: %w", mapError(err))
 	}
-	return u, nil
+	return u, created, nil
 }
 
 // CreateLocalUser creates a user that signs in with a password (source

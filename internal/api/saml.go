@@ -36,9 +36,9 @@ const (
 	// samlRelayCookie ties an assertion consumer post to the browser that
 	// started the sign-in. The identity provider posts to /saml/acs from its
 	// own site, and a SameSite=Lax cookie is not sent on a cross-site POST, so
-	// the cookie must be SameSite=None (which requires Secure). It holds only a
-	// random handle; the request id it stands for lives in Valkey, and it is
-	// scoped to the one path that reads it.
+	// the cookie must be SameSite=None (which requires Secure). It carries the
+	// request id, a nonce and the post-sign-in path under an HMAC, so nothing is
+	// stored when sign-in starts, and it is scoped to the one path that reads it.
 	samlRelayCookie = "yumdrake_saml_relay"
 	samlRelayTTL    = 10 * time.Minute
 	samlRelayBytes  = 32
@@ -404,6 +404,8 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	// Whatever happens next, this relay cookie has been used.
+	clearRelayCookie(w)
 	if err := r.ParseForm(); err != nil {
 		s.samlReject(w, r, "malformed", nil)
 		return
@@ -464,6 +466,19 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One sign-in request is answered once: a second, different valid response
+	// to the same request is refused. Done after full validation, before any write.
+	sum := sha256.Sum256([]byte(requestID))
+	requestKey := "saml-request:" + hex.EncodeToString(sum[:])
+	switch err := s.Valkey.Do(ctx, s.Valkey.B().Set().Key(requestKey).Value("1").Nx().Px(samlRelayTTL+time.Minute).Build()).Error(); {
+	case isNil(err):
+		s.samlReject(w, r, "request_reused", nil)
+		return
+	case err != nil:
+		s.valkeyFailed(w, "record saml request id", err)
+		return
+	}
+
 	email, name, groups := identityFromAssertion(assertion, sp.settings)
 	if email == "" || len(email) > maxEmailLength || !strings.Contains(email, "@") {
 		s.samlReject(w, r, "bad_email", nil)
@@ -494,10 +509,6 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The sign-in is done: the relay cookie has no further use.
-	//nolint:gosec // clears the cookie set above, same attributes
-	http.SetCookie(w, &http.Cookie{
-		Name: samlRelayCookie, Path: samlACSPath, MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
-	})
 	destination := "/"
 	if safeNextPath(next) { // the cookie is authenticated; checked again anyway
 		destination = next
@@ -528,7 +539,6 @@ func (s *server) provisionUser(ctx context.Context, email, name string, idpGroup
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	existing, err := store.UserByEmail(ctx, tx, email)
-	created := false
 	switch {
 	case err == nil:
 		if existing.Source != "saml" {
@@ -538,11 +548,10 @@ func (s *server) provisionUser(ctx context.Context, email, name string, idpGroup
 			return store.User{}, auth.ErrDisabled
 		}
 	case errors.Is(err, store.ErrNotFound):
-		created = true
 	default:
 		return store.User{}, err
 	}
-	user, err := store.UpsertSAMLUser(ctx, tx, email, name, s.Now())
+	user, created, err := store.UpsertSAMLUserCreated(ctx, tx, email, name, s.Now())
 	if err != nil {
 		return store.User{}, err
 	}
@@ -830,4 +839,12 @@ func (s *server) authMethods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"password": true, "saml": settings.Enabled && settings.IDPMetadataXML != ""})
+}
+
+// clearRelayCookie expires the relay cookie with the attributes it was set with.
+func clearRelayCookie(w http.ResponseWriter) {
+	//nolint:gosec // same attributes as the cookie it clears; SameSite=None is deliberate (see samlRelayCookie)
+	http.SetCookie(w, &http.Cookie{
+		Name: samlRelayCookie, Path: samlACSPath, MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
+	})
 }

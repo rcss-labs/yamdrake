@@ -445,3 +445,16 @@ func TestInsertAuditInvalidJSONIsErrInvalidWithoutServerText(t *testing.T) {
 		t.Fatalf("error text carries server message: %q", err.Error())
 	}
 }
+
+func TestUpsertSAMLUserReportsWhetherItCreated(t *testing.T) {
+	pool := newPool(t)
+	ctx := context.Background()
+	_, created, err := UpsertSAMLUserCreated(ctx, pool, "created-flag@example.com", "A", time.Now())
+	if err != nil || !created {
+		t.Fatalf("first upsert: created = %v, %v; want true", created, err)
+	}
+	_, created, err = UpsertSAMLUserCreated(ctx, pool, "Created-Flag@example.com", "B", time.Now())
+	if err != nil || created {
+		t.Fatalf("second upsert: created = %v, %v; want false", created, err)
+	}
+}

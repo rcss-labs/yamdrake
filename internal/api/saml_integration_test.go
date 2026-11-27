@@ -206,6 +206,13 @@ func (i *testIDP) beginNext(next string) samlFlow {
 	if relay == nil || loc.Query().Get("RelayState") == "" {
 		i.t.Fatalf("start: no relay state cookie or RelayState parameter")
 	}
+	form := i.answer(loc)
+	return samlFlow{form: form, relay: relay, locURL: loc}
+}
+
+// answer has the identity provider answer the redirect to it.
+func (i *testIDP) answer(loc *url.URL) url.Values {
+	i.t.Helper()
 	idpReq := httptest.NewRequest("GET", loc.String(), nil)
 	idpReq.RemoteAddr = "192.0.2.1:4000"
 	idpRec := httptest.NewRecorder()
@@ -220,7 +227,7 @@ func (i *testIDP) beginNext(next string) samlFlow {
 	if form.Get("SAMLResponse") == "" {
 		i.t.Fatalf("identity provider sent no SAMLResponse")
 	}
-	return samlFlow{form: form, relay: relay, locURL: loc}
+	return form
 }
 
 // unsigned removes every signature from the response.
@@ -544,6 +551,9 @@ func TestRejects(t *testing.T) {
 			}
 			if sessionCookie(rec) != nil {
 				t.Errorf("a rejected response set a session cookie")
+			}
+			if !relayCookieCleared(rec) {
+				t.Errorf("a rejected response did not clear the relay cookie")
 			}
 			if got := h.userCount(); got != usersBefore {
 				t.Errorf("users: %d before, %d after the rejected post", usersBefore, got)
@@ -1006,7 +1016,7 @@ func TestMetadataNeverDecryptsThePrivateKey(t *testing.T) {
 func TestNextPathIsCarriedThroughSignIn(t *testing.T) {
 	h, idp, _ := ssoSetup(t)
 	idp.signIn(uniqueEmail(t, "lena"), "Lena")
-	for next, want := range map[string]string{"/jobs/3": "/jobs/3", "/a?b=c": "/a?b=c", "//evil": "/", "https://evil.test": "/", "/%2F%2Fevil": "/"} {
+	for next, want := range map[string]string{"/files/a.tar": "/files/a.tar", "/jobs/3": "/jobs/3", "/a?b=c": "/a?b=c", "//evil": "/", "https://evil.test": "/", "/%2F%2Fevil": "/"} {
 		rec := h.postACS(idp.beginNext(next), true)
 		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != want {
 			t.Errorf("next %q: status %d, Location %q, want 303 to %q", next, rec.Code, rec.Header().Get("Location"), want)
@@ -1029,4 +1039,47 @@ func TestAuthMethodsNeedsNoSignIn(t *testing.T) {
 	check(false)
 	h.configureSSO(h.newIDP())
 	check(true)
+}
+
+func relayCookieCleared(rec *httptest.ResponseRecorder) bool {
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == relayCookieName && c.MaxAge < 0 && c.Secure && c.HttpOnly && c.SameSite == http.SameSiteNoneMode && c.Path == "/saml/acs" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestOneRequestAnswersOnlyOnce(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	idp.signIn(uniqueEmail(t, "mona"), "Mona", "eng-devops")
+	first := idp.begin()
+	second := first
+	second.form = idp.answer(first.locURL) // a different, equally valid response to the same request
+	if first.form.Get("SAMLResponse") == second.form.Get("SAMLResponse") {
+		t.Fatalf("the identity provider issued the same response twice")
+	}
+	if rec := h.postACS(first, true); rec.Code != http.StatusSeeOther {
+		t.Fatalf("first response: status %d %s, want 303", rec.Code, failure(rec))
+	}
+	users, rejected := h.userCount(), h.auditCount("saml.rejected")
+	rec := h.postACS(second, true)
+	if rec.Code != http.StatusBadRequest || sessionCookie(rec) != nil {
+		t.Fatalf("second response: status %d %s, want 400 and no session", rec.Code, failure(rec))
+	}
+	if h.userCount() != users || h.auditCount("saml.rejected") != rejected+1 {
+		t.Errorf("the reused request changed state or was not audited once: %v", h.auditActions())
+	}
+}
+
+func TestValkeyFailingAtTheRequestIDCheckIsA503(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	idp.signIn(uniqueEmail(t, "nina"), "Nina", "eng-devops")
+	flow := idp.begin()
+	h.rebuild(func(d *Deps) { d.Valkey = &hookValkey{Client: d.Valkey, fail: keyPrefix("saml-request:")} })
+	users := h.userCount()
+	rec := h.postACS(flow, true)
+	if rec.Code != http.StatusServiceUnavailable || sessionCookie(rec) != nil || h.userCount() != users || h.auditCount("user.provision") != 0 {
+		t.Fatalf("status %d %s: want 503 and nothing created", rec.Code, failure(rec))
+	}
 }

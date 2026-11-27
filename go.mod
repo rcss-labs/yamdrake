@@ -7,6 +7,7 @@ require (
 	github.com/pressly/goose/v3 v3.30.2
 	github.com/valkey-io/valkey-go v1.0.80
 	go.yaml.in/yaml/v3 v3.0.6
+	golang.org/x/crypto v0.59.0
 )
 
 require (

@@ -288,10 +288,13 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 		}()
 	}
 	server := newHTTPServer(svc.Addr, handler)
-	// Requests inherit the service context, so an in-flight on-demand sync is
-	// cancelled at shutdown rather than running on after the pool is closed.
-	server.BaseContext = func(net.Listener) context.Context { return ctx }
+	// Requests must not see the shutdown signal: Serve drains them first. Their
+	// context is cancelled once Serve has returned (drained, or timed out and
+	// closed), so none is still running when the pool closes.
+	requests, cancelRequests := context.WithCancel(context.WithoutCancel(ctx))
+	server.BaseContext = func(net.Listener) context.Context { return requests }
 	err = Serve(ctx, log, svc.Common.ShutdownTimeout, server)
+	cancelRequests()
 	// Stop the loops and wait for them while the pool is still open.
 	stopBackground()
 	running.Wait()

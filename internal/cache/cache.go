@@ -9,10 +9,9 @@ import (
 	valkey "github.com/valkey-io/valkey-go"
 )
 
-// Open builds a Valkey client for addr. It does not connect eagerly: with
-// ForceSingleClient set, the library returns a client even when Valkey is
-// unreachable, so the cache may be absent at start. It fails only when addr
-// is not a host:port pair.
+// Open builds a Valkey client for addr. Open attempts one dial; with
+// ForceSingleClient a failed dial is tolerated and the client reconnects on
+// first use, so Open fails only for an address it cannot use.
 func Open(addr string) (valkey.Client, error) {
 	if _, _, err := net.SplitHostPort(addr); err != nil {
 		return nil, fmt.Errorf("cache: invalid Valkey address %q: %w", addr, err)

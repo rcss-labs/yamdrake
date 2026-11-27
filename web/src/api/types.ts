@@ -219,6 +219,11 @@ export interface JobSummary {
   problem_count: number
   sync_error: string
   sync_error_at: string | null
+  // Task 9 adds the two fields below to the Go list response; until then they are absent. Null or absent means "not known".
+  /** Every service the job deploys across all groups, de-duplicated, in definition order. */
+  services?: string[] | null
+  /** Labels whose runs need approval (empty when none do). */
+  approval_labels?: string[] | null
 }
 
 export interface JobsResponse {

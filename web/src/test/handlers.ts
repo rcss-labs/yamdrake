@@ -235,11 +235,14 @@ const manageAccess: Guard = { action: 'manage_access' }
 // ---- Derived views ----------------------------------------------------------------------
 
 function jobSummary(job: JobDetail): JobSummary {
-  const { definition: _definition, problems: _problems, problems_commit: _problemsCommit, ...summary } = job
-  void _definition
+  const { definition, problems: _problems, problems_commit: _problemsCommit, ...summary } = job
   void _problems
   void _problemsCommit
-  return summary
+  if (!definition) {
+    return summary
+  }
+  const services = [...new Set((definition.groups ?? []).flatMap((group) => group.services ?? []))]
+  return { ...summary, services, approval_labels: definition.approval?.labels ?? [] }
 }
 
 function findJob(idText: string): JobDetail | undefined {

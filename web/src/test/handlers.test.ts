@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { api } from '../api/client'
 import type { ApiError } from '../api/error'
-import type { JobDetail, Me, Service } from '../api/types'
+import type { JobDetail, JobSummary, Me, Service } from '../api/types'
 import {
   accessManagerMe,
   adminMe,
@@ -152,5 +152,15 @@ describe('the mock API', () => {
     expect(jobs.filter((job) => job.problem_count > 0)).toHaveLength(1)
     expect(jobs.filter((job) => !job.runnable)).toHaveLength(1)
     expect(mockState().inventory.rejected?.problems.length).toBeGreaterThan(0)
+  })
+
+  it('lists the services and approval labels of each job, and none for a job never read', async () => {
+    signInAs(adminMe)
+    const { jobs } = await api<{ jobs: JobSummary[] }>('GET', '/api/v1/jobs')
+    const byId = (id: number) => jobs.find((job) => job.id === id)
+    expect(byId(1)).toMatchObject({ services: ['backend-api'], approval_labels: ['prod'] })
+    expect(byId(3)).toMatchObject({ services: ['backend-api', 'billing'], approval_labels: [] })
+    expect(byId(4)?.services).toBeUndefined()
+    expect(byId(4)?.approval_labels).toBeUndefined()
   })
 })

@@ -50,10 +50,10 @@ type serviceSummary struct {
 }
 
 // inventoryView builds the response from the stored snapshot and status.
-func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inventory, bool, error) {
+func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inventory, store.Snapshot, bool, error) {
 	status, err := store.GetInventoryStatus(ctx, s.Pool)
 	if err != nil {
-		return inventoryResponse{}, spec.Inventory{}, false, err
+		return inventoryResponse{}, spec.Inventory{}, store.Snapshot{}, false, err
 	}
 	out := inventoryResponse{
 		CheckedAt: status.CheckedAt, SyncError: status.SyncError, SyncErrorAt: status.SyncErrorAt,
@@ -62,7 +62,7 @@ func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inv
 	if status.Problems != nil && status.ProblemsCommit != "" {
 		var problems spec.Problems
 		if err := json.Unmarshal(status.Problems, &problems); err != nil {
-			return inventoryResponse{}, spec.Inventory{}, false, fmt.Errorf("decode inventory problems: %w", err)
+			return inventoryResponse{}, spec.Inventory{}, store.Snapshot{}, false, fmt.Errorf("decode inventory problems: %w", err)
 		}
 		if problems == nil {
 			problems = spec.Problems{}
@@ -71,11 +71,11 @@ func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inv
 	}
 	snapshot, active, err := store.ActiveSnapshot(ctx, s.Pool)
 	if err != nil || !active {
-		return out, spec.Inventory{}, false, err
+		return out, spec.Inventory{}, store.Snapshot{}, false, err
 	}
 	var inventory spec.Inventory
 	if err := json.Unmarshal(snapshot.Inventory, &inventory); err != nil {
-		return inventoryResponse{}, spec.Inventory{}, false, fmt.Errorf("decode active inventory: %w", err)
+		return inventoryResponse{}, spec.Inventory{}, store.Snapshot{}, false, fmt.Errorf("decode active inventory: %w", err)
 	}
 	out.Commit, out.ActivatedAt = snapshot.Commit, &snapshot.ActivatedAt
 	for _, environment := range inventory.Environments {
@@ -91,11 +91,11 @@ func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inv
 		}
 		out.Services = append(out.Services, summary)
 	}
-	return out, inventory, true, nil
+	return out, inventory, snapshot, true, nil
 }
 
 func (s *server) getInventory(w http.ResponseWriter, r *http.Request) {
-	view, _, _, err := s.inventoryView(r.Context())
+	view, _, _, _, err := s.inventoryView(r.Context())
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -104,7 +104,7 @@ func (s *server) getInventory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getService(w http.ResponseWriter, r *http.Request) {
-	_, inventory, active, err := s.inventoryView(r.Context())
+	_, inventory, snapshot, active, err := s.inventoryView(r.Context())
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -115,7 +115,25 @@ func (s *server) getService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	withEmptyLists(reflect.ValueOf(&service))
-	writeJSON(w, http.StatusOK, service)
+	// The text comes from the same snapshot as the parsed service.
+	writeJSON(w, http.StatusOK, serviceDetail{Service: service, Source: snapshot.Sources[service.File]})
+}
+
+// serviceDetail is a service with the text of its file at the active commit
+// ("" for a snapshot stored before the text was kept).
+type serviceDetail struct {
+	spec.Service
+	Source string `json:"source"`
+}
+
+func (s *server) getInventorySource(w http.ResponseWriter, r *http.Request) {
+	source, _, err := store.GetInventorySource(r.Context(), s.Pool)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	// Nothing stored reads as empty strings, so the form shows empty fields.
+	writeJSON(w, http.StatusOK, sourceRequest{Repo: source.Repo, Branch: source.Branch, Path: source.Path})
 }
 
 // syncFailed handles the error of an on-demand sync and reports whether it
@@ -251,14 +269,21 @@ type jobSummary struct {
 	ProblemCount int        `json:"problem_count"`
 	SyncError    string     `json:"sync_error"`
 	SyncErrorAt  *time.Time `json:"sync_error_at"`
+	// Services counts the distinct services the last good definition deploys
+	// across its groups, and ApprovalLabels lists the environment labels that
+	// need approval. Both are empty (0 and []) until the first good read.
+	Services       int      `json:"services"`
+	ApprovalLabels []string `json:"approval_labels"`
 }
 
 type jobDetail struct {
 	jobSummary
 	// Definition is the last good definition (null until the first good read).
-	Definition     json.RawMessage `json:"definition"`
-	Problems       spec.Problems   `json:"problems"`
-	ProblemsCommit string          `json:"problems_commit"`
+	Definition json.RawMessage `json:"definition"`
+	// Source is the YAML text of the last good commit ("" until the first good read).
+	Source         string        `json:"source"`
+	Problems       spec.Problems `json:"problems"`
+	ProblemsCommit string        `json:"problems_commit"`
 }
 
 func summarize(job store.JobSource, folderNames map[int64]string) (jobSummary, spec.Problems, error) {
@@ -268,12 +293,35 @@ func summarize(job store.JobSource, folderNames map[int64]string) (jobSummary, s
 			return jobSummary{}, nil, fmt.Errorf("decode problems of job source %d: %w", job.ID, err)
 		}
 	}
+	services, approvalLabels := 0, []string{}
+	if job.LastGood != nil {
+		var definition spec.Job
+		if err := json.Unmarshal(job.LastGood, &definition); err != nil {
+			return jobSummary{}, nil, fmt.Errorf("decode last good of job source %d: %w", job.ID, err)
+		}
+		services = distinctServices(definition)
+		if definition.Approval != nil && definition.Approval.Labels != nil {
+			approvalLabels = definition.Approval.Labels
+		}
+	}
 	return jobSummary{
+		Services: services, ApprovalLabels: approvalLabels,
 		ID: job.ID, JobID: job.JobID, Title: job.Title, FolderID: job.FolderID, Folder: folderNames[job.FolderID],
 		Repo: job.Repo, Branch: job.Branch, Path: job.Path, Runnable: job.Runnable, Commit: job.LastGoodCommit,
 		SyncedAt: job.SyncedAt, CheckedAt: job.CheckedAt, ProblemCount: len(problems),
 		SyncError: job.SyncError, SyncErrorAt: job.SyncErrorAt,
 	}, problems, nil
+}
+
+// distinctServices counts the services named by any group once.
+func distinctServices(job spec.Job) int {
+	seen := map[string]bool{}
+	for _, group := range job.Groups {
+		for _, name := range group.Services {
+			seen[name] = true
+		}
+	}
+	return len(seen)
 }
 
 func (s *server) folderNames(ctx context.Context) (map[int64]string, error) {
@@ -309,7 +357,7 @@ func (s *server) detail(ctx context.Context, id int64) (jobDetail, error) {
 	if err != nil {
 		return jobDetail{}, fmt.Errorf("job source %d: %w", id, err)
 	}
-	return jobDetail{jobSummary: summary, Definition: definition, Problems: problems, ProblemsCommit: job.ProblemsCommit}, nil
+	return jobDetail{jobSummary: summary, Definition: definition, Source: job.LastGoodSource, Problems: problems, ProblemsCommit: job.ProblemsCommit}, nil
 }
 
 // respondDetail writes the job source id, or 404 when it does not exist.

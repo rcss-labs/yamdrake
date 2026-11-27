@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { App } from '../../App'
@@ -8,19 +8,40 @@ import { connectionsManagerMe, delayNext, failNext, jobsFixture, mockState, requ
 const route = '/admin/sources'
 
 async function fillSource(repo: string, branch: string, path: string) {
-  await userEvent.type(screen.getByLabelText('Repository'), repo)
-  await userEvent.type(screen.getByLabelText('Branch'), branch)
-  await userEvent.type(screen.getByLabelText('Path'), path)
+  await waitFor(() => expect(screen.getByLabelText('Repository')).toHaveValue('example-org/deploy-config'))
+  for (const [label, value] of [['Repository', repo], ['Branch', branch], ['Path', path]] as const) {
+    const input = screen.getByLabelText(label)
+    await userEvent.clear(input)
+    await userEvent.type(input, value)
+  }
 }
 
 describe('the Git sources section', () => {
-  it('leaves the inventory source empty, explains that saving replaces it and shows the active commit', async () => {
+  it('pre-fills the stored inventory source, explains that saving replaces it and shows the active commit', async () => {
     renderApp(<App />, { route, me: connectionsManagerMe })
     expect(await screen.findByText(/a1b2c3d4e5f6/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByLabelText('Repository')).toHaveValue('example-org/deploy-config'))
+    expect(screen.getByLabelText('Branch')).toHaveValue('main')
+    expect(screen.getByLabelText('Path')).toHaveValue('inventory')
+    expect(screen.getByText(/Saving replaces the current inventory source and reads it again/)).toBeInTheDocument()
+  })
+
+  it('leaves the fields empty when no source is stored', async () => {
+    mockState().inventorySource = { repo: '', branch: '', path: '' }
+    renderApp(<App />, { route, me: connectionsManagerMe })
+    await screen.findByText(/a1b2c3d4e5f6/)
+    await screen.findByRole('table', { name: 'Job sources' })
     expect(screen.getByLabelText('Repository')).toHaveValue('')
     expect(screen.getByLabelText('Branch')).toHaveValue('')
-    expect(screen.getByLabelText('Path')).toHaveValue('')
-    expect(screen.getByText(/Saving replaces the current inventory source and reads it again/)).toBeInTheDocument()
+  })
+
+  it('shows a loading state, then an error with a retry, when the stored source cannot be read', async () => {
+    delayNext('GET', '/api/v1/admin/inventory-source', 50)
+    failNext('GET', '/api/v1/admin/inventory-source', 500, 'internal', 'The database is down')
+    renderApp(<App />, { route, me: connectionsManagerMe })
+    expect(await screen.findByText('The database is down')).toBeInTheDocument()
+    await userEvent.click(screen.getAllByRole('button', { name: 'Try again' })[0]!)
+    await waitFor(() => expect(screen.getByLabelText('Repository')).toHaveValue('example-org/deploy-config'))
   })
 
   it('saves the source and shows the result of the first read', async () => {

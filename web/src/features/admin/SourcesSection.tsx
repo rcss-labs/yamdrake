@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import type { Inventory, JobSummary } from '../../api/types'
+import type { Inventory, InventorySource, JobSummary } from '../../api/types'
 import { Button, Card, DataTable, EmptyState, ErrorState, Field, Loading, Note, ProblemList, TextInput } from '../../ui'
 import type { DataColumn } from '../../ui'
-import { fieldForMessage, useInventory, useJobSources, useSaveInventorySource } from './connectionsQueries'
+import { fieldForMessage, useInventory, useInventorySource, useJobSources, useSaveInventorySource } from './connectionsQueries'
 import './connections.css'
 
 const sourceFields = ['repo', 'branch', 'path'] as const
@@ -32,12 +32,12 @@ function SaveResult({ result }: { result: Inventory }) {
   )
 }
 
-function InventorySourceForm() {
+function InventorySourceForm({ stored }: { stored: InventorySource }) {
   const inventory = useInventory()
   const save = useSaveInventorySource()
-  const [repo, setRepo] = useState('')
-  const [branch, setBranch] = useState('')
-  const [path, setPath] = useState('')
+  const [repo, setRepo] = useState(stored.repo)
+  const [branch, setBranch] = useState(stored.branch)
+  const [path, setPath] = useState(stored.path)
 
   const error = save.error
   const failedField = error ? fieldForMessage(error.message, sourceFields) : undefined
@@ -55,7 +55,7 @@ function InventorySourceForm() {
           <h2>Inventory source</h2>
           <p className="conn-hint">
             Yumdrake reads <span className="mono">environments.yaml</span> and <span className="mono">services/*.yaml</span> under this path.
-            Saving replaces the current inventory source and reads it again; the current source is not shown here.
+            Saving replaces the current inventory source and reads it again.
           </p>
         </div>
         {inventory.data && (
@@ -92,6 +92,26 @@ function InventorySourceForm() {
   )
 }
 
+function StoredInventorySource() {
+  const stored = useInventorySource()
+  if (stored.isPending) {
+    return (
+      <Card>
+        <Loading />
+      </Card>
+    )
+  }
+  // A failed background refetch keeps the cached source, so the form (and what was typed) stays.
+  if (!stored.data) {
+    return (
+      <Card>
+        <ErrorState error={stored.error} onRetry={() => void stored.refetch()} />
+      </Card>
+    )
+  }
+  return <InventorySourceForm stored={stored.data} />
+}
+
 const jobColumns: DataColumn<JobSummary>[] = [
   { key: 'title', header: 'Job', render: (job) => job.title },
   { key: 'repo', header: 'Repository', render: (job) => <span className="mono">{job.repo}</span> },
@@ -126,7 +146,7 @@ function JobSources() {
 export function SourcesSection() {
   return (
     <>
-      <InventorySourceForm />
+      <StoredInventorySource />
       <JobSources />
     </>
   )

@@ -156,13 +156,12 @@ describe('the mock API', () => {
     expect(mockState().inventory.rejected?.problems.length).toBeGreaterThan(0)
   })
 
-  it('lists the services and approval labels of each job, and none for a job never read', async () => {
+  it('lists the services and approval labels of each job, and zero and none for a job never read', async () => {
     signInAs(adminMe)
     const { jobs } = await api<{ jobs: JobSummary[] }>('GET', '/api/v1/jobs')
     const byId = (id: number) => jobs.find((job) => job.id === id)
-    expect(byId(1)).toMatchObject({ services: ['backend-api'], approval_labels: ['prod'] })
-    expect(byId(3)).toMatchObject({ services: ['backend-api', 'billing'], approval_labels: [] })
-    expect(byId(4)?.services).toBeUndefined()
-    expect(byId(4)?.approval_labels).toBeUndefined()
+    expect(byId(1)).toMatchObject({ services: 1, approval_labels: ['prod'] })
+    expect(byId(3)).toMatchObject({ services: 2, approval_labels: [] })
+    expect(byId(4)).toMatchObject({ services: 0, approval_labels: [] })
   })
 })

@@ -31,7 +31,7 @@ import type {
   Me,
 } from '../api/types'
 import { buildJobDefinition, createMockState, knownPassword, mePresets } from './fixtures'
-import type { MockState } from './fixtures'
+import type { MockState, StoredJob } from './fixtures'
 
 // ---- State, request log, injected failures and delays ------------------------------
 
@@ -234,18 +234,25 @@ const manageAccess: Guard = { action: 'manage_access' }
 
 // ---- Derived views ----------------------------------------------------------------------
 
-function jobSummary(job: JobDetail): JobSummary {
-  const { definition, problems: _problems, problems_commit: _problemsCommit, ...summary } = job
-  void _problems
-  void _problemsCommit
-  if (!definition) {
-    return summary
-  }
-  const services = [...new Set((definition.groups ?? []).flatMap((group) => group.services ?? []))]
-  return { ...summary, services, approval_labels: definition.approval?.labels ?? [] }
+function jobCounts(job: StoredJob): Pick<JobSummary, 'services' | 'approval_labels'> {
+  const services = new Set((job.definition?.groups ?? []).flatMap((group) => group.services ?? []))
+  return { services: services.size, approval_labels: job.definition?.approval?.labels ?? [] }
 }
 
-function findJob(idText: string): JobDetail | undefined {
+function jobSummary(job: StoredJob): JobSummary {
+  const { definition: _definition, source: _source, problems: _problems, problems_commit: _problemsCommit, ...summary } = job
+  void _definition
+  void _source
+  void _problems
+  void _problemsCommit
+  return { ...summary, ...jobCounts(job) }
+}
+
+function jobDetail(job: StoredJob): JobDetail {
+  return { ...job, ...jobCounts(job) }
+}
+
+function findJob(idText: string): StoredJob | undefined {
   return state.jobs.find((job) => String(job.id) === idText)
 }
 
@@ -326,6 +333,8 @@ export const handlers: HttpHandler[] = [
   }),
 
   route('POST', '/api/v1/inventory/sync', manageConnections, () => json(syncInventoryNow())),
+
+  route('GET', '/api/v1/admin/inventory-source', manageConnections, () => json(state.inventorySource)),
 
   route('PUT', '/api/v1/admin/inventory-source', manageConnections, ({ body }) => {
     const { repo, branch, path } = fields(body)
@@ -467,7 +476,7 @@ export const handlers: HttpHandler[] = [
 
   route('GET', '/api/v1/jobs/:id', view, ({ params }) => {
     const job = findJob(params.id)
-    return job ? json(job) : notFound('job')
+    return job ? json(jobDetail(job)) : notFound('job')
   }),
 
   // A path containing "broken" is read with problems and no good version (the job is not runnable).
@@ -502,7 +511,7 @@ export const handlers: HttpHandler[] = [
       }
       const jobId = (path.split('/').pop() ?? path).replace(/\.ya?ml$/, '')
       const broken = path.includes('broken')
-      const created: JobDetail = {
+      const created: StoredJob = {
         id: takeId('job'),
         job_id: broken ? '' : jobId,
         title: broken ? '' : jobId,
@@ -521,12 +530,13 @@ export const handlers: HttpHandler[] = [
         definition: broken
           ? null
           : buildJobDefinition(jobId, jobId, [{ id: 'all', label: 'All services', services: ['backend-api'], line: 6 }], []),
+        source: broken ? '' : `apiVersion: yumdrake/v1\nkind: Job\njob: ${jobId}\n`,
         problems: broken ? [{ file: path, line: 3, message: 'labels must list at least one environment label' }] : [],
         problems_commit: broken ? '6666666666666666666666666666666666666666' : '',
       }
       state.jobs.push(created)
       recordAudit('job.register', 'job', created.id, { repo, branch, path })
-      return json(created, 201)
+      return json(jobDetail(created), 201)
     },
   ),
 
@@ -553,7 +563,7 @@ export const handlers: HttpHandler[] = [
       job.folder_id = folder.id
       job.folder = folder.name
       recordAudit('job.move', 'job', job.id, { folder: folder.name })
-      return json(job)
+      return json(jobDetail(job))
     },
   ),
 
@@ -567,7 +577,7 @@ export const handlers: HttpHandler[] = [
         return notFound('job')
       }
       job.checked_at = now()
-      return json(job)
+      return json(jobDetail(job))
     },
   ),
 

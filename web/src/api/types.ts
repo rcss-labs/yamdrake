@@ -138,6 +138,8 @@ export interface Service {
   versions: VersionRule
   environments: Record<string, ServiceEnvironment>
   line: number
+  /** The text of the service's file at the active commit; "" when none is stored. */
+  source: string
 }
 
 export interface JobNeed {
@@ -219,11 +221,10 @@ export interface JobSummary {
   problem_count: number
   sync_error: string
   sync_error_at: string | null
-  // Task 9 adds the two fields below to the Go list response; until then they are absent. Null or absent means "not known".
-  /** Every service the job deploys across all groups, de-duplicated, in definition order. */
-  services?: string[] | null
-  /** Labels whose runs need approval (empty when none do). */
-  approval_labels?: string[] | null
+  /** How many distinct services the last good definition deploys across its groups; 0 when it was never good. */
+  services: number
+  /** Environment labels whose runs need approval (empty when none do or the job was never good). */
+  approval_labels: string[]
 }
 
 export interface JobsResponse {
@@ -234,6 +235,8 @@ export interface JobsResponse {
 export interface JobDetail extends JobSummary {
   /** The last good definition; null until the first good read. */
   definition: JobDefinition | null
+  /** The YAML text of the last good commit; "" when none is stored. */
+  source: string
   problems: Problem[]
   /** The commit the problems were found in. */
   problems_commit: string
@@ -250,11 +253,14 @@ export interface MoveJobRequest {
   folder_id: number
 }
 
-export interface InventorySourceRequest {
+/** GET /api/v1/admin/inventory-source: empty strings when none is stored. PUT takes the same fields. */
+export interface InventorySource {
   repo: string
   branch: string
   path: string
 }
+
+export type InventorySourceRequest = InventorySource
 
 // ---- GitHub connections -----------------------------------------------------
 

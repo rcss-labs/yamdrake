@@ -282,6 +282,8 @@ function CreateUserForm() {
         onError: (error) => {
           setErrors(error.status === 409 ? { email: error.message } : { form: errorMessage(error) })
         },
+        // The error is already in local state; reset drops the variables (the password) from the mutation.
+        onSettled: () => create.reset(),
       },
     )
   }

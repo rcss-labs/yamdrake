@@ -55,13 +55,7 @@ bin/yumdrake-runner healthcheck
 
 ## API
 
-The orchestrator serves a JSON API under `/api/v1`. Every request is made by a signed-in user: either a session cookie (from `POST /api/v1/auth/login`, used by the browser) or `Authorization: Bearer <token>` (used by the CLI). The first admin is created on the command line, with the password on standard input (never as an argument):
-
-```sh
-printf '%s\n' "$PASSWORD" | bin/yumdrake-orchestrator create-admin --email ada@example.com --name "Ada"
-```
-
-It prints `created` and exits 0 (1 on failure, 2 on a usage error). The admin can then sign in; `GET /api/v1/me` shows who you are. Full documentation of sign-in, permissions and tokens follows in a later release.
+The orchestrator serves a JSON API under `/api/v1`. Every request is made by a signed-in user: either a session cookie (from `POST /api/v1/auth/login`, used by the browser) or `Authorization: Bearer <token>` (used by the CLI). See [Signing in](#signing-in) and [CLI tokens and device sign-in](#cli-tokens-and-device-sign-in).
 
 Errors look like `{"error":{"code":"...","message":"..."}}` with codes `unauthorized`, `forbidden`, `not_found`, `invalid`, `conflict`, `too_many_requests`, `unavailable` and `internal`. Request bodies are limited to 1 MB and unknown JSON fields are rejected. No response contains a token, a private key or ciphertext.
 
@@ -73,7 +67,7 @@ Errors look like `{"error":{"code":"...","message":"..."}}` with codes `unauthor
 | `POST /api/v1/inventory/sync` | Sync the inventory now. |
 | `GET /api/v1/folders`, `POST /api/v1/folders` | List folders; create one by `name`. |
 | `GET /api/v1/jobs` | Every job source with its folder, commit, sync and check times, runnable flag, problem count and sync error. |
-| `POST /api/v1/auth/login`, `POST /api/v1/auth/logout` | Sign in with `email` and `password` (sets the session cookie) and sign out. Five failed sign-ins for one email lock it for 15 minutes (`429` with `Retry-After`). |
+| `POST /api/v1/auth/login`, `POST /api/v1/auth/logout` | Sign in with `email` and `password` (sets the session cookie) and sign out. After 5 failed attempts for one email within 15 minutes, sign-in answers `429` with `Retry-After` until the window passes. |
 | `GET /api/v1/me` | The signed-in user: id, email, name, admin flag and grants. |
 | `POST /api/v1/jobs` | Register a job file (`folder_id`, `repo`, `branch`, `path`), sync it once and return it. |
 | `GET /api/v1/jobs/{id}` | The source, its last good `definition` and its current `problems`. |
@@ -86,6 +80,86 @@ curl -H "Authorization: Bearer $YUMDRAKE_TOKEN" localhost:8080/api/v1/inventory
 ```
 
 The orchestrator also polls GitHub every `YUMDRAKE_SYNC_INTERVAL` (inventory first, then each job source). A failure to reach GitHub is kept as `sync_error` next to the last good data, which stays in use.
+
+## Signing in
+
+Every `/api/v1` route needs a signed-in user or a CLI token. Without one the API answers `401` with code `unauthorized`. Without the needed permission it answers `403` with code `forbidden`.
+
+### First admin
+
+Create the first admin on the orchestrator's command line, with the same environment as the orchestrator. The password is read from standard input, never from an argument or a variable. It must be at least 12 characters. Take it from your secret store rather than typing it into the shell, so it stays out of shell history.
+
+```sh
+printf '%s\n' "$PASSWORD" | yumdrake-orchestrator create-admin --email admin@example.com --name Admin
+```
+
+The command creates a local user in the admin group `Administrators` and prints only `created`. It exits 0 on success, 1 on failure (for example, the email already exists) and 2 on a usage error.
+
+### Password sign-in
+
+- `POST /api/v1/auth/login` with `{"email": ..., "password": ...}` sets the `yumdrake_session` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`). The session has an idle timeout of 8 hours and a maximum age of 24 hours.
+- `POST /api/v1/auth/logout` ends the session.
+- `GET /api/v1/me` shows the signed-in user. `GET /api/v1/auth/methods` shows which sign-in methods are on.
+- Only `local` and `service` users can use password sign-in.
+- After 5 failed attempts for one email within 15 minutes, sign-in answers `429` with `Retry-After` until the window passes.
+- State-changing requests that carry the session cookie must come from the public URL: the `Origin` header must equal `YUMDRAKE_PUBLIC_URL`. A script that signs in with a password must send that `Origin` header. Bearer-token requests do not need it.
+- If Valkey is unavailable, cookie sign-in answers `503` with "Sign-in is temporarily unavailable". CLI tokens keep working.
+
+### Rate limiting at the edge
+
+These routes need no sign-in and should be rate-limited at the load balancer or ingress: `POST /api/v1/auth/login`, `POST /api/v1/cli/login`, `POST /api/v1/cli/login/token`, `GET /api/v1/auth/saml/start` and `POST /saml/acs`. Yumdrake limits password sign-in per email and caps concurrent password checks, but has no per-client limit.
+
+## CLI tokens and device sign-in
+
+Tokens look like `ymd_...`. They are shown once and stored only as a SHA-256 hash. They expire (90 days by default, at most 365 days) and can be revoked. A token carries its owner's permissions. Send it as `Authorization: Bearer <token>`.
+
+- `GET /api/v1/tokens` and `POST /api/v1/tokens` (body `{"name": ..., "ttl_days": ...}`) list and create your own tokens. `DELETE /api/v1/tokens/{id}` revokes one.
+
+Device sign-in for the CLI:
+
+1. `POST /api/v1/cli/login` returns `device_code`, `user_code`, `verify_url` and `interval`.
+2. A signed-in user confirms the 8-character `user_code` in the browser (`POST /api/v1/cli/login/confirm`).
+3. The CLI polls `POST /api/v1/cli/login/token` with the `device_code`, no faster than every `interval` seconds. It receives a token once.
+
+Codes expire after 10 minutes.
+
+## Single sign-on (SAML)
+
+An admin with `manage_access` configures SSO at `GET` and `PUT /api/v1/admin/sso`, and checks it with `POST /api/v1/admin/sso/test`.
+
+Give the identity provider:
+
+- Service-provider metadata: `<YUMDRAKE_PUBLIC_URL>/saml/metadata`
+- Assertion consumer service URL (HTTP-POST binding): `<YUMDRAKE_PUBLIC_URL>/saml/acs`
+- Entity ID (default `<YUMDRAKE_PUBLIC_URL>/saml/metadata`)
+
+Paste the identity provider's metadata XML into the settings as `idp_metadata_xml`. Yumdrake does not fetch it from a URL.
+
+Attributes: groups come from the `groups` attribute and the display name from `displayName` (both configurable). The email comes from the NameID unless an email attribute is set.
+
+Requirements on the identity provider:
+
+- It must sign the response or the assertion with SHA-256 or stronger. SHA-1 is refused.
+- Encrypted assertions are not supported.
+- Only sign-ins started from Yumdrake are accepted. Identity-provider-initiated sign-in is refused.
+
+Group mapping: map identity-provider groups to Yumdrake groups at `/api/v1/admin/idp-mappings`. Memberships from the identity provider are replaced at every SSO sign-in. Unmapped groups are ignored, and memberships added by an admin by hand are kept. Sessions last at most 24 hours, so a person removed from a group at the identity provider loses it a day later at the latest.
+
+The service-provider signing key and certificate are generated on first use and stored encrypted.
+
+Keep the local admin from `create-admin` as a break-glass account.
+
+## Access administration
+
+Users, groups, grants, identity-provider mappings and the audit log live under `/api/v1/admin/`. `users`, `groups`, `grants` and `idp-mappings` need `manage_access`; `audit` needs `view_audit`.
+
+Actions: `view`, `view_logs`, `run`, `cancel`, `approve`, `restore`, `manage_jobs`, `manage_connections`, `manage_access` and `view_audit`. Every signed-in user has `view`. A group marked admin has every action.
+
+A grant gives a group one action, optionally limited to a label (`dev`, `preprod` or `prod`) or to one environment, and optionally to one folder.
+
+At least one enabled admin must remain; otherwise the change is refused with `409`.
+
+Every change is written to the append-only audit log, which never contains passwords, tokens or keys.
 
 ## Testing
 

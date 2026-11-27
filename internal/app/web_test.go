@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/rcss-labs/yamdrake/internal/config"
+	"github.com/rcss-labs/yamdrake/internal/webui"
 )
 
 func serveRequest(h http.Handler, method, target string) *httptest.ResponseRecorder {
@@ -66,5 +67,18 @@ func TestOrchestratorServesTheWebApplication(t *testing.T) {
 	rec := serveRequest(svc.Web, http.MethodGet, "/jobs")
 	if !strings.Contains(rec.Header().Get("Content-Security-Policy"), "default-src 'self'") {
 		t.Errorf("web handler did not answer with the web application's headers: %v", rec.Header())
+	}
+}
+
+func TestEncodedAPIPathsNeverReachTheRealWebApplication(t *testing.T) {
+	h := serviceHandler(marker("health"), Extension{Handlers: map[string]http.Handler{"/api/v1/": marker("api"), "/saml/": marker("saml")}}, webui.Handler())
+	for _, target := range []string{"/api%2fv1/me", "/saml%2facs"} {
+		rec := serveRequest(h, http.MethodGet, target)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s: status %d, want 404", target, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "<!doctype") {
+			t.Errorf("GET %s: served index.html", target)
+		}
 	}
 }

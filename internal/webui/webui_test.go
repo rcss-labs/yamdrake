@@ -154,24 +154,91 @@ func TestPathsCannotEscapeTheBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newHandler(build)
-	for _, target := range []string{
-		"/../secret.txt",
-		"/assets/../../secret.txt",
-		"/%2e%2e/secret.txt",
-		"/assets/%2e%2e/%2e%2e/secret.txt",
-		"/assets/..%2f..%2fsecret.txt",
-		`/assets\..\..\secret.txt`,
-		"/assets/%5c..%5c..%5csecret.txt",
-		"//secret.txt",
-	} {
-		rec := get(t, h, http.MethodGet, target)
-		if strings.Contains(rec.Body.String(), "outside") {
-			t.Errorf("GET %s: served a file outside the build", target)
+
+	// Dot segments are resolved against the root of the build, never above it:
+	// these name the asset, an app route or a missing file inside the build.
+	cases := []struct {
+		target   string
+		wantCode int
+		wantBody string
+	}{
+		{"/assets/index-abc.js", 200, "console.log(1)"},
+		{"/../assets/index-abc.js", 200, "console.log(1)"},
+		{"/assets/../../assets/index-abc.js", 200, "console.log(1)"},
+		{"/%2e%2e/assets/index-abc.js", 200, "console.log(1)"},
+		{"/assets/%2e%2e/assets/index-abc.js", 200, "console.log(1)"},
+		{"/../secret.txt", 404, ""},
+		{"/assets/../../secret.txt", 404, ""},
+		{"/%2e%2e/secret.txt", 404, ""},
+		{"/assets/%2e%2e/%2e%2e/secret.txt", 404, ""},
+		{"//secret.txt", 404, ""},
+		// An encoded slash is not a separator in the decoded path.
+		{"/assets/..%2f..%2fsecret.txt", 404, ""},
+		// Backslashes are never path separators here.
+		{`/assets\index-abc.js`, 404, ""},
+		{"/assets%5cindex-abc.js", 404, ""},
+		{"/assets/%5c..%5c..%5csecret.txt", 404, ""},
+		// An extensionless traversal is an app route.
+		{"/../jobs", 200, indexHTML},
+	}
+	for _, tc := range cases {
+		rec := get(t, h, http.MethodGet, tc.target)
+		if rec.Code != tc.wantCode {
+			t.Errorf("GET %s: status %d, want %d", tc.target, rec.Code, tc.wantCode)
 		}
-		assertSecurityHeaders(t, target, rec)
+		if tc.wantBody != "" && rec.Body.String() != tc.wantBody {
+			t.Errorf("GET %s: body %q, want %q", tc.target, rec.Body.String(), tc.wantBody)
+		}
+		if strings.Contains(rec.Body.String(), "outside") {
+			t.Errorf("GET %s: served a file outside the build", tc.target)
+		}
+		assertSecurityHeaders(t, tc.target, rec)
 	}
-	// Backslashes are never path separators here.
-	if rec := get(t, h, http.MethodGet, `/assets%5cindex-abc.js`); rec.Code != http.StatusNotFound {
-		t.Errorf("backslash path: status %d, want 404", rec.Code)
+}
+
+func TestReservedPathsAreNeverTheWebApplication(t *testing.T) {
+	// Go's ServeMux does not match an encoded slash as a separator, so these
+	// requests reach the web handler with a decoded path under a reserved prefix.
+	for _, h := range map[string]http.Handler{
+		"built":     newHandler(builtFS()),
+		"not built": newHandler(fstest.MapFS{".gitkeep": {}}),
+	} {
+		for _, target := range []string{
+			"/api/v1/me", "/api%2fv1/me", "/api/unknown", "/api/",
+			"/saml/acs", "/saml%2facs", "/%73aml/acs", "/healthz", "/readyz",
+			"/x/../api/v1/me", "/../healthz",
+		} {
+			rec := get(t, h, http.MethodGet, target)
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("GET %s: status %d, want 404", target, rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), "Yumdrake") || strings.Contains(rec.Body.String(), "not built") {
+				t.Errorf("GET %s: answered as the web application: %q", target, rec.Body.String())
+			}
+			assertSecurityHeaders(t, target, rec)
+		}
 	}
+	// Names that merely start like a reserved path are app routes.
+	for _, target := range []string{"/apiary", "/healthz-status", "/samlish"} {
+		if rec := get(t, newHandler(builtFS()), http.MethodGet, target); rec.Code != http.StatusOK {
+			t.Errorf("GET %s: status %d, want 200", target, rec.Code)
+		}
+	}
+}
+
+func TestIndexCanBeRevalidated(t *testing.T) {
+	h := newHandler(builtFS())
+	first := get(t, h, http.MethodGet, "/jobs")
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("index.html has no ETag")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	req.Header.Set("If-None-Match", etag)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Errorf("status %d, want 304", rec.Code)
+	}
+	assertSecurityHeaders(t, "304", rec)
 }

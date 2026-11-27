@@ -3,7 +3,10 @@ package webui
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
+	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -43,6 +46,14 @@ func Handler() http.Handler {
 
 // newHandler serves the build in fsys (rooted at the build directory).
 func newHandler(fsys fs.FS) http.Handler {
+	// index.html is the one file every app route needs; read it once.
+	index, indexErr := fs.ReadFile(fsys, indexName)
+	indexETag := ""
+	if indexErr == nil {
+		sum := sha256.Sum256(index)
+		indexETag = `"` + hex.EncodeToString(sum[:8]) + `"`
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w.Header())
 
@@ -52,8 +63,16 @@ func newHandler(fsys fs.FS) http.Handler {
 			return
 		}
 
-		index, err := fs.ReadFile(fsys, indexName)
-		if err != nil {
+		name, ok := buildPath(r.URL.Path)
+		// The mux keeps these paths away from the web handler, but it does not
+		// treat an encoded slash as a separator (/api%2fv1/me), so check the
+		// decoded, cleaned path here too.
+		if !ok || isReserved("/"+name) {
+			http.NotFound(w, r)
+			return
+		}
+
+		if indexErr != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -63,15 +82,19 @@ func newHandler(fsys fs.FS) http.Handler {
 			return
 		}
 
-		name, ok := buildPath(r.URL.Path)
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
 		if name != "" && name != indexName {
-			if data, err := fs.ReadFile(fsys, name); err == nil {
-				serve(w, r, name, data)
-				return
+			if file, err := fsys.Open(name); err == nil {
+				defer func() { _ = file.Close() }()
+				if info, err := file.Stat(); err == nil && !info.IsDir() {
+					if body, ok := file.(io.ReadSeeker); ok {
+						serve(w, r, name, "", body)
+						return
+					}
+					if data, err := io.ReadAll(file); err == nil {
+						serve(w, r, name, "", bytes.NewReader(data))
+						return
+					}
+				}
 			}
 			// A missing file with an extension is a missing file, not an app route.
 			if path.Ext(name) != "" {
@@ -79,8 +102,22 @@ func newHandler(fsys fs.FS) http.Handler {
 				return
 			}
 		}
-		serve(w, r, indexName, index)
+		serve(w, r, indexName, indexETag, bytes.NewReader(index))
 	})
+}
+
+// isReserved reports whether a cleaned, rooted path belongs to the API or the
+// health endpoints rather than the web application.
+func isReserved(rooted string) bool {
+	if rooted == "/healthz" || rooted == "/readyz" {
+		return true
+	}
+	for _, prefix := range []string{"/api", "/saml"} {
+		if rooted == prefix || strings.HasPrefix(rooted, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // buildPath turns a request path into a name inside the build. It rejects
@@ -97,7 +134,7 @@ func buildPath(requestPath string) (string, bool) {
 	return name, true
 }
 
-func serve(w http.ResponseWriter, r *http.Request, name string, data []byte) {
+func serve(w http.ResponseWriter, r *http.Request, name, etag string, body io.ReadSeeker) {
 	h := w.Header()
 	h.Set("Content-Type", contentType(name))
 	if strings.HasPrefix(name, assetsPrefix) {
@@ -105,7 +142,10 @@ func serve(w http.ResponseWriter, r *http.Request, name string, data []byte) {
 	} else {
 		h.Set("Cache-Control", "no-cache")
 	}
-	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
+	if etag != "" {
+		h.Set("ETag", etag)
+	}
+	http.ServeContent(w, r, name, time.Time{}, body)
 }
 
 func contentType(name string) string {

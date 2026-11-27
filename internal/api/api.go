@@ -128,14 +128,7 @@ func New(deps Deps) http.Handler {
 	}
 	s := &server{Deps: deps, dummyHash: dummy, verifySlots: make(chan struct{}, deps.MaxConcurrentLogins)}
 
-	authenticated := http.NewServeMux()
-	for _, route := range s.routes() {
-		authenticated.Handle(route.pattern, s.require(route.action, nil)(route.handler))
-	}
-	// Unknown paths: 401 without credentials, 404 with them.
-	authenticated.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeError(w, http.StatusNotFound, codeNotFound, "not found")
-	})
+	authenticated := s.authenticatedMux(nil)
 
 	root := http.NewServeMux()
 	// Sign-in is the one route that is open to everyone; it carries no session
@@ -148,6 +141,34 @@ func New(deps Deps) http.Handler {
 	root.HandleFunc("POST /api/v1/cli/login/token", s.pollDeviceLogin)
 	root.Handle("/", s.authenticate(authenticated))
 	return root
+}
+
+// authenticatedMux serves the routes of routes(), each behind require, and 404
+// for everything else. extra lets a test register one more pattern; it exists
+// to prove the guard below: a pattern that is not in routes() is never served,
+// whoever registered it, so no route can skip the permission decision.
+func (s *server) authenticatedMux(extra func(*http.ServeMux)) http.Handler {
+	mux := http.NewServeMux()
+	allowed := map[string]bool{"/": true}
+	for _, route := range s.routes() {
+		allowed[route.pattern] = true
+		mux.Handle(route.pattern, s.require(route.action, nil)(route.handler))
+	}
+	// Unknown paths: 401 without credentials, 404 with them.
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, codeNotFound, "not found")
+	})
+	if extra != nil {
+		extra(mux)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" && !allowed[pattern] {
+			s.Log.Error("refusing a route that has no permission decision", "pattern", pattern)
+			writeError(w, http.StatusNotFound, codeNotFound, "not found")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // routeDef is a route of the authenticated part of the API with the action it

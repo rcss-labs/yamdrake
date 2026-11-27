@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yumdrake.dev/schemas/service.schema.json",
+  "title": "yumdrake Service file",
+  "description": "One file in the inventory's services directory. The Go validator is the authority; this schema is for editor completion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "name", "environments"],
+  "properties": {
+    "apiVersion": {
+      "const": "yumdrake/v1"
+    },
+    "kind": {
+      "const": "Service"
+    },
+    "name": {
+      "type": "string",
+      "description": "Service name, unique across the inventory.",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How available versions are discovered. Optional; all keys have defaults.",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Regular expression a tag must match. Default ^v?\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.]+)?$."
+        },
+        "sort": {
+          "description": "Ordering of versions. Default semver.",
+          "enum": ["semver", "pushed"]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Maximum number of versions listed. Default 100."
+        }
+      }
+    },
+    "environments": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "description": "One block per environment name.",
+      "patternProperties": {
+        "^[a-z0-9][a-z0-9-]{0,62}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ecs_service", "ecr_repository"],
+          "properties": {
+            "ecs_service": {
+              "type": "string",
+              "description": "ARN of the ECS service in this environment.",
+              "pattern": "^arn:aws:ecs:[a-z0-9-]+:\\d{12}:service/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+$"
+            },
+            "ecr_repository": {
+              "type": "string",
+              "description": "ECR repository URI the image is pulled from.",
+              "pattern": "^\\d{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9._/-]+$"
+            },
+            "env_files": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Files copied from a repository into the environment's configuration.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "source_env_path", "destination_env_path"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source_env_path": {
+                    "type": "string",
+                    "description": "Path as <owner>/<repo>/<path>.",
+                    "pattern": "^[^/]+(/[^/]+){2,}$"
+                  },
+                  "destination_env_path": {
+                    "type": "string",
+                    "description": "S3 destination as s3://<bucket>/<key>.",
+                    "pattern": "^s3://[^/]+/.+$"
+                  }
+                }
+              }
+            },
+            "tomls": {
+              "type": "array",
+              "minItems": 1,
+              "description": "TOML files copied from S3 to S3.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "source_toml_path", "destination_toml_path"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source_toml_path": {
+                    "type": "string",
+                    "description": "S3 source as s3://<bucket>/<key>.",
+                    "pattern": "^s3://[^/]+/.+$"
+                  },
+                  "destination_toml_path": {
+                    "type": "string",
+                    "description": "S3 destination as s3://<bucket>/<key>.",
+                    "pattern": "^s3://[^/]+/.+$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -96,6 +96,34 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_TEST_DATABASE_URL` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_DATABASE_URL`. Set by `make test-integration` and CI. |
 | `YUMDRAKE_TEST_VALKEY_ADDR` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_VALKEY_ADDR`. Set by `make test-integration` and CI. |
 
+## Validating YAML
+
+`make build` produces `bin/yumdrake`, the CLI that checks an inventory before it is synced:
+
+```sh
+bin/yumdrake validate <inventory-dir> [--job <file>]...
+```
+
+The inventory directory holds `environments.yaml` and one `services/*.yaml` file per service. Each `--job` file is parsed and checked against that inventory. Job files are cross-checked only when the inventory itself is valid.
+
+- Each problem is printed to stderr as `file:line: message`, sorted by file then line.
+- On success stdout shows `OK: 5 environments, 2 services, 1 jobs`. On failure it shows `FAILED: N problems`.
+
+Exit codes: `0` valid, `1` problems found or the directory is missing, `2` usage error (no directory, an unknown command, or bad flags).
+
+```sh
+make build
+bin/yumdrake validate internal/spec/testdata/valid --job internal/spec/testdata/valid/jobs/deploy-backend.yaml
+```
+
+The JSON Schemas in `schemas/` (`environments.schema.json`, `service.schema.json`, `job.schema.json`) exist for editor completion only. The Go validator is the authority: a file the schema accepts can still fail `validate`. To get completion in an editor with the YAML language server, put a modeline at the top of a file:
+
+```yaml
+# yaml-language-server: $schema=https://yumdrake.dev/schemas/service.schema.json
+apiVersion: yumdrake/v1
+kind: Service
+```
+
 ## CI
 
 The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration and smoke jobs on pull requests and on pushes to `main`.

@@ -23,3 +23,39 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+  orchestrator:
+    profiles: [app]
+    image: yumdrake-orchestrator:dev
+    build:
+      context: .
+      dockerfile: deploy/docker/orchestrator.Dockerfile
+      args:
+        VERSION: dev
+        COMMIT: unknown
+    environment:
+      YUMDRAKE_DATABASE_URL: postgres://yumdrake:yumdrake@postgres:5432/yumdrake?sslmode=disable
+      YUMDRAKE_VALKEY_ADDR: valkey:6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+  runner:
+    profiles: [app]
+    image: yumdrake-runner:dev
+    build:
+      context: .
+      dockerfile: deploy/docker/runner.Dockerfile
+      args:
+        VERSION: dev
+        COMMIT: unknown
+    environment:
+      YUMDRAKE_DATABASE_URL: postgres://yumdrake:yumdrake@postgres:5432/yumdrake?sslmode=disable
+      YUMDRAKE_VALKEY_ADDR: valkey:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy

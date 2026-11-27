@@ -7,7 +7,7 @@ COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -X $(MODULE)/internal/version.Commit=$(COMMIT)
 BINARY_PACKAGES := orchestrator runner
 
-.PHONY: help build lint test dev-up dev-down test-integration
+.PHONY: help build lint test dev-up dev-down test-integration images smoke
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -48,3 +48,13 @@ test-integration: ## Run integration tests against the local services (see dev-u
 	YUMDRAKE_TEST_DATABASE_URL='postgres://yumdrake:yumdrake@localhost:5432/yumdrake?sslmode=disable' \
 	YUMDRAKE_TEST_VALKEY_ADDR='localhost:6379' \
 	go test -race -tags integration ./...
+
+images: ## Build the yumdrake-orchestrator and yumdrake-runner images (tag :dev)
+	@for svc in orchestrator runner; do \
+		docker build -f deploy/docker/$$svc.Dockerfile \
+			--build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" \
+			-t yumdrake-$$svc:dev . || exit 1; \
+	done
+
+smoke: ## Build and start the app profile in Compose and check it is healthy
+	./scripts/smoke.sh

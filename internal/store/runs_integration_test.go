@@ -763,3 +763,43 @@ func TestAppendRunLineConcurrentCallersKeepOwnSequence(t *testing.T) {
 		t.Fatalf("MaxLogSeq = %d, want 8 distinct sequences", max)
 	}
 }
+
+func TestUpdateRunStateKeepsStampOnSameStateAndRefusesFinalRuns(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := newPool(t)
+	fx := newRunFixture(t, pool)
+	run := fx.insert(t, pool, "resolving")
+
+	t1 := nanosecondNow().Add(time.Hour)
+	if err := UpdateRunState(ctx, pool, run.ID, "queued", "waiting for run #1", t1); err != nil {
+		t.Fatal(err)
+	}
+	// Same state, new wait reason: the reason changes, the stamp does not.
+	if err := UpdateRunState(ctx, pool, run.ID, "queued", "waiting for run #2", t1.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := GetRun(ctx, pool, run.ID)
+	if got.WaitReason != "waiting for run #2" || !got.StateChangedAt.Equal(micro(t1)) {
+		t.Fatalf("same-state write: %+v, want new reason and stamp %v", got, micro(t1))
+	}
+	t2 := t1.Add(time.Hour)
+	if err := UpdateRunState(ctx, pool, run.ID, "failed", "", t2); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = GetRun(ctx, pool, run.ID)
+	if !got.StateChangedAt.Equal(micro(t2)) {
+		t.Fatalf("real change: stamp %v, want %v", got.StateChangedAt, micro(t2))
+	}
+
+	// A final run never moves, even to the same final state.
+	for _, state := range []string{"running", "failed", "cancelled"} {
+		if err := UpdateRunState(ctx, pool, run.ID, state, "x", t2.Add(time.Hour)); !errors.Is(err, ErrRunFinal) {
+			t.Fatalf("final run -> %s: %v, want ErrRunFinal", state, err)
+		}
+	}
+	after, _ := GetRun(ctx, pool, run.ID)
+	if after.State != "failed" || after.WaitReason != "" || !after.StateChangedAt.Equal(micro(t2)) || !after.FinishedAt.Equal(micro(t2)) {
+		t.Fatalf("refused updates changed the run: %+v", after)
+	}
+}

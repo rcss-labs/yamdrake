@@ -2,10 +2,15 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
+
+// ErrRunFinal is returned by UpdateRunState when the run is already in a final
+// state; nothing was changed.
+var ErrRunFinal = errors.New("run is in a final state")
 
 // Run is one deploy or restore of a job. Its state machine lives in the engine
 // package; the store only enforces the list of valid values.
@@ -254,23 +259,32 @@ func ActiveRunIDs(ctx context.Context, db DBTX) ([]int64, error) {
 }
 
 // UpdateRunState sets the state and wait reason and stamps state_changed_at
-// with at (every call, even when the state is unchanged). started_at is set
+// with at only when the state actually changes (a same-state write keeps the
+// stamp, so expiry clocks are not restarted). A run in a final state is never
+// changed: ErrRunFinal. started_at is set
 // the first time the run is running, finished_at when it enters a final state.
 // The caller holds the run lock (LockRun) and decides whether the move is
 // legal; the store only checks the state is a known value (ErrInvalid).
 func UpdateRunState(ctx context.Context, tx DBTX, id int64, state, waitReason string, at time.Time) error {
 	tag, err := tx.Exec(ctx,
-		`UPDATE runs SET state = $2, wait_reason = $3, state_changed_at = $4,
+		`UPDATE runs SET state = $2, wait_reason = $3, state_changed_at = CASE WHEN state IS DISTINCT FROM $2 THEN $4 ELSE state_changed_at END,
 			started_at = CASE WHEN $2 = 'running' THEN coalesce(started_at, $4) ELSE started_at END,
 			finished_at = CASE WHEN $2 IN `+finalRunStatesSQL+` THEN $4 ELSE finished_at END
-		 WHERE id = $1`, id, state, waitReason, dbTime(at))
+		 WHERE id = $1 AND state NOT IN `+finalRunStatesSQL, id, state, waitReason, dbTime(at))
 	if err != nil {
 		return fmt.Errorf("update run state: %w", mapError(err))
 	}
-	if tag.RowsAffected() == 0 {
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM runs WHERE id = $1)", id).Scan(&exists); err != nil {
+		return fmt.Errorf("update run state: %w", mapError(err))
+	}
+	if !exists {
 		return fmt.Errorf("update run state: %w", ErrNotFound)
 	}
-	return nil
+	return fmt.Errorf("update run state: %w", ErrRunFinal)
 }
 
 // SetManifest stores the resolved plan and its id.

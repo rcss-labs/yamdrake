@@ -186,14 +186,42 @@ func TestValidateJobReportsCycleOnce(t *testing.T) {
 	}
 }
 
-func TestValidateJobMissingNeedIsNotAlsoACycle(t *testing.T) {
-	job, inv := validJobAndInventory(t)
-	job.Steps[0].Needs = []Need{{Step: "ghost", Scope: "step", Line: 5}}
-	for _, problem := range ValidateJob(job, inv) {
-		if strings.Contains(problem.Message, "cycle") {
-			t.Errorf("unexpected cycle problem: %v", problem)
+func TestValidateJobMissingAndSelfNeedsDoNotHideOrAddCycles(t *testing.T) {
+	countCycles := func(problems Problems) (cycles, missing int) {
+		for _, problem := range problems {
+			if strings.Contains(problem.Message, "dependency cycle") {
+				cycles++
+			}
+			if strings.Contains(problem.Message, `"ghost", which is not a step`) {
+				missing++
+			}
 		}
+		return cycles, missing
 	}
+
+	t.Run("missing need on a step inside a real cycle", func(t *testing.T) {
+		job, inv := validJobAndInventory(t)
+		job.Steps = []Step{
+			{Name: "a", Group: "backends", Line: 10, Needs: []Need{{Step: "b", Scope: "step", Line: 11}}},
+			{Name: "b", Group: "backends", Line: 12, Needs: []Need{{Step: "ghost", Scope: "step", Line: 13}, {Step: "a", Scope: "step", Line: 14}}},
+		}
+		problems := ValidateJob(job, inv)
+		if cycles, missing := countCycles(problems); cycles != 1 || missing != 1 || len(problems) != 2 {
+			t.Errorf("want one cycle and one missing-need problem, got %v", problems)
+		}
+	})
+
+	t.Run("self need is not a cycle", func(t *testing.T) {
+		job, inv := validJobAndInventory(t)
+		job.Steps[1].Needs = []Need{{Step: "roll-backends", Scope: "step", Line: 7}}
+		problems := ValidateJob(job, inv)
+		if cycles, _ := countCycles(problems); cycles != 0 {
+			t.Errorf("self-need must not be reported as a cycle: %v", problems)
+		}
+		if len(problems) != 1 || !strings.Contains(problems[0].Message, "needs itself") {
+			t.Errorf("want only the self-need problem, got %v", problems)
+		}
+	})
 }
 
 func TestStepOrderLayers(t *testing.T) {

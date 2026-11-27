@@ -158,6 +158,18 @@ func ActivateSnapshot(ctx context.Context, db DBTX, commit string, inventory []b
 	return created, nil
 }
 
+// FillSnapshotSources stores file texts for the active snapshot of commit when
+// it has none (written before the texts were kept); otherwise it does nothing.
+func FillSnapshotSources(ctx context.Context, db DBTX, commit string, sources map[string]string) error {
+	_, err := db.Exec(ctx,
+		"UPDATE inventory_snapshots SET sources = $2 WHERE active AND commit_sha = $1 AND sources = '{}'::jsonb",
+		commit, sources)
+	if err != nil {
+		return fmt.Errorf("fill snapshot sources: %w", err)
+	}
+	return nil
+}
+
 // DeactivateActiveSnapshot clears the active flag so ActivateSnapshot can store
 // a new snapshot for the same commit (the inventory source changed, so the same
 // commit now yields different content). The caller does this inside the

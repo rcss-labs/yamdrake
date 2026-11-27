@@ -103,6 +103,18 @@ func (e *Engine) syncJob(ctx context.Context, jobSourceID int64) error {
 		return err
 	}
 
+	// A row written before the text was kept gets it from the last good commit
+	// (never from the head, which may be a rejected one).
+	if job.LastGood != nil && job.LastGoodSource == "" && job.LastGoodCommit != "" {
+		text, err := source.ReadFile(ctx, job.Repo, job.LastGoodCommit, job.Path)
+		if err != nil {
+			return fail("read job file", err, "commit", job.LastGoodCommit)
+		}
+		if err := store.FillJobSource(ctx, e.pool, job.ID, job.LastGoodCommit, string(text)); err != nil {
+			return err
+		}
+	}
+
 	// Unchanged means: nothing new at the head and the file was last checked
 	// against the inventory that is active now. A job re-validated at
 	// activation, or read since, has checked_at at or after ActivatedAt.

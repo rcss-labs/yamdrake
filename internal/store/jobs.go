@@ -110,6 +110,20 @@ func SaveJobGood(ctx context.Context, db DBTX, id int64, job []byte, source, job
 	return nil
 }
 
+// FillJobSource stores the text of the last good commit for a row written
+// before the text was kept. It changes nothing unless commit is still the
+// last good commit and no text is stored, so text and parsed form always come
+// from the same commit.
+func FillJobSource(ctx context.Context, db DBTX, id int64, commit, source string) error {
+	_, err := db.Exec(ctx,
+		"UPDATE job_sources SET last_good_source = $3 WHERE id = $1 AND last_good_commit = $2 AND last_good_source = ''",
+		id, commit, source)
+	if err != nil {
+		return fmt.Errorf("fill job source: %w", err)
+	}
+	return nil
+}
+
 // SaveJobProblems sets problems (nil stores SQL NULL), problems_commit,
 // runnable and checked_at.
 func SaveJobProblems(ctx context.Context, db DBTX, id int64, problems []byte, commit string, runnable bool, at time.Time) error {

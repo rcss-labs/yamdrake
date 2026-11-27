@@ -50,10 +50,10 @@ type serviceSummary struct {
 }
 
 // inventoryView builds the response from the stored snapshot and status.
-func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inventory, bool, error) {
+func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inventory, store.Snapshot, bool, error) {
 	status, err := store.GetInventoryStatus(ctx, s.Pool)
 	if err != nil {
-		return inventoryResponse{}, spec.Inventory{}, false, err
+		return inventoryResponse{}, spec.Inventory{}, store.Snapshot{}, false, err
 	}
 	out := inventoryResponse{
 		CheckedAt: status.CheckedAt, SyncError: status.SyncError, SyncErrorAt: status.SyncErrorAt,
@@ -62,7 +62,7 @@ func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inv
 	if status.Problems != nil && status.ProblemsCommit != "" {
 		var problems spec.Problems
 		if err := json.Unmarshal(status.Problems, &problems); err != nil {
-			return inventoryResponse{}, spec.Inventory{}, false, fmt.Errorf("decode inventory problems: %w", err)
+			return inventoryResponse{}, spec.Inventory{}, store.Snapshot{}, false, fmt.Errorf("decode inventory problems: %w", err)
 		}
 		if problems == nil {
 			problems = spec.Problems{}
@@ -71,11 +71,11 @@ func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inv
 	}
 	snapshot, active, err := store.ActiveSnapshot(ctx, s.Pool)
 	if err != nil || !active {
-		return out, spec.Inventory{}, false, err
+		return out, spec.Inventory{}, store.Snapshot{}, false, err
 	}
 	var inventory spec.Inventory
 	if err := json.Unmarshal(snapshot.Inventory, &inventory); err != nil {
-		return inventoryResponse{}, spec.Inventory{}, false, fmt.Errorf("decode active inventory: %w", err)
+		return inventoryResponse{}, spec.Inventory{}, store.Snapshot{}, false, fmt.Errorf("decode active inventory: %w", err)
 	}
 	out.Commit, out.ActivatedAt = snapshot.Commit, &snapshot.ActivatedAt
 	for _, environment := range inventory.Environments {
@@ -91,11 +91,11 @@ func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inv
 		}
 		out.Services = append(out.Services, summary)
 	}
-	return out, inventory, true, nil
+	return out, inventory, snapshot, true, nil
 }
 
 func (s *server) getInventory(w http.ResponseWriter, r *http.Request) {
-	view, _, _, err := s.inventoryView(r.Context())
+	view, _, _, _, err := s.inventoryView(r.Context())
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -104,7 +104,7 @@ func (s *server) getInventory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getService(w http.ResponseWriter, r *http.Request) {
-	_, inventory, active, err := s.inventoryView(r.Context())
+	_, inventory, snapshot, active, err := s.inventoryView(r.Context())
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -115,11 +115,7 @@ func (s *server) getService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	withEmptyLists(reflect.ValueOf(&service))
-	snapshot, _, err := store.ActiveSnapshot(r.Context(), s.Pool)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
+	// The text comes from the same snapshot as the parsed service.
 	writeJSON(w, http.StatusOK, serviceDetail{Service: service, Source: snapshot.Sources[service.File]})
 }
 

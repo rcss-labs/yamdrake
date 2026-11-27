@@ -74,6 +74,11 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if haveActive && len(active.Sources) == 0 {
+		if err := e.backfillSources(ctx, source, src, active, fail); err != nil {
+			return err
+		}
+	}
 	// A nil CheckedAt means the source changed since the last check (the store
 	// resets the status then), so the same head must be read again.
 	sourceChecked := status.CheckedAt != nil
@@ -142,6 +147,25 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 	}
 	e.log.Info("inventory activated", "commit", head)
 	return nil
+}
+
+// backfillSources gives a snapshot stored before the texts were kept its file
+// texts. They are read at the snapshot's own commit and used only when they
+// build the very inventory that is stored, so text and parsed form match.
+func (e *Engine) backfillSources(ctx context.Context, source Source, src store.InventorySource, active store.Snapshot,
+	fail func(what string, err error, attrs ...any) error) error {
+	inventory, sources, problems, err := e.readInventory(ctx, source, src, active.Commit, fail)
+	if err != nil || len(problems) > 0 {
+		return err
+	}
+	encoded, err := json.Marshal(inventory)
+	if err != nil {
+		return fmt.Errorf("encode inventory: %w", err)
+	}
+	if !sameJSON(active.Inventory, encoded) {
+		return nil
+	}
+	return store.FillSnapshotSources(ctx, e.pool, active.Commit, sources)
 }
 
 // sameJSON reports whether two JSON documents have the same content,

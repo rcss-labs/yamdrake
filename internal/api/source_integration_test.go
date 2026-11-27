@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -139,5 +140,51 @@ func TestInventorySourceRoundTrips(t *testing.T) {
 	plain, _ := h.newToken(h.newUser("viewer").ID)
 	if code, _ := h.doRaw("GET", "/api/v1/admin/inventory-source", plain, nil); code != http.StatusForbidden {
 		t.Errorf("GET without manage_connections = %d, want 403", code)
+	}
+}
+
+// Rows synced before migration 00005 have no text; the next sync at an
+// unchanged head fills it from the same commit as the stored parsed form.
+func TestSyncAtUnchangedHeadFillsMissingSource(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	h.setInventorySource()
+	h.pushJob("j1")
+	id := int64(h.registerJob(h.createFolder("Backends"))["id"].(float64))
+	ctx := context.Background()
+	if _, err := h.pool.Exec(ctx, "UPDATE job_sources SET last_good_source = ''"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.Exec(ctx, "UPDATE inventory_snapshots SET sources = '{}'"); err != nil {
+		t.Fatal(err)
+	}
+
+	job := h.mustDo("POST", fmt.Sprintf("/api/v1/jobs/%d/sync", id), nil, http.StatusOK)
+	if want := string(fixture(t, "jobs/deploy-backend.yaml")); job["source"] != want {
+		t.Errorf("job source after sync = %q, want the last good file text", job["source"])
+	}
+	h.mustDo("POST", "/api/v1/inventory/sync", nil, http.StatusOK)
+	service := h.mustDo("GET", "/api/v1/inventory/services/orders", nil, http.StatusOK)
+	if want := string(fixture(t, "services/orders.yaml")); service["source"] != want {
+		t.Errorf("service source after sync = %q, want the active file text", service["source"])
+	}
+}
+
+// The text is filled from the last good commit, never from a newer bad one.
+func TestBackfillUsesTheLastGoodCommit(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	h.setInventorySource()
+	h.pushJob("j1")
+	id := int64(h.registerJob(h.createFolder("Backends"))["id"].(float64))
+	h.src.put(jobsRepo, "j2", jobPath, []byte("apiVersion: yumdrake/v1\nkind: Job\njob: deploy-backend\nbogus: true\n"))
+	h.src.setHead(jobsRepo, "main", "j2")
+	h.mustDo("POST", fmt.Sprintf("/api/v1/jobs/%d/sync", id), nil, http.StatusOK)
+	if _, err := h.pool.Exec(context.Background(), "UPDATE job_sources SET last_good_source = ''"); err != nil {
+		t.Fatal(err)
+	}
+	job := h.mustDo("POST", fmt.Sprintf("/api/v1/jobs/%d/sync", id), nil, http.StatusOK)
+	if want := string(fixture(t, "jobs/deploy-backend.yaml")); job["source"] != want {
+		t.Errorf("job source = %q, want the text of the last good commit j1", job["source"])
 	}
 }

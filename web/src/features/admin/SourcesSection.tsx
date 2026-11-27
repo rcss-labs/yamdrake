@@ -101,7 +101,8 @@ function StoredInventorySource() {
       </Card>
     )
   }
-  if (stored.isError) {
+  // A failed background refetch keeps the cached source, so the form (and what was typed) stays.
+  if (!stored.data) {
     return (
       <Card>
         <ErrorState error={stored.error} onRetry={() => void stored.refetch()} />

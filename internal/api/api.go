@@ -87,8 +87,8 @@ var dummyPasswordHash = sync.OnceValues(func() (string, error) {
 	return auth.HashPassword("a password nobody has chosen")
 })
 
-// New returns the handler for the whole /api/v1 tree (full paths are
-// registered, so mount it at "/api/v1/"). Every route except sign-in needs an
+// New returns the handler for the whole /api/v1 tree and the /saml endpoints
+// (full paths are registered, so mount it at "/api/v1/" and "/saml/"). Every route except sign-in needs an
 // authenticated principal, and every route states the action it needs.
 func New(deps Deps) http.Handler {
 	if deps.Pool == nil || deps.Sessions == nil || deps.Valkey == nil || deps.PublicURL == "" {
@@ -121,6 +121,9 @@ func New(deps Deps) http.Handler {
 	route("PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource)
 	route("GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections)
 	route("POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection)
+	route("GET /api/v1/admin/sso", auth.ManageAccess, s.getSSO)
+	route("PUT /api/v1/admin/sso", auth.ManageAccess, s.putSSO)
+	route("POST /api/v1/admin/sso/test", auth.ManageAccess, s.testSSO)
 	route("GET /api/v1/folders", auth.View, s.listFolders)
 	route("POST /api/v1/folders", auth.ManageJobs, s.createFolder)
 	route("GET /api/v1/jobs", auth.View, s.listJobs)
@@ -137,6 +140,14 @@ func New(deps Deps) http.Handler {
 	// Sign-in is the one route that is open to everyone; it carries no session
 	// cookie to check, so it has its own origin check (login CSRF).
 	root.HandleFunc("POST /api/v1/auth/login", s.login)
+	// Single sign-on. These are open to everyone by nature: the identity
+	// provider's browser post carries no session of ours, so /saml/acs is exempt
+	// from the same-origin check (and only from that); it is protected by the
+	// signed response, the relay state cookie and the replay check instead.
+	// Mount this handler at "/saml/" as well as "/api/v1/".
+	root.HandleFunc("GET /saml/metadata", s.samlMetadata)
+	root.HandleFunc("POST /saml/acs", s.samlACS)
+	root.HandleFunc("GET /api/v1/auth/saml/start", s.samlStart)
 	root.Handle("/", s.authenticate(authenticated))
 	return root
 }

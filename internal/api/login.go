@@ -94,12 +94,22 @@ func (s *server) reserveAttempt(ctx context.Context, key string) (allowed bool, 
 	return false, max(time.Duration(reply[1])*time.Millisecond, time.Second), nil
 }
 
+// refundScript decrements only a counter that still exists and is above zero:
+// a plain DECR would create a key of -1 with no expiry if the counter was
+// deleted (sign-in success) or expired in the meantime.
+var refundScript = valkey.NewLuaScript(`
+local n = tonumber(redis.call('GET', KEYS[1]))
+if n and n > 0 then return redis.call('DECR', KEYS[1]) end
+return 0
+`)
+
 // refundAttempt takes back a reserved attempt that was never checked (the
-// request was refused for lack of capacity), best effort.
+// request was refused for lack of capacity), best effort. It does not depend
+// on the request context, which ends when the client gives up waiting.
 func (s *server) refundAttempt(r *http.Request, key string) {
-	ctx, cancel := s.valkeyContext(r)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), valkeyTimeout)
 	defer cancel()
-	if err := s.Valkey.Do(ctx, s.Valkey.B().Decr().Key(key).Build()).Error(); err != nil {
+	if err := refundScript.Exec(ctx, s.Valkey, []string{key}, nil).Error(); err != nil {
 		s.Log.Error("refund sign-in attempt", "error", err.Error())
 	}
 }
@@ -157,8 +167,7 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		signInUnavailable(w)
 		return
 	}
-	user, ok, reason, err := s.checkPassword(r.Context(), email, req.Password)
-	release()
+	user, ok, reason, err := s.checkPasswordHoldingSlot(r.Context(), release, email, req.Password)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -251,6 +260,13 @@ func (s *server) checkPassword(ctx context.Context, email, password string) (use
 		return store.User{}, false, "disabled", nil
 	}
 	return user, true, "", nil
+}
+
+// checkPasswordHoldingSlot runs checkPassword and always gives the slot back,
+// even if the check panics.
+func (s *server) checkPasswordHoldingSlot(ctx context.Context, release func(), email, password string) (store.User, bool, string, error) {
+	defer release()
+	return s.checkPassword(ctx, email, password)
 }
 
 // acquireVerifySlot waits briefly for permission to run a password check.

@@ -348,6 +348,8 @@ func TestAttemptsWhileLockedDoNotExtendTheLock(t *testing.T) {
 // before the password is checked, so at most five of them are ever checked.
 func TestConcurrentWrongPasswordsAreLimitedToFive(t *testing.T) {
 	h := newHarness(t)
+	// A limiter that cannot fill, so only the lockout decides each answer.
+	h.rebuild(func(d *Deps) { d.MaxConcurrentLogins = 10; d.VerifyWait = time.Minute })
 	user := h.newUser("concurrent")
 	const parallel = 10
 	statuses := make(chan int, parallel)

@@ -314,9 +314,36 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 	h := newHarness(t)
 	h.withSyncer(stubSyncer{})
 	routes := (&server{}).routes()
-	if len(routes) < 15 {
-		t.Fatalf("only %d routes registered", len(routes))
+	// Written from the task brief, independently of the code's own table: a
+	// route given the wrong action, or added or dropped, makes this differ.
+	expected := map[string]auth.Action{
+		"GET /api/v1/me":                        auth.View,
+		"POST /api/v1/auth/logout":              auth.View,
+		"GET /api/v1/inventory":                 auth.View,
+		"GET /api/v1/inventory/services/{name}": auth.View,
+		"POST /api/v1/inventory/sync":           auth.ManageConnections,
+		"PUT /api/v1/admin/inventory-source":    auth.ManageConnections,
+		"GET /api/v1/admin/github-connections":  auth.ManageConnections,
+		"POST /api/v1/admin/github-connections": auth.ManageConnections,
+		"GET /api/v1/folders":                   auth.View,
+		"POST /api/v1/folders":                  auth.ManageJobs,
+		"GET /api/v1/jobs":                      auth.View,
+		"POST /api/v1/jobs":                     auth.ManageJobs,
+		"GET /api/v1/jobs/{id}":                 auth.View,
+		"PATCH /api/v1/jobs/{id}":               auth.ManageJobs,
+		"POST /api/v1/jobs/{id}/sync":           auth.ManageJobs,
 	}
+	if len(routes) != len(expected) {
+		t.Fatalf("routes() has %d routes, the expected table %d", len(routes), len(expected))
+	}
+	for _, route := range routes {
+		if want, ok := expected[route.pattern]; !ok || want != route.action {
+			t.Errorf("route %q has action %q; the brief says %q (listed: %v)", route.pattern, route.action, want, ok)
+		}
+	}
+	// A route registered outside routes() would have no entry above; at least
+	// an unlisted path must not be served, even to an admin.
+	h.expect(h.send(sent{method: "GET", path: "/api/v1/not-in-the-table", bearer: h.adminToken}), http.StatusNotFound, "not_found")
 	plain := h.newUser("routeplain")
 	plainToken, _ := h.newToken(plain.ID)
 	granted := map[auth.Action]string{}

@@ -6,7 +6,11 @@ export function useTokens() {
 }
 
 export function useCreateToken() {
-  return useApiMutation<CreatedToken, CreateTokenRequest>('POST', '/api/v1/tokens', { invalidate: [['tokens']] })
+  return useApiMutation<CreatedToken, CreateTokenRequest>('POST', '/api/v1/tokens', {
+    invalidate: [['tokens']],
+    // The result holds the one-time plaintext: drop it from the mutation cache as soon as nothing observes it.
+    gcTime: 0,
+  })
 }
 
 export function useRevokeToken() {

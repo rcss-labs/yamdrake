@@ -109,6 +109,23 @@ describe('the CLI tokens page', () => {
     expect(document.body.textContent).not.toContain('ymd_mock')
   })
 
+  it('leaves no trace of the value in any query or mutation cache after leaving', async () => {
+    const { queryClient } = renderApp(<App />, { route: '/cli' })
+    await createToken('cache check')
+    await screen.findByTestId('new-token-value')
+    await screen.findByText('cache check', { selector: 'td *, td' })
+
+    await userEvent.click(screen.getByRole('link', { name: 'Jobs' }))
+    await screen.findByRole('heading', { name: 'Jobs' })
+
+    await waitFor(() => {
+      const mutations = queryClient.getMutationCache().getAll().map((mutation) => JSON.stringify(mutation.state))
+      expect(mutations.join('')).not.toContain('ymd_mock')
+    })
+    const queries = queryClient.getQueryCache().getAll().map((query) => JSON.stringify(query.state.data ?? null))
+    expect(queries.join('')).not.toContain('ymd_mock')
+  })
+
   it('asks for a name before sending anything', async () => {
     renderApp(<App />, { route: '/cli' })
     await userEvent.click(await screen.findByRole('button', { name: 'Create token' }))

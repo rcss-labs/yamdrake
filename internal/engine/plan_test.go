@@ -202,6 +202,7 @@ func TestBuildPartialSelectionDropsEmptyStepsAndTheirNeeds(t *testing.T) {
 	}
 }
 
+// A selected service missing from the environment is reported as a problem, not skipped.
 func TestBuildSkipsServiceNotInEnvironmentAsProblem(t *testing.T) {
 	job, inv := fixture()
 	sel := Selection{"api": {Version: "1.0.0", Services: map[string]string{"a1": "", "a5": ""}}}
@@ -248,5 +249,24 @@ func TestBuildRejections(t *testing.T) {
 				t.Errorf("a rejected selection returned a plan: %+v", built)
 			}
 		})
+	}
+}
+
+func TestBuildLockResourcesAreUnique(t *testing.T) {
+	job, inv := fixture()
+	// Two selected services share an ECS service and an env file destination.
+	shared := inv.Services["w1"].Environments["staging"]
+	w2 := inv.Services["w2"]
+	w2.Environments = map[string]spec.ServiceEnv{"staging": shared}
+	inv.Services["w2"] = w2
+
+	sel := Selection{"workers": {Version: "2.0.0", Services: map[string]string{"w1": "", "w2": ""}}}
+	built, problems := Build(job, inv, "staging", sel)
+	if len(problems) != 0 {
+		t.Fatalf("unexpected problems: %v", problems)
+	}
+	want := []string{ecsARN("w1-staging"), "s3://cfg/staging/w1.env", "s3://cfg/staging/w1.toml"}
+	if !slices.Equal(built.Resources, want) {
+		t.Errorf("resources = %v, want each shared resource once: %v", built.Resources, want)
 	}
 }

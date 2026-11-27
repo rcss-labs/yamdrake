@@ -98,7 +98,7 @@ func SaveJobGood(ctx context.Context, db DBTX, id int64, job []byte, jobID, titl
 	tag, err := db.Exec(ctx,
 		`UPDATE job_sources SET last_good = $2, job_id = $3, title = $4, last_good_commit = $5,
 		        synced_at = $6, checked_at = $6
-		 WHERE id = $1`, id, job, jobID, title, commit, at)
+		 WHERE id = $1`, id, job, jobID, title, commit, dbTime(at))
 	if err != nil {
 		return fmt.Errorf("save job good: %w", mapError(err))
 	}
@@ -113,7 +113,7 @@ func SaveJobGood(ctx context.Context, db DBTX, id int64, job []byte, jobID, titl
 func SaveJobProblems(ctx context.Context, db DBTX, id int64, problems []byte, commit string, runnable bool, at time.Time) error {
 	tag, err := db.Exec(ctx,
 		`UPDATE job_sources SET problems = $2, problems_commit = $3, runnable = $4, checked_at = $5
-		 WHERE id = $1`, id, problems, commit, runnable, at)
+		 WHERE id = $1`, id, problems, commit, runnable, dbTime(at))
 	if err != nil {
 		return fmt.Errorf("save job problems: %w", mapError(err))
 	}
@@ -125,7 +125,7 @@ func SaveJobProblems(ctx context.Context, db DBTX, id int64, problems []byte, co
 
 // TouchJobChecked records a successful poll that found nothing new.
 func TouchJobChecked(ctx context.Context, db DBTX, id int64, at time.Time) error {
-	tag, err := db.Exec(ctx, "UPDATE job_sources SET checked_at = $2 WHERE id = $1", id, at)
+	tag, err := db.Exec(ctx, "UPDATE job_sources SET checked_at = $2 WHERE id = $1", id, dbTime(at))
 	if err != nil {
 		return fmt.Errorf("touch job checked: %w", mapError(err))
 	}
@@ -150,7 +150,7 @@ func SetJobRunnable(ctx context.Context, db DBTX, id int64, runnable bool) error
 
 // SetJobSyncError records a failure to reach GitHub; definitions are untouched.
 func SetJobSyncError(ctx context.Context, db DBTX, id int64, message string, at time.Time) error {
-	tag, err := db.Exec(ctx, "UPDATE job_sources SET sync_error = $2, sync_error_at = $3 WHERE id = $1", id, message, at)
+	tag, err := db.Exec(ctx, "UPDATE job_sources SET sync_error = $2, sync_error_at = $3 WHERE id = $1", id, message, dbTime(at))
 	if err != nil {
 		return fmt.Errorf("set job sync error: %w", mapError(err))
 	}

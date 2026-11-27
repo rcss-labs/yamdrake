@@ -100,7 +100,7 @@ func ActivateSnapshot(ctx context.Context, db DBTX, commit string, inventory []b
 	}
 	created, err := scanSnapshot(tx.QueryRow(ctx,
 		`INSERT INTO inventory_snapshots (commit_sha, inventory, active, activated_at)
-		 VALUES ($1, $2, true, $3) RETURNING `+snapshotColumns, commit, inventory, at))
+		 VALUES ($1, $2, true, $3) RETURNING `+snapshotColumns, commit, inventory, dbTime(at)))
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("activate snapshot: insert: %w", mapError(err))
 	}
@@ -137,7 +137,7 @@ type InventoryStatus struct {
 func SaveInventoryStatus(ctx context.Context, db DBTX, st InventoryStatus) error {
 	_, err := db.Exec(ctx,
 		"UPDATE inventory_status SET checked_at = $1, problems = $2, problems_commit = $3 WHERE id = 1",
-		st.CheckedAt, st.Problems, st.ProblemsCommit)
+		dbTimePtr(st.CheckedAt), st.Problems, st.ProblemsCommit)
 	if err != nil {
 		return fmt.Errorf("save inventory status: %w", err)
 	}
@@ -159,7 +159,7 @@ func GetInventoryStatus(ctx context.Context, db DBTX) (InventoryStatus, error) {
 // SetInventorySyncError records a failure to reach GitHub; the snapshot,
 // problems and check time are untouched.
 func SetInventorySyncError(ctx context.Context, db DBTX, message string, at time.Time) error {
-	if _, err := db.Exec(ctx, "UPDATE inventory_status SET sync_error = $1, sync_error_at = $2 WHERE id = 1", message, at); err != nil {
+	if _, err := db.Exec(ctx, "UPDATE inventory_status SET sync_error = $1, sync_error_at = $2 WHERE id = 1", message, dbTime(at)); err != nil {
 		return fmt.Errorf("set inventory sync error: %w", err)
 	}
 	return nil

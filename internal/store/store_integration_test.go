@@ -18,6 +18,16 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
 )
 
+// nanosecondNow returns the current time with a sub-microsecond component, so
+// tests catch precision loss on every platform (PostgreSQL stores microseconds;
+// Linux clocks have nanoseconds, macOS clocks do not).
+// micro is the precision the store keeps: it truncates times before writing.
+func micro(t time.Time) time.Time { return t.Truncate(time.Microsecond) }
+
+func nanosecondNow() time.Time {
+	return time.Now().UTC().Truncate(time.Microsecond).Add(789 * time.Nanosecond)
+}
+
 func newPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
@@ -137,7 +147,7 @@ func TestJobSourceLifecycle(t *testing.T) {
 		t.Fatalf("duplicate CreateJobSource error = %v, want ErrDuplicate", err)
 	}
 
-	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	at := time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.UTC)
 	good := []byte(`{"name": "deploy"}`) // jsonb normalises spacing to this form
 	if err := SaveJobGood(ctx, pool, created.ID, good, "deploy-backend", "Deploy backend", "c1", at); err != nil {
 		t.Fatalf("SaveJobGood: %v", err)
@@ -148,7 +158,7 @@ func TestJobSourceLifecycle(t *testing.T) {
 	}
 	if got.JobID != "deploy-backend" || got.Title != "Deploy backend" || got.LastGoodCommit != "c1" ||
 		string(got.LastGood) != string(good) ||
-		got.SyncedAt == nil || !got.SyncedAt.Equal(at) || got.CheckedAt == nil || !got.CheckedAt.Equal(at) {
+		got.SyncedAt == nil || !got.SyncedAt.Equal(micro(at)) || got.CheckedAt == nil || !got.CheckedAt.Equal(micro(at)) {
 		t.Fatalf("after SaveJobGood: %+v", got)
 	}
 	if got.Runnable || got.Problems != nil {
@@ -161,8 +171,8 @@ func TestJobSourceLifecycle(t *testing.T) {
 		t.Fatalf("SaveJobProblems: %v", err)
 	}
 	got, _ = GetJobSource(ctx, pool, created.ID)
-	if got.Runnable || got.ProblemsCommit != "c2" || len(got.Problems) == 0 || got.CheckedAt == nil || !got.CheckedAt.Equal(later) ||
-		got.LastGoodCommit != "c1" || got.JobID != "deploy-backend" || !got.SyncedAt.Equal(at) {
+	if got.Runnable || got.ProblemsCommit != "c2" || len(got.Problems) == 0 || got.CheckedAt == nil || !got.CheckedAt.Equal(micro(later)) ||
+		got.LastGoodCommit != "c1" || got.JobID != "deploy-backend" || !got.SyncedAt.Equal(micro(at)) {
 		t.Fatalf("after SaveJobProblems: %+v", got)
 	}
 
@@ -190,7 +200,7 @@ func TestJobSourceLifecycle(t *testing.T) {
 		t.Fatalf("TouchJobChecked: %v", err)
 	}
 	got, _ = GetJobSource(ctx, pool, created.ID)
-	if !got.CheckedAt.Equal(touch) || !got.SyncedAt.Equal(later) {
+	if !got.CheckedAt.Equal(micro(touch)) || !got.SyncedAt.Equal(micro(later)) {
 		t.Fatalf("after touch: %+v", got)
 	}
 
@@ -220,7 +230,7 @@ func TestJobIDIsUniqueAcrossSources(t *testing.T) {
 	folder := newFolder(t, pool, "one")
 	a, _ := CreateJobSource(ctx, pool, JobSource{FolderID: folder.ID, Repo: "acme/ops", Branch: "main", Path: "a.yaml"})
 	b, _ := CreateJobSource(ctx, pool, JobSource{FolderID: folder.ID, Repo: "acme/ops", Branch: "main", Path: "b.yaml"})
-	at := time.Now().UTC()
+	at := nanosecondNow()
 	if err := SaveJobGood(ctx, pool, a.ID, []byte(`{}`), "same-id", "A", "c1", at); err != nil {
 		t.Fatalf("SaveJobGood a: %v", err)
 	}
@@ -240,7 +250,7 @@ func TestActivateSnapshotKeepsOneActive(t *testing.T) {
 	if _, ok, err := ActiveSnapshot(ctx, pool); err != nil || ok {
 		t.Fatalf("ActiveSnapshot on empty = %v, %v", ok, err)
 	}
-	at := time.Now().UTC().Truncate(time.Microsecond)
+	at := nanosecondNow()
 	if _, err := ActivateSnapshot(ctx, pool, "A", []byte(`{"v":"a"}`), at); err != nil {
 		t.Fatalf("activate A: %v", err)
 	}
@@ -271,7 +281,7 @@ func TestActivateSameCommitTwiceIsNoOp(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool := newPool(t)
-	at := time.Now().UTC()
+	at := nanosecondNow()
 	first, err := ActivateSnapshot(ctx, pool, "A", []byte(`{"v":1}`), at)
 	if err != nil {
 		t.Fatalf("first: %v", err)
@@ -299,7 +309,7 @@ func TestActivateSnapshotConcurrentlyKeepsOneActive(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := ActivateSnapshot(ctx, pool, fmt.Sprintf("commit-%d", i), []byte(`{}`), time.Now().UTC())
+			_, err := ActivateSnapshot(ctx, pool, fmt.Sprintf("commit-%d", i), []byte(`{}`), nanosecondNow())
 			errs <- err
 		}()
 	}
@@ -337,12 +347,12 @@ func TestInventorySourceAndStatus(t *testing.T) {
 	if err != nil || st.CheckedAt != nil || st.Problems != nil {
 		t.Fatalf("empty status = %+v, %v", st, err)
 	}
-	at := time.Now().UTC()
+	at := nanosecondNow()
 	if err := SaveInventoryStatus(ctx, pool, InventoryStatus{CheckedAt: &at, Problems: []byte(`[{"line":1}]`), ProblemsCommit: "c9"}); err != nil {
 		t.Fatalf("SaveInventoryStatus: %v", err)
 	}
 	st, err = GetInventoryStatus(ctx, pool)
-	if err != nil || st.CheckedAt == nil || !st.CheckedAt.Equal(at) || st.ProblemsCommit != "c9" || len(st.Problems) == 0 {
+	if err != nil || st.CheckedAt == nil || !st.CheckedAt.Equal(micro(at)) || st.ProblemsCommit != "c9" || len(st.Problems) == 0 {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
 }
@@ -351,7 +361,7 @@ func TestSyncErrorsAreRecordedAndClearedWithoutTouchingDefinitions(t *testing.T)
 	t.Parallel()
 	ctx := context.Background()
 	pool := newPool(t)
-	at := time.Now().UTC().Truncate(time.Microsecond)
+	at := nanosecondNow()
 	later := at.Add(time.Minute)
 
 	folder, err := CreateFolder(ctx, pool, "ops")
@@ -376,13 +386,13 @@ func TestSyncErrorsAreRecordedAndClearedWithoutTouchingDefinitions(t *testing.T)
 		t.Fatalf("SetInventorySyncError: %v", err)
 	}
 	got, err := GetJobSource(ctx, pool, js.ID)
-	if err != nil || got.SyncError != "boom" || got.SyncErrorAt == nil || !got.SyncErrorAt.Equal(later) ||
-		got.LastGoodCommit != "c1" || got.CheckedAt == nil || !got.CheckedAt.Equal(at) {
+	if err != nil || got.SyncError != "boom" || got.SyncErrorAt == nil || !got.SyncErrorAt.Equal(micro(later)) ||
+		got.LastGoodCommit != "c1" || got.CheckedAt == nil || !got.CheckedAt.Equal(micro(at)) {
 		t.Fatalf("job after set = %+v, %v", got, err)
 	}
 	st, err := GetInventoryStatus(ctx, pool)
-	if err != nil || st.SyncError != "inventory boom" || st.SyncErrorAt == nil || !st.SyncErrorAt.Equal(later) ||
-		st.CheckedAt == nil || !st.CheckedAt.Equal(at) {
+	if err != nil || st.SyncError != "inventory boom" || st.SyncErrorAt == nil || !st.SyncErrorAt.Equal(micro(later)) ||
+		st.CheckedAt == nil || !st.CheckedAt.Equal(micro(at)) {
 		t.Fatalf("status after set = %+v, %v", st, err)
 	}
 

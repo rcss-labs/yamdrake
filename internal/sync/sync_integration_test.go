@@ -166,7 +166,8 @@ func newHarnessMaxConns(t *testing.T, maxConns int32) *harness {
 		t.Fatalf("open pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	h := &harness{t: t, pool: pool, src: newFakeSource(), clock: time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)}
+	// The clock carries nanoseconds on purpose: PostgreSQL keeps microseconds.
+	h := &harness{t: t, pool: pool, src: newFakeSource(), clock: time.Date(2026, 11, 27, 10, 0, 0, 123456789, time.UTC)}
 	h.engine = NewEngine(pool,
 		func(context.Context, string) (Source, error) { return h.src, nil },
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -294,12 +295,12 @@ func TestFirstSyncActivatesInventoryAndJob(t *testing.T) {
 		t.Fatalf("services = %v", got)
 	}
 	st := h.status()
-	if st.Problems != nil || st.ProblemsCommit != "" || st.CheckedAt == nil || !st.CheckedAt.Equal(h.clock) {
+	if st.Problems != nil || st.ProblemsCommit != "" || st.CheckedAt == nil || !st.CheckedAt.Equal(micro(h.clock)) {
 		t.Fatalf("unexpected status: %+v", st)
 	}
 	js := h.job(id)
 	if !js.Runnable || js.Problems != nil || js.JobID != "deploy-backend" || js.Title != "Backend and microservices" ||
-		js.LastGoodCommit != "j1" || js.LastGood == nil || js.SyncedAt == nil || !js.SyncedAt.Equal(h.clock) {
+		js.LastGoodCommit != "j1" || js.LastGood == nil || js.SyncedAt == nil || !js.SyncedAt.Equal(micro(h.clock)) {
 		t.Fatalf("unexpected job: %+v", js)
 	}
 }
@@ -318,11 +319,11 @@ func TestUnchangedCommitOnlyRecordsCheckTime(t *testing.T) {
 	if snapAfter := h.active(); snapAfter.ID != snapBefore.ID || !snapAfter.ActivatedAt.Equal(snapBefore.ActivatedAt) {
 		t.Fatalf("snapshot changed: %+v -> %+v", snapBefore, snapAfter)
 	}
-	if st := h.status(); st.CheckedAt == nil || !st.CheckedAt.Equal(later) {
+	if st := h.status(); st.CheckedAt == nil || !st.CheckedAt.Equal(micro(later)) {
 		t.Fatalf("status CheckedAt = %v, want %v", st.CheckedAt, later)
 	}
 	jobAfter := h.job(id)
-	if jobAfter.CheckedAt == nil || !jobAfter.CheckedAt.Equal(later) {
+	if jobAfter.CheckedAt == nil || !jobAfter.CheckedAt.Equal(micro(later)) {
 		t.Fatalf("job CheckedAt = %v, want %v", jobAfter.CheckedAt, later)
 	}
 	if !jobAfter.SyncedAt.Equal(*jobBefore.SyncedAt) || !bytes.Equal(jobAfter.LastGood, jobBefore.LastGood) || !jobAfter.Runnable {
@@ -604,11 +605,11 @@ func TestSourceErrorChangesNothingAndIsReturned(t *testing.T) {
 	// time it happened, and it is cleared by the next successful contact.
 	ctx := context.Background()
 	failedAt := h.clock
-	if st := h.status(); !strings.Contains(st.SyncError, "502 bad gateway") || st.SyncErrorAt == nil || !st.SyncErrorAt.Equal(failedAt) {
+	if st := h.status(); !strings.Contains(st.SyncError, "502 bad gateway") || st.SyncErrorAt == nil || !st.SyncErrorAt.Equal(micro(failedAt)) {
 		t.Fatalf("inventory sync error not recorded: %+v", st)
 	}
 	for _, id := range h.jobIDs {
-		if js := h.job(id); !strings.Contains(js.SyncError, "502 bad gateway") || js.SyncErrorAt == nil || !js.SyncErrorAt.Equal(failedAt) {
+		if js := h.job(id); !strings.Contains(js.SyncError, "502 bad gateway") || js.SyncErrorAt == nil || !js.SyncErrorAt.Equal(micro(failedAt)) {
 			t.Fatalf("job %d sync error not recorded: %+v", id, js)
 		}
 	}
@@ -835,3 +836,6 @@ func TestWaitingSyncCallsDoNotStarveTheLockHolder(t *testing.T) {
 		}
 	}
 }
+
+// micro is the precision PostgreSQL (and therefore the store) keeps.
+func micro(t time.Time) time.Time { return t.Truncate(time.Microsecond) }

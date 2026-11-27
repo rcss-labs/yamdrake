@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -55,4 +56,17 @@ func mapError(err error) error {
 		}
 	}
 	return err
+}
+
+// dbTime normalises a time for writing. PostgreSQL stores microseconds and
+// rounds anything finer, which would make what a caller reads back differ from
+// what it wrote; truncating here makes that rule explicit and deterministic.
+func dbTime(t time.Time) time.Time { return t.UTC().Truncate(time.Microsecond) }
+
+func dbTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	n := dbTime(*t)
+	return &n
 }

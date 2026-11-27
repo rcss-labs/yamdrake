@@ -147,8 +147,18 @@ func TestMigrateConcurrentCallersApplyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count goose rows: %v", err)
 	}
-	if rows != LatestVersion() || distinct != rows {
-		t.Fatalf("goose_db_version has %d rows (%d distinct) with version_id > 0, want %d unique", rows, distinct, LatestVersion())
+	files, err := migrationFiles.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+	want := int64(0)
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".sql") {
+			want++
+		}
+	}
+	if rows != want || distinct != rows {
+		t.Fatalf("goose_db_version has %d rows (%d distinct) with version_id > 0, want %d unique", rows, distinct, want)
 	}
 }
 
@@ -267,7 +277,8 @@ func TestWaitOpenSucceedsWhenDatabaseAppearsLate(t *testing.T) {
 		}
 	}()
 
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	pool, err := WaitOpen(context.Background(), parsed.String(), 10*time.Second, logger)
 	if ln := <-proxyReady; ln != nil {
 		defer ln.Close()
@@ -277,7 +288,14 @@ func TestWaitOpenSucceedsWhenDatabaseAppearsLate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitOpen: %v", err)
 	}
-	pool.Close()
+	defer pool.Close()
+	if !strings.Contains(logs.String(), `"level":"WARN"`) {
+		t.Errorf("no warn-level failed-attempt line before the proxy came up: %q", logs.String())
+	}
+	// The pool must stay usable after WaitOpen's per-attempt context is cancelled.
+	if err := pool.Ping(context.Background()); err != nil {
+		t.Errorf("pool unusable after WaitOpen returned: %v", err)
+	}
 }
 
 func proxyConnection(client net.Conn, upstreamAddr string) {
@@ -304,5 +322,54 @@ func TestOpenAndMigrateErrorsNeverContainPassword(t *testing.T) {
 	}
 	if err := Migrate(ctx, badURL); err == nil || strings.Contains(err.Error(), "s3cret") {
 		t.Errorf("Migrate error = %v, want a non-nil error without the password", err)
+	}
+}
+
+func TestWaitOpenBoundsASingleHangingAttempt(t *testing.T) {
+	t.Parallel()
+	// A listener that accepts TCP connections and never answers the handshake.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+		}
+	}()
+
+	type result struct {
+		err     error
+		elapsed time.Duration
+	}
+	done := make(chan result, 1)
+	go func() {
+		started := time.Now()
+		pool, err := WaitOpen(context.Background(), "postgres://yumdrake:s3cret@"+ln.Addr().String()+"/none?sslmode=disable",
+			2*time.Second, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		if pool != nil {
+			pool.Close()
+		}
+		done <- result{err, time.Since(started)}
+	}()
+
+	select {
+	case res := <-done:
+		if res.err == nil {
+			t.Fatal("WaitOpen succeeded against a listener that never answers")
+		}
+		if res.elapsed > 4*time.Second {
+			t.Errorf("WaitOpen took %s, want under 4s", res.elapsed)
+		}
+		if !strings.Contains(res.err.Error(), "2s") {
+			t.Errorf("error %q does not mention the 2s wait", res.err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("WaitOpen still hanging after 8s with maxWait 2s: a single attempt is not bounded")
 	}
 }

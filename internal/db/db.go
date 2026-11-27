@@ -45,7 +45,12 @@ func WaitOpen(ctx context.Context, url string, maxWait time.Duration, log *slog.
 	deadline := started.Add(maxWait)
 	backoff := waitOpenInitialBackoff
 	for attempt := 1; ; attempt++ {
-		pool, err := Open(ctx, url)
+		// Bound each attempt by the overall deadline so one hanging dial cannot
+		// outlast maxWait. The pool does not depend on this context after Open
+		// returns (it only governs the initial connection and ping).
+		attemptCtx, cancelAttempt := context.WithDeadline(ctx, deadline)
+		pool, err := Open(attemptCtx, url)
+		cancelAttempt()
 		if err == nil {
 			return pool, nil
 		}

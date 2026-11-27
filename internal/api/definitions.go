@@ -11,6 +11,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
 )
 
 type inventoryResponse struct {
@@ -108,19 +109,16 @@ func (s *server) getService(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, service)
 }
 
-// syncFailed handles the error of an on-demand sync. A source failure is
-// already stored as sync_error and shown by the response that follows, so only
-// an ended request is an error here; other failures are logged.
+// syncFailed handles the error of an on-demand sync and reports whether it
+// wrote a response. A source error (yumsync.ErrSource) is already stored as
+// sync_error and logged by the engine, and the response that follows shows it;
+// anything else, including an ended request, is an internal failure.
 func (s *server) syncFailed(w http.ResponseWriter, r *http.Request, err error) bool {
-	if err == nil {
+	if err == nil || (errors.Is(err, yumsync.ErrSource) && r.Context().Err() == nil) {
 		return false
 	}
-	if r.Context().Err() != nil {
-		s.internalError(w, r, fmt.Errorf("sync interrupted: %w", err))
-		return true
-	}
-	s.Log.Warn("on-demand sync finished with an error", "path", r.URL.Path, "error", err.Error())
-	return false
+	s.internalError(w, r, fmt.Errorf("on-demand sync: %w", err))
+	return true
 }
 
 func (s *server) syncInventory(w http.ResponseWriter, r *http.Request) {

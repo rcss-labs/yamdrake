@@ -240,9 +240,25 @@ func truncateMessage(message string, max int) string {
 	return strings.ToValidUTF8(message[:max], "")
 }
 
+// ErrSource marks a failure to reach or read the source (network, GitHub
+// status, missing connection). The failure is recorded as sync_error; any other
+// error from a Sync method is an internal failure.
+var ErrSource = errors.New("source error")
+
+// sourceFailure wraps a source error so it matches ErrSource while keeping its
+// message and its own chain (for example *github.RateLimitError).
+type sourceFailure struct {
+	what string
+	err  error
+}
+
+func (f *sourceFailure) Error() string        { return f.what + ": " + f.err.Error() }
+func (f *sourceFailure) Unwrap() error        { return f.err }
+func (f *sourceFailure) Is(target error) bool { return target == ErrSource }
+
 // sourceError logs a failure to reach the source at warn level and returns it
 // wrapped. Nothing is stored for it.
 func (e *Engine) sourceError(what string, err error, attrs ...any) error {
 	e.log.Warn("sync source error", append(attrs, "step", what, "error", err.Error())...)
-	return fmt.Errorf("%s: %w", what, err)
+	return &sourceFailure{what: what, err: err}
 }

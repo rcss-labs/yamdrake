@@ -287,7 +287,11 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 			fn(background)
 		}()
 	}
-	err = Serve(ctx, log, svc.Common.ShutdownTimeout, newHTTPServer(svc.Addr, handler))
+	server := newHTTPServer(svc.Addr, handler)
+	// Requests inherit the service context, so an in-flight on-demand sync is
+	// cancelled at shutdown rather than running on after the pool is closed.
+	server.BaseContext = func(net.Listener) context.Context { return ctx }
+	err = Serve(ctx, log, svc.Common.ShutdownTimeout, server)
 	// Stop the loops and wait for them while the pool is still open.
 	stopBackground()
 	running.Wait()

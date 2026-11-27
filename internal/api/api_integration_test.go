@@ -5,7 +5,11 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -252,6 +256,13 @@ func TestRoutesRequireBootstrapToken(t *testing.T) {
 	}
 }
 
+func TestUnknownPathWithoutTokenIsUnauthorized(t *testing.T) {
+	h := newHarness(t)
+	if code, _ := h.doRaw("GET", "/api/v1/nope", "", nil); code != http.StatusUnauthorized {
+		t.Errorf("unknown path without token = %d, want 401", code)
+	}
+}
+
 func TestEmptyBootstrapTokenDisablesAPI(t *testing.T) {
 	handler := New(Deps{BootstrapToken: "", Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	for _, header := range []string{"", "Bearer ", "Bearer anything"} {
@@ -265,6 +276,15 @@ func TestEmptyBootstrapTokenDisablesAPI(t *testing.T) {
 			t.Errorf("Authorization %q: status = %d, want 404", header, rec.Code)
 		}
 	}
+}
+
+func testPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 }
 
 func TestCreateConnectionEncryptsAndNeverReturnsSecret(t *testing.T) {
@@ -281,6 +301,12 @@ func TestCreateConnectionEncryptsAndNeverReturnsSecret(t *testing.T) {
 		map[string]any{"owner": "ACME", "method": "token", "token": token}, http.StatusConflict)
 	h.mustDo("POST", "/api/v1/admin/github-connections",
 		map[string]any{"owner": "other", "method": "token", "token": token, "bogus": 1}, http.StatusBadRequest)
+
+	// An App connection: neither the key nor any line of it may come back.
+	pemKey := testPrivateKeyPEM(t)
+	h.mustDo("POST", "/api/v1/admin/github-connections",
+		map[string]any{"owner": "appowner", "method": "app", "app_id": 7, "installation_id": 9, "private_key": pemKey}, http.StatusCreated)
+	h.mustDo("GET", "/api/v1/admin/github-connections", nil, http.StatusOK)
 
 	ctx := context.Background()
 	conn, ciphertext, err := store.ConnectionSecret(ctx, h.pool, "acme")
@@ -304,6 +330,32 @@ func TestCreateConnectionEncryptsAndNeverReturnsSecret(t *testing.T) {
 		if strings.Contains(body, token) {
 			t.Errorf("response %d contains the token: %s", i, body)
 		}
+	}
+	var pemLines []string
+	for _, line := range strings.Split(pemKey, "\n") {
+		if len(line) >= 20 && !strings.HasPrefix(line, "-----") {
+			pemLines = append(pemLines, line)
+		}
+	}
+	if len(pemLines) == 0 {
+		t.Fatal("test key has no body lines")
+	}
+	for i, body := range h.bodies {
+		if strings.Contains(body, "PRIVATE KEY") {
+			t.Errorf("response %d contains PEM markers: %s", i, body)
+		}
+		for _, line := range pemLines {
+			if strings.Contains(body, line) {
+				t.Errorf("response %d contains a line of the private key", i)
+			}
+		}
+	}
+	_, appCiphertext, err := store.ConnectionSecret(ctx, h.pool, "appowner")
+	if err != nil {
+		t.Fatalf("ConnectionSecret(appowner): %v", err)
+	}
+	if plain, err := h.cipher.Decrypt(ctx, "github-connection", appCiphertext); err != nil || string(plain) != pemKey {
+		t.Errorf("stored App key does not decrypt to the submitted PEM (err %v)", err)
 	}
 	if len(h.bodies) < 4 {
 		t.Fatalf("recorded %d responses, want at least 4", len(h.bodies))
@@ -568,5 +620,42 @@ func TestFoldersCreateListAndRejectDuplicates(t *testing.T) {
 	list := h.mustDo("GET", "/api/v1/folders", nil, http.StatusOK)
 	if folders, _ := list["folders"].([]any); len(folders) != 1 {
 		t.Errorf("folders = %v, want 1", list["folders"])
+	}
+}
+
+// stubSyncer returns fixed errors from the on-demand syncs.
+type stubSyncer struct{ err error }
+
+func (s stubSyncer) SyncInventory(context.Context) error  { return s.err }
+func (s stubSyncer) SyncJob(context.Context, int64) error { return s.err }
+
+func (h *harness) withSyncer(syncer Syncer) {
+	h.handler = New(Deps{Pool: h.pool, Engine: syncer, Cipher: h.cipher,
+		BootstrapToken: config.Secret(bootstrapToken), Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+}
+
+func TestInternalSyncFailureIsInternalError(t *testing.T) {
+	h := newHarness(t)
+	h.withSyncer(stubSyncer{err: errors.New("pq: connection to 10.0.0.5 refused")})
+	code, body := h.do("POST", "/api/v1/inventory/sync", nil)
+	if code != http.StatusInternalServerError || errorCode(t, body) != "internal" {
+		t.Fatalf("inventory sync = %d %v, want 500 internal", code, body)
+	}
+	if strings.Contains(errorMessage(body), "10.0.0.5") {
+		t.Errorf("the internal detail leaked into the response: %v", body)
+	}
+
+	folder := h.createFolder("Backends")
+	code, body = h.do("POST", "/api/v1/jobs", map[string]any{"folder_id": folder, "repo": jobsRepo, "branch": "main", "path": jobPath})
+	if code != http.StatusInternalServerError || errorCode(t, body) != "internal" {
+		t.Errorf("register job with failing sync = %d %v, want 500 internal", code, body)
+	}
+}
+
+func TestSourceSyncFailureIsShownNotFailed(t *testing.T) {
+	h := newHarness(t)
+	h.withSyncer(stubSyncer{err: fmt.Errorf("read branch: %w", yumsync.ErrSource)})
+	if code, body := h.do("POST", "/api/v1/inventory/sync", nil); code != http.StatusOK {
+		t.Errorf("inventory sync with a source error = %d %v, want 200", code, body)
 	}
 }

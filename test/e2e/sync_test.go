@@ -7,6 +7,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -236,24 +237,25 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// startOrchestrator runs the orchestrator through app.Run, the way
-// cmd/orchestrator does, and stops it (expecting a clean exit) at cleanup.
-func startOrchestrator(t *testing.T, githubURL string) client {
+// startService runs the orchestrator through app.Run, the way cmd/orchestrator
+// does, and stops it (expecting a clean exit) at cleanup. It returns the base
+// URL, the database URL and the environment the service was configured with.
+func startService(t *testing.T, githubURL string) (base, databaseURL string, env map[string]string) {
 	t.Helper()
 	valkeyAddr := os.Getenv("YUMDRAKE_TEST_VALKEY_ADDR")
 	if valkeyAddr == "" {
 		t.Fatal("YUMDRAKE_TEST_VALKEY_ADDR must be set for end-to-end tests")
 	}
 	addr := freeAddr(t)
-	databaseURL := testdb.New(t)
-	env := map[string]string{
+	databaseURL = testdb.New(t)
+	env = map[string]string{
 		"YUMDRAKE_DATABASE_URL":     databaseURL,
 		"YUMDRAKE_VALKEY_ADDR":      valkeyAddr,
 		"YUMDRAKE_HTTP_ADDR":        addr,
 		"YUMDRAKE_LOCAL_SECRET_KEY": localSecretKey,
 		"YUMDRAKE_PUBLIC_URL":       "http://" + addr,
 		// Runs sharing the Valkey must not sign each other out (users are numbered from 1 in every database).
-		"YUMDRAKE_VALKEY_KEY_PREFIX": fmt.Sprintf("e2e-%x:", time.Now().UnixNano()),
+		"YUMDRAKE_VALKEY_KEY_PREFIX": randomKeyPrefix(t),
 		"YUMDRAKE_SYNC_INTERVAL":     syncInterval.String(),
 		"YUMDRAKE_GITHUB_API_URL":    githubURL,
 		"YUMDRAKE_LOG_LEVEL":         "warn",
@@ -280,7 +282,7 @@ func startOrchestrator(t *testing.T, githubURL string) client {
 		}
 	})
 
-	base := "http://" + addr
+	base = "http://" + addr
 	waitFor(t, "the orchestrator to answer /readyz", func() bool {
 		resp, err := http.Get(base + "/readyz") //nolint:gosec,noctx // local test server
 		if err != nil {
@@ -289,6 +291,24 @@ func startOrchestrator(t *testing.T, githubURL string) client {
 		_ = resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	})
+	return base, databaseURL, env
+}
+
+// randomKeyPrefix gives each run its own Valkey key prefix from crypto/rand.
+func randomKeyPrefix(t *testing.T) string {
+	t.Helper()
+	raw := make([]byte, 8)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("random key prefix: %v", err)
+	}
+	return fmt.Sprintf("e2e-%x:", raw)
+}
+
+// startOrchestrator starts the service and signs in as a first admin made
+// directly in the database.
+func startOrchestrator(t *testing.T, githubURL string) client {
+	t.Helper()
+	base, databaseURL, _ := startService(t, githubURL)
 	return signIn(t, base, databaseURL)
 }
 

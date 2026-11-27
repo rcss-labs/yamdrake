@@ -128,3 +128,16 @@ func TouchJobChecked(ctx context.Context, db DBTX, id int64, at time.Time) error
 	}
 	return nil
 }
+
+// SetJobRunnable changes only the runnable flag; checked_at, problems and the
+// stored definition stay as they are.
+func SetJobRunnable(ctx context.Context, db DBTX, id int64, runnable bool) error {
+	tag, err := db.Exec(ctx, "UPDATE job_sources SET runnable = $2 WHERE id = $1", id, runnable)
+	if err != nil {
+		return fmt.Errorf("set job runnable: %w", mapError(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("set job runnable: %w", ErrNotFound)
+	}
+	return nil
+}

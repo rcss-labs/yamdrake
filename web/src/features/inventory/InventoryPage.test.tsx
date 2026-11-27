@@ -211,6 +211,7 @@ describe('the services tab', () => {
   it('shows a loading state while a chosen service loads', async () => {
     delayNext('GET', '/api/v1/inventory/services/backend-api', 100)
     showInventory('/inventory?tab=services&service=backend-api')
+    await screen.findByRole('list', { name: 'Services' })
     expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: 'backend-api' })).toBeInTheDocument()
   })

@@ -2,8 +2,12 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // AuditEntry is one append-only record of a change. Detail is a JSON document
@@ -16,11 +20,12 @@ type AuditEntry struct {
 	Action     string
 	TargetType string
 	TargetID   string
-	Detail     []byte
+	Detail     json.RawMessage
 }
 
 // InsertAudit appends an entry. A nil or empty Detail is stored as NULL.
-// Invalid JSON in Detail is an error.
+// Invalid JSON in Detail is ErrInvalid; the server's message is dropped
+// because it can echo a fragment of Detail.
 func InsertAudit(ctx context.Context, db DBTX, e AuditEntry) error {
 	var detail any // nil becomes SQL NULL
 	if len(e.Detail) > 0 {
@@ -30,6 +35,10 @@ func InsertAudit(ctx context.Context, db DBTX, e AuditEntry) error {
 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
 		dbTime(e.At), e.ActorID, e.Actor, e.Action, e.TargetType, e.TargetID, detail)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && (pgErr.Code == invalidText || pgErr.Code == invalidJSONText) {
+			return fmt.Errorf("insert audit: %w: detail is not valid JSON", ErrInvalid)
+		}
 		return fmt.Errorf("insert audit: %w", mapError(err))
 	}
 	return nil
@@ -62,3 +71,9 @@ FROM audit_log WHERE ($1::bigint = 0 OR id < $1) ORDER BY id DESC LIMIT $2`, bef
 	}
 	return out, rows.Err()
 }
+
+// SQLSTATEs PostgreSQL reports for text that is not valid JSON.
+const (
+	invalidText     = "22P02"
+	invalidJSONText = "22032"
+)

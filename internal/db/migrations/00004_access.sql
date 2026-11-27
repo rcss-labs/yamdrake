@@ -4,7 +4,8 @@
 -- The audit table is append-only. The application role must be granted INSERT
 -- and SELECT on it and never UPDATE, DELETE or TRUNCATE:
 --   GRANT INSERT, SELECT ON audit_log TO <application role>;
--- No store function modifies or deletes audit rows.
+-- No store function modifies or deletes audit rows. A trigger enforces the
+-- same rule for any role that does have those privileges.
 
 CREATE TABLE users (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -80,7 +81,27 @@ CREATE TABLE audit_log (
     detail      jsonb
 );
 
+-- +goose StatementBegin
+CREATE FUNCTION audit_log_refuse_change() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'audit_log is append-only: % is not allowed', TG_OP
+        USING ERRCODE = 'insufficient_privilege';
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER audit_log_no_row_change
+    BEFORE UPDATE OR DELETE ON audit_log
+    FOR EACH ROW EXECUTE FUNCTION audit_log_refuse_change();
+CREATE TRIGGER audit_log_no_truncate
+    BEFORE TRUNCATE ON audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_log_refuse_change();
+
 -- +goose Down
+DROP TRIGGER audit_log_no_truncate ON audit_log;
+DROP TRIGGER audit_log_no_row_change ON audit_log;
+DROP FUNCTION audit_log_refuse_change();
 DROP TABLE audit_log;
 DROP TABLE api_tokens;
 DROP TABLE grants;

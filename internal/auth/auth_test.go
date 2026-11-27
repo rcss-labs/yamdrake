@@ -41,6 +41,8 @@ func TestCan(t *testing.T) {
 		{"a grant for another action in scope does not help", Principal{Grants: []store.Grant{grant("cancel", "dev", "", 0)}}, Run, dev, false},
 		{"second grant may be the one that matches", Principal{Grants: []store.Grant{grant("run", "prod", "", 0), grant("run", "dev", "", 0)}}, Run, dev, true},
 		{"scoped grant does not match the zero target", Principal{Grants: []store.Grant{grant("run", "dev", "", 0)}}, Run, Target{}, false},
+		{"environment-only grant does not match the zero target", Principal{Grants: []store.Grant{grant("run", "", "hetzner-01", 0)}}, Run, Target{}, false},
+		{"folder-only grant does not match a target in no folder", Principal{Grants: []store.Grant{grant("run", "", "", 3)}}, Run, Target{Label: "dev", Environment: "hetzner-01"}, false},
 		{"unknown action refused with a grant of that name", Principal{Grants: []store.Grant{grant("teleport", "", "", 0)}}, Action("teleport"), dev, false},
 		{"unknown action refused for admin", Principal{Admin: true}, Action("teleport"), dev, false},
 	}

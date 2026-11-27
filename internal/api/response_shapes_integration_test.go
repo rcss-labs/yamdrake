@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
 // nullSlices returns the JSON paths in raw where the Go type t declares a slice
@@ -83,28 +85,59 @@ func structNullSlices(t reflect.Type, fields map[string]json.RawMessage, path st
 	return found
 }
 
-// Every list a Plan 2 or sign-in route returns is [] when empty, never null,
-// on an empty database and on a populated one.
+// listRoute is a GET route whose answer holds lists, with the Go type that
+// declares them.
+type listRoute struct {
+	pattern string // as registered in routes()
+	path    string
+	into    reflect.Type
+}
+
+// notAListResponse names the GET routes that answer a single object with no
+// list inside; every other GET route must be in the table below, so a new one
+// cannot be forgotten.
+var notAListResponse = map[string]bool{
+	"GET /api/v1/admin/idp-mappings/{idpGroup}": true,
+}
+
+// Every list a route returns is [] when empty, never null, on an empty
+// database and on a populated one.
 func TestNoRouteReturnsNullForAList(t *testing.T) {
 	h := newHarness(t)
-	type route struct {
-		path string
-		into reflect.Type
-	}
-	routes := []route{
-		{"/api/v1/me", reflect.TypeFor[principalResponse]()},
-		{"/api/v1/inventory", reflect.TypeFor[inventoryResponse]()},
-		{"/api/v1/folders", reflect.TypeFor[struct {
+	list := func(pattern, path string, into reflect.Type) listRoute { return listRoute{pattern, path, into} }
+	empty := []listRoute{
+		list("GET /api/v1/me", "/api/v1/me", reflect.TypeFor[principalResponse]()),
+		list("GET /api/v1/inventory", "/api/v1/inventory", reflect.TypeFor[inventoryResponse]()),
+		list("GET /api/v1/folders", "/api/v1/folders", reflect.TypeFor[struct {
 			Folders []folderResponse `json:"folders"`
-		}]()},
-		{"/api/v1/jobs", reflect.TypeFor[struct {
+		}]()),
+		list("GET /api/v1/jobs", "/api/v1/jobs", reflect.TypeFor[struct {
 			Jobs []jobSummary `json:"jobs"`
-		}]()},
-		{"/api/v1/admin/github-connections", reflect.TypeFor[struct {
+		}]()),
+		list("GET /api/v1/admin/github-connections", "/api/v1/admin/github-connections", reflect.TypeFor[struct {
 			Connections []connectionResponse `json:"connections"`
-		}]()},
+		}]()),
+		list("GET /api/v1/admin/users", "/api/v1/admin/users", reflect.TypeFor[struct {
+			Users []userResponse `json:"users"`
+		}]()),
+		list("GET /api/v1/admin/groups", "/api/v1/admin/groups", reflect.TypeFor[struct {
+			Groups []groupView `json:"groups"`
+		}]()),
+		list("GET /api/v1/admin/idp-mappings", "/api/v1/admin/idp-mappings", reflect.TypeFor[struct {
+			Mappings []mappingView `json:"mappings"`
+		}]()),
+		list("GET /api/v1/admin/grants", "/api/v1/admin/grants", reflect.TypeFor[struct {
+			Grants []grantResponse `json:"grants"`
+		}]()),
+		list("GET /api/v1/admin/audit", "/api/v1/admin/audit", reflect.TypeFor[struct {
+			Entries    []auditEntryResponse `json:"entries"`
+			NextBefore *int64               `json:"next_before"`
+		}]()),
+		list("GET /api/v1/tokens", "/api/v1/tokens", reflect.TypeFor[struct {
+			Tokens []tokenResponse `json:"tokens"`
+		}]()),
 	}
-	check := func(stage string, routes []route) {
+	check := func(stage string, routes []listRoute) {
 		t.Helper()
 		for _, r := range routes {
 			code, raw := h.doRaw("GET", r.path, h.adminToken, nil)
@@ -116,22 +149,49 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 			}
 		}
 	}
-	check("empty database", routes)
+	check("empty database", empty)
 
+	// No GET route may be missing from the table (or the allowlist).
+	listed := map[string]bool{}
+	for _, r := range empty {
+		listed[r.pattern] = true
+	}
+	populatedOnly := []listRoute{
+		list("GET /api/v1/inventory/services/{name}", "/api/v1/inventory/services/orders", reflect.TypeFor[spec.Service]()),
+		list("GET /api/v1/inventory/services/{name}", "/api/v1/inventory/services/backend-api", reflect.TypeFor[spec.Service]()),
+	}
+	for _, r := range populatedOnly {
+		listed[r.pattern] = true
+	}
+	listed["GET /api/v1/jobs/{id}"] = true // checked below with the id of the registered job
+	for _, route := range (&server{}).routes() {
+		if strings.HasPrefix(route.pattern, "GET ") && !listed[route.pattern] && !notAListResponse[route.pattern] {
+			t.Errorf("%s is neither in the list-shape table nor in notAListResponse", route.pattern)
+		}
+	}
+
+	ctx := context.Background()
 	h.pushInventory("c1")
 	h.pushJob("j1")
 	h.setInventorySource()
 	folder := h.createFolder("Backends")
 	created := h.registerJob(folder)
+	jobID := itoa(int64(created["id"].(float64)))
 	h.mustDo("POST", "/api/v1/admin/github-connections", map[string]any{"owner": "acme", "method": "token", "token": "ghp_x"}, http.StatusCreated)
-	populated := append(routes,
-		route{"/api/v1/inventory/services/orders", reflect.TypeFor[spec.Service]()},
-		route{"/api/v1/inventory/services/backend-api", reflect.TypeFor[spec.Service]()},
-		route{"/api/v1/jobs/" + itoa(int64(created["id"].(float64))), reflect.TypeFor[jobDetail]()},
-	)
+	h.newUser("nogroups") // a user who belongs to no group
+	group := h.createGroupVia("Operators", false)
+	if err := store.SetIDPMapping(ctx, h.pool, "idp-operators", group); err != nil {
+		t.Fatalf("SetIDPMapping: %v", err)
+	}
+	if _, err := store.CreateGrant(ctx, h.pool, store.Grant{GroupID: group, Action: "run"}); err != nil {
+		t.Fatalf("CreateGrant: %v", err)
+	}
+	populated := append(append([]listRoute{}, empty...), populatedOnly...)
+	populated = append(populated, list("GET /api/v1/jobs/{id}", "/api/v1/jobs/"+jobID, reflect.TypeFor[jobDetail]()))
 	check("populated database", populated)
+
 	// The stored job definition is raw JSON in the response type; walk it as a spec.Job.
-	_, raw := h.doRaw("GET", "/api/v1/jobs/"+itoa(int64(created["id"].(float64))), h.adminToken, nil)
+	_, raw := h.doRaw("GET", "/api/v1/jobs/"+jobID, h.adminToken, nil)
 	var detail struct {
 		Definition json.RawMessage `json:"definition"`
 	}
@@ -139,6 +199,12 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 	if found := nullSlices(reflect.TypeFor[spec.Job](), detail.Definition, ".definition"); len(found) > 0 {
 		t.Errorf("job definition has null where a list belongs: %v", found)
 	}
+
+	// A rejected commit whose stored problems document is JSON null.
+	if _, err := h.pool.Exec(ctx, "UPDATE inventory_status SET problems = 'null'::jsonb, problems_commit = 'deadbeef'"); err != nil {
+		t.Fatalf("store a null problems document: %v", err)
+	}
+	check("rejected commit with null problems", empty[1:2])
 }
 
 // /me and the sign-in answer carry exactly the fields the web application reads.
@@ -173,6 +239,14 @@ func TestPrincipalResponsesHaveTheWebContractShape(t *testing.T) {
 	rec := h.login(user.Email, testPassword)
 	h.expect(rec, http.StatusOK, "")
 	check("login", rec.Body.Bytes())
+	// A user with no grants gets [] and not null.
+	bare := h.newUser("nogrants")
+	bareToken, _ := h.newToken(bare.ID)
+	me0 := h.send(sent{method: "GET", path: "/api/v1/me", bearer: bareToken})
+	h.expect(me0, http.StatusOK, "")
+	if !strings.Contains(me0.Body.String(), `"grants":[]`) {
+		t.Errorf("/me of a user without grants: grants is not []")
+	}
 	token, _ := h.newToken(user.ID)
 	me := h.send(sent{method: "GET", path: "/api/v1/me", bearer: token})
 	h.expect(me, http.StatusOK, "")

@@ -64,6 +64,9 @@ func (s *server) inventoryView(ctx context.Context) (inventoryResponse, spec.Inv
 		if err := json.Unmarshal(status.Problems, &problems); err != nil {
 			return inventoryResponse{}, spec.Inventory{}, false, fmt.Errorf("decode inventory problems: %w", err)
 		}
+		if problems == nil {
+			problems = spec.Problems{}
+		}
 		out.Rejected = &rejected{Commit: status.ProblemsCommit, Problems: problems}
 	}
 	snapshot, active, err := store.ActiveSnapshot(ctx, s.Pool)

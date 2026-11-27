@@ -196,7 +196,8 @@ type Service struct {
 	Prepare func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) error
 	// Extend runs after Prepare and returns what the service adds to the
 	// shared health server: extra routes and background loops.
-	Extend func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) (Extension, error)
+	// The Valkey client is open and owned by Run.
+	Extend func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (Extension, error)
 }
 
 // Extension is what a service adds to the health server.
@@ -257,7 +258,7 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 
 	var ext Extension
 	if svc.Extend != nil {
-		ext, err = svc.Extend(ctx, log, pool)
+		ext, err = svc.Extend(ctx, log, pool, client)
 		if err != nil {
 			log.Error("start-up failed", "error", err.Error())
 			return ExitFailure

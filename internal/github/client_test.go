@@ -67,33 +67,47 @@ func TestHeadCommit(t *testing.T) {
 	}
 }
 
-func TestListFilesIsRecursiveAndScopedToDir(t *testing.T) {
+func TestListFilesFetchesOnlyTheSubTreeOfDir(t *testing.T) {
 	c := newTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/o/r/git/trees/sha1" || r.URL.Query().Get("recursive") != "1" {
+		if r.URL.Path != "/repos/o/r/git/trees/sha1:jobs/team" || r.URL.Query().Get("recursive") != "1" {
 			t.Errorf("url = %s", r.URL)
 		}
 		_, _ = fmt.Fprint(w, `{"truncated":false,"tree":[
-			{"path":"jobs","type":"tree"},
-			{"path":"jobs/a.yaml","type":"blob"},
-			{"path":"jobs/sub/b.yaml","type":"blob"},
-			{"path":"jobs2/c.yaml","type":"blob"},
-			{"path":"other/d.yaml","type":"blob"}]}`)
+			{"path":"sub","type":"tree"},
+			{"path":"a.yaml","type":"blob"},
+			{"path":"sub/b.yaml","type":"blob"}]}`)
 	}))
-	got, err := c.ListFiles(context.Background(), "o/r", "sha1", "jobs")
+	got, err := c.ListFiles(context.Background(), "o/r", "sha1", "/jobs/team/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got, ",") != "jobs/a.yaml,jobs/sub/b.yaml" {
+	if strings.Join(got, ",") != "jobs/team/a.yaml,jobs/team/sub/b.yaml" {
 		t.Errorf("got %v", got)
 	}
 }
 
-func TestListFilesTruncatedIsAnError(t *testing.T) {
+func TestListFilesWholeRepositoryWhenDirIsEmpty(t *testing.T) {
 	c := newTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"truncated":true,"tree":[{"path":"a","type":"blob"}]}`)
+		if r.URL.Path != "/repos/o/r/git/trees/sha1" || r.URL.Query().Get("recursive") != "1" {
+			t.Errorf("url = %s", r.URL)
+		}
+		_, _ = fmt.Fprint(w, `{"truncated":false,"tree":[{"path":"jobs","type":"tree"},{"path":"jobs/a.yaml","type":"blob"},{"path":"b.yaml","type":"blob"}]}`)
 	}))
-	if _, err := c.ListFiles(context.Background(), "o/r", "sha1", ""); err == nil {
-		t.Fatal("expected error for truncated tree")
+	got, err := c.ListFiles(context.Background(), "o/r", "sha1", "")
+	if err != nil || strings.Join(got, ",") != "jobs/a.yaml,b.yaml" {
+		t.Fatalf("got %v, %v", got, err)
+	}
+}
+
+func TestListFilesTruncatedIsAnError(t *testing.T) {
+	for _, dir := range []string{"", "inventory"} {
+		c := newTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprint(w, `{"truncated":true,"tree":[{"path":"a","type":"blob"}]}`)
+		}))
+		_, err := c.ListFiles(context.Background(), "o/r", "sha1", dir)
+		if err == nil || !strings.Contains(err.Error(), "too large") {
+			t.Errorf("dir %q: err = %v, want a clear truncated-tree error", dir, err)
+		}
 	}
 }
 

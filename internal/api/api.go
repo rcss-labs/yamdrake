@@ -1,6 +1,6 @@
-// Package api serves the /api/v1 HTTP API: inventory, folders, job sources and
-// GitHub connections. Until sign-in exists every route requires the bootstrap
-// token (see guard.go).
+// Package api serves the /api/v1 HTTP API: sign-in, inventory, folders, job
+// sources and GitHub connections. Every request is made by a principal (a
+// bearer token or a session cookie) and every route names the action it needs.
 package api
 
 import (
@@ -11,11 +11,16 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	valkey "github.com/valkey-io/valkey-go"
 
-	"github.com/rcss-labs/yamdrake/internal/config"
+	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yamdrake/internal/session"
+	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
 // maxBodyBytes limits every request body.
@@ -24,6 +29,9 @@ const maxBodyBytes = 1 << 20
 // Error codes of the API.
 const (
 	codeUnauthorized = "unauthorized"
+	codeForbidden    = "forbidden"
+	codeUnavailable  = "unavailable"
+	codeTooMany      = "too_many_requests"
 	codeNotFound     = "not_found"
 	codeInvalid      = "invalid"
 	codeConflict     = "conflict"
@@ -34,6 +42,8 @@ const (
 // is passed through, so a slow sync ends with its request.
 type Syncer interface {
 	SyncInventory(ctx context.Context) error
+	// SetInventorySource stores the source and syncs it as one serialised step.
+	SetInventorySource(ctx context.Context, source store.InventorySource, inTx func(context.Context, store.DBTX) error) error
 	SyncJob(ctx context.Context, jobSourceID int64) error
 }
 
@@ -42,46 +52,166 @@ type Deps struct {
 	Pool   *pgxpool.Pool
 	Engine Syncer
 	Cipher secrets.Cipher
-	// BootstrapToken guards every route; when empty the API answers 404.
-	BootstrapToken config.Secret
-	Log            *slog.Logger
+	Log    *slog.Logger
 	// OnConnectionCreated, when set, is called with the (lower case) owner
 	// after a connection is stored so caches for that owner can be dropped.
 	OnConnectionCreated func(owner string)
+
+	// Sessions stores browser sessions; Valkey holds the sign-in failure
+	// counters. Both are required.
+	Sessions *session.Manager
+	Valkey   valkey.Client
+	// KeyPrefix goes in front of the Valkey keys of the sign-in counters (use
+	// the prefix of Sessions); empty in production.
+	KeyPrefix string
+	// PublicURL is the address users reach the service at; cookie requests that
+	// change state must come from it. Required.
+	PublicURL string
+	// LockoutWindow is how long five failed sign-ins for one email lock it
+	// (default 15 minutes). Tests shorten it.
+	LockoutWindow time.Duration
+	// Now is the clock (default time.Now).
+	Now func() time.Time
+	// DevicePollInterval is how often a CLI may poll a device sign-in (default
+	// 5 seconds). Tests shorten it.
+	DevicePollInterval time.Duration
+	// MaxConcurrentLogins bounds the password checks running at once (default
+	// 4): each uses 64 MiB, and sign-in is open to anyone. VerifyWait is how
+	// long a request waits for a slot before it is answered 503 (default 1s).
+	MaxConcurrentLogins int
+	VerifyWait          time.Duration
 }
 
-type server struct{ Deps }
+// valkeyTimeout bounds every Valkey call made for a request: against a dead
+// server valkey-go keeps redialling until its context ends.
+var valkeyTimeout = 3 * time.Second
 
-// New returns the handler for the whole /api/v1 tree (full paths are
-// registered, so mount it at "/api/v1/").
+type server struct {
+	Deps
+	// dummyHash is verified when the account does not exist (or cannot sign in
+	// with a password), so every sign-in costs one argon2 verification.
+	dummyHash string
+	// verifySlots has one token per allowed concurrent password check.
+	verifySlots chan struct{}
+}
+
+// dummyPasswordHash is computed once per process, with the production parameters.
+var dummyPasswordHash = sync.OnceValues(func() (string, error) {
+	return auth.HashPassword("a password nobody has chosen")
+})
+
+// New returns the handler for the whole /api/v1 tree and the /saml endpoints
+// (full paths are registered, so mount it at "/api/v1/" and "/saml/"). Every route except sign-in needs an
+// authenticated principal, and every route states the action it needs.
 func New(deps Deps) http.Handler {
+	if deps.Pool == nil || deps.Sessions == nil || deps.Valkey == nil || deps.PublicURL == "" {
+		panic("api.New: Pool, Sessions, Valkey and PublicURL are required")
+	}
 	if deps.Log == nil {
 		deps.Log = slog.New(slog.DiscardHandler)
 	}
-	if deps.BootstrapToken.Reveal() == "" {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			writeError(w, http.StatusNotFound, codeNotFound, "not found")
-		})
+	if deps.LockoutWindow <= 0 {
+		deps.LockoutWindow = defaultLockoutWindow
 	}
-	s := &server{deps}
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
+	if deps.DevicePollInterval <= 0 {
+		deps.DevicePollInterval = defaultDevicePollInterval
+	}
+	dummy, err := dummyPasswordHash()
+	if err != nil {
+		panic("api.New: dummy password hash: " + err.Error())
+	}
+	if deps.MaxConcurrentLogins <= 0 {
+		deps.MaxConcurrentLogins = defaultConcurrentLogins
+	}
+	if deps.VerifyWait <= 0 {
+		deps.VerifyWait = defaultVerifyWait
+	}
+	s := &server{Deps: deps, dummyHash: dummy, verifySlots: make(chan struct{}, deps.MaxConcurrentLogins)}
+
+	authenticated := s.authenticatedMux(nil)
+
+	root := http.NewServeMux()
+	// Sign-in is the one route that is open to everyone; it carries no session
+	// cookie to check, so it has its own origin check (login CSRF).
+	root.HandleFunc("POST /api/v1/auth/login", s.login)
+	// Single sign-on. These are open to everyone by nature: the identity
+	// provider's browser post carries no session of ours, so /saml/acs is exempt
+	// from the same-origin check (and only from that); it is protected by the
+	// signed response, the relay state cookie and the replay check instead.
+	// Mount this handler at "/saml/" as well as "/api/v1/".
+	root.HandleFunc("GET /api/v1/auth/methods", s.authMethods)
+	root.HandleFunc("GET /saml/metadata", s.samlMetadata)
+	root.HandleFunc("POST /saml/acs", s.samlACS)
+	root.HandleFunc("GET /api/v1/auth/saml/start", s.samlStart)
+	// The CLI's device sign-in starts and finishes without credentials (the
+	// CLI has none yet). Neither route reads a cookie, so neither can be used
+	// cross-site to act as a signed-in browser user; confirm is authenticated.
+	root.HandleFunc("POST /api/v1/cli/login", s.startDeviceLogin)
+	root.HandleFunc("POST /api/v1/cli/login/token", s.pollDeviceLogin)
+	root.Handle("/", s.authenticate(authenticated))
+	return root
+}
+
+// authenticatedMux serves the routes of routes(), each behind require, and 404
+// for everything else. extra lets a test register one more pattern; it exists
+// to prove the guard below: a pattern that is not in routes() is never served,
+// whoever registered it, so no route can skip the permission decision.
+func (s *server) authenticatedMux(extra func(*http.ServeMux)) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/inventory", s.getInventory)
-	mux.HandleFunc("GET /api/v1/inventory/services/{name}", s.getService)
-	mux.HandleFunc("POST /api/v1/inventory/sync", s.syncInventory)
-	mux.HandleFunc("PUT /api/v1/admin/inventory-source", s.putInventorySource)
-	mux.HandleFunc("GET /api/v1/admin/github-connections", s.listConnections)
-	mux.HandleFunc("POST /api/v1/admin/github-connections", s.createConnection)
-	mux.HandleFunc("GET /api/v1/folders", s.listFolders)
-	mux.HandleFunc("POST /api/v1/folders", s.createFolder)
-	mux.HandleFunc("GET /api/v1/jobs", s.listJobs)
-	mux.HandleFunc("POST /api/v1/jobs", s.registerJob)
-	mux.HandleFunc("GET /api/v1/jobs/{id}", s.getJob)
-	mux.HandleFunc("PATCH /api/v1/jobs/{id}", s.moveJob)
-	mux.HandleFunc("POST /api/v1/jobs/{id}/sync", s.syncJob)
+	allowed := map[string]bool{"/": true}
+	for _, route := range s.routes() {
+		allowed[route.pattern] = true
+		mux.Handle(route.pattern, s.require(route.action, nil)(route.handler))
+	}
+	// Unknown paths: 401 without credentials, 404 with them.
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, codeNotFound, "not found")
 	})
-	return guard(deps.BootstrapToken.Reveal(), mux)
+	if extra != nil {
+		extra(mux)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" && !allowed[pattern] {
+			s.Log.Error("refusing a route that has no permission decision", "pattern", pattern)
+			writeError(w, http.StatusNotFound, codeNotFound, "not found")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// routeDef is a route of the authenticated part of the API with the action it
+// needs. Every route is listed here, so each has an explicit decision.
+type routeDef struct {
+	pattern string
+	action  auth.Action
+	handler http.HandlerFunc
+}
+
+func (s *server) routes() []routeDef {
+	return append([]routeDef{
+		{"GET /api/v1/me", auth.View, s.me},
+		{"POST /api/v1/auth/logout", auth.View, s.logout},
+		{"GET /api/v1/inventory", auth.View, s.getInventory},
+		{"GET /api/v1/inventory/services/{name}", auth.View, s.getService},
+		{"POST /api/v1/inventory/sync", auth.ManageConnections, s.syncInventory},
+		{"PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource},
+		{"GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections},
+		{"POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection},
+		{"GET /api/v1/admin/sso", auth.ManageAccess, s.getSSO},
+		{"PUT /api/v1/admin/sso", auth.ManageAccess, s.putSSO},
+		{"POST /api/v1/admin/sso/test", auth.ManageAccess, s.testSSO},
+		{"GET /api/v1/folders", auth.View, s.listFolders},
+		{"POST /api/v1/folders", auth.ManageJobs, s.createFolder},
+		{"GET /api/v1/jobs", auth.View, s.listJobs},
+		{"POST /api/v1/jobs", auth.ManageJobs, s.registerJob},
+		{"GET /api/v1/jobs/{id}", auth.View, s.getJob},
+		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
+		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
+	}, s.accessRoutes()...)
 }
 
 type errorBody struct {

@@ -9,7 +9,8 @@ Usage: scripts/smoke.sh [-h]
 
 Builds and starts the Compose "app" profile (postgres, valkey, orchestrator,
 runner) under its own Compose project (yumdrake-smoke) on host ports that do
-not clash with `make dev-up`, checks that /readyz reports status "ok" and that
+not clash with `make dev-up`, checks that /readyz reports status "ok", that
+/api/v1/me answers 401 without credentials (sign-in is wired in) and that
 both service containers are healthy. Only the smoke project's containers and
 volumes are removed on exit, so a running development stack is untouched.
 
@@ -80,6 +81,13 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 if ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' <<<"$readyz"; then
 	echo "smoke: FAIL: /readyz did not report status ok: ${readyz:-no response}" >&2
+	exit 1
+fi
+
+echo "smoke: checking that /api/v1/me refuses a request without credentials"
+me_status="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://localhost:${orchestrator_port}/api/v1/me" || true)"
+if [ "$me_status" != "401" ]; then
+	echo "smoke: FAIL: /api/v1/me answered ${me_status:-no response} without credentials, want 401" >&2
 	exit 1
 fi
 

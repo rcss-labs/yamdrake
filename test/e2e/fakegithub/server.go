@@ -7,7 +7,7 @@
 //
 //	/repos/{owner}/{repo}/commits/{branch}        {"sha": head}
 //	/repos/{owner}/{repo}/branches/{branch}       200 or 404
-//	/repos/{owner}/{repo}/git/trees/{sha}         recursive tree of blobs and trees
+//	/repos/{owner}/{repo}/git/trees/{sha}         recursive tree of blobs and trees; {sha} may be "commit:dir"
 //	/repos/{owner}/{repo}/contents/{path}?ref=sha base64 file, wrapped like GitHub
 //
 // Behaviour:
@@ -238,13 +238,26 @@ type treeEntry struct {
 }
 
 func (s *Server) handleTree(r *http.Request) (int, any) {
-	files, ok := s.files(repoOf(r), r.PathValue("sha"))
+	// The tree reference is "commit" or "commit:dir"; the listing is relative
+	// to dir, as GitHub's is.
+	sha, dir, _ := strings.Cut(r.PathValue("sha"), ":")
+	dir = strings.Trim(dir, "/")
+	files, ok := s.files(repoOf(r), sha)
 	if !ok {
 		return http.StatusNotFound, nil
 	}
 	dirs := map[string]bool{}
 	entries := []treeEntry{}
-	for p := range files {
+	found := dir == ""
+	for full := range files {
+		p := full
+		if dir != "" {
+			var inside bool
+			if p, inside = strings.CutPrefix(full, dir+"/"); !inside {
+				continue
+			}
+			found = true
+		}
 		entries = append(entries, treeEntry{Path: p, Type: "blob"})
 		for d := parentDir(p); d != ""; d = parentDir(d) {
 			dirs[d] = true
@@ -253,8 +266,11 @@ func (s *Server) handleTree(r *http.Request) (int, any) {
 	for d := range dirs {
 		entries = append(entries, treeEntry{Path: d, Type: "tree"})
 	}
+	if !found {
+		return http.StatusNotFound, nil
+	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
-	return http.StatusOK, map[string]any{"sha": r.PathValue("sha"), "truncated": false, "tree": entries}
+	return http.StatusOK, map[string]any{"sha": sha, "truncated": false, "tree": entries}
 }
 
 // parentDir returns the parent directory of p, or "" at the top level.

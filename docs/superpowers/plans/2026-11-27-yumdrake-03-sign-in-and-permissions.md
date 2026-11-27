@@ -29,6 +29,18 @@ No full code, by the owner's rule.
 - Nothing secret is logged, returned, or written to the audit log: no passwords, hashes, tokens, session ids, SAML assertions or keys.
 - Every change to people, groups, grants, mappings, connections, sources, jobs and folders writes an audit entry in the same transaction as the change.
 
+## What Plans 1 and 2 actually produced
+
+Use these, not the names this plan's text predicted. The previous plans' ledgers and manager reports under `.superpowers/sdd/` have the full list.
+
+- Migrations 00001 to 00003 exist (Plan 2 used two). **This plan's migration is the next free number, 00004**; `db.LatestVersion()` becomes 4.
+- Orchestrator wiring lives in `internal/app`: `app.OrchestratorExtension(cfg)` and `Service.Extend`. `api.New(api.Deps)` builds the API. Add to these; do not rebuild wiring in `cmd/orchestrator`.
+- `config.Scrub` and `config.Secret` exist for keeping secrets out of text; use them.
+- `store` exposes `ErrNotFound`, `ErrDuplicate`, `ErrInvalidReference`, and a `DBTX` interface. Times written to PostgreSQL are truncated to microseconds by the store; tests should use nanosecond times to prove it.
+- Test databases: `internal/testutil/testdb` (`testdb.New(t)`), built under the `integration` or `e2e` tags. `make test-e2e` exists. `test/e2e` has a fake GitHub server (token auth only) and an end-to-end sync test that currently authenticates with `YUMDRAKE_BOOTSTRAP_TOKEN`; Task 5 switches it to sign-in.
+- A forced exit on a second signal uses exit code 130.
+- Modules so far: `pgx/v5` v5.13.0, `goose/v3` v3.30.2, `valkey-go` v1.0.80, `go.yaml.in/yaml/v3` v3.0.6.
+
 ## Review Focus
 
 1. A user removed from a group in the identity provider, or disabled in Yumdrake: their next request after the session's group refresh or disable is refused, and their tokens stop working at once. (Tasks 3, 4, 7)
@@ -41,7 +53,7 @@ No full code, by the owner's rule.
 
 | Path | Responsibility |
 |---|---|
-| `internal/db/migrations/00003_access.sql` | Users, credentials, groups, memberships, mappings, grants, tokens, audit log |
+| `internal/db/migrations/00004_access.sql` | Users, credentials, groups, memberships, mappings, grants, tokens, audit log |
 | `internal/store/users.go`, `groups.go`, `grants.go`, `tokens.go`, `audit.go` | SQL for those tables |
 | `internal/auth/auth.go` | Actions, principal, target, the permission rule |
 | `internal/auth/password.go` | argon2id hashing and verification |
@@ -62,7 +74,7 @@ No full code, by the owner's rule.
 ### Task 1: Tables and storage
 
 **Files:**
-- Create: `internal/db/migrations/00003_access.sql`, `internal/store/users.go`, `internal/store/groups.go`, `internal/store/grants.go`, `internal/store/tokens.go`, `internal/store/audit.go`
+- Create: `internal/db/migrations/00004_access.sql`, `internal/store/users.go`, `internal/store/groups.go`, `internal/store/grants.go`, `internal/store/tokens.go`, `internal/store/audit.go`
 - Test: `internal/store/access_integration_test.go`
 
 **Interfaces:**
@@ -114,7 +126,7 @@ Rules enforced in SQL constraints as well as Go:
   - `TestAuditIsNewestFirstWithKeysetPaging`.
 - [ ] **Step 2: Run** `make test-integration`; confirm failure for missing functions.
 - [ ] **Step 3: Implement** the migration and store files.
-- [ ] **Step 4: Run** `make lint test test-integration`. Expected: pass, and `db.LatestVersion()` is 3.
+- [ ] **Step 4: Run** `make lint test test-integration`. Expected: pass, and `db.LatestVersion()` is 4.
 - [ ] **Step 5: Commit** `feat: store users, groups, grants, tokens and the audit log`.
 
 ---

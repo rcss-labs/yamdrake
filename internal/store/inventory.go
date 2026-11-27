@@ -15,18 +15,57 @@ const inventorySourceKey = "inventory_source"
 // InventorySource locates the inventory file; it lives in instance_settings.
 type InventorySource struct{ Repo, Branch, Path string }
 
-// SetInventorySource stores (or replaces) the inventory source.
+// SetInventorySource stores (or replaces) the inventory source. When the
+// source differs from the stored one, the poll status is reset in the same
+// transaction (no check time, no problems), so the next sync reads the new
+// source again even if the branch head has not moved; "already seen" is only
+// meaningful for the source it was seen with.
 func SetInventorySource(ctx context.Context, db DBTX, s InventorySource) error {
+	return SetInventorySourceWith(ctx, db, s, nil)
+}
+
+// SetInventorySourceWith is SetInventorySource that also calls inTx, when it
+// is not nil, with the transaction just before it commits. A hook error rolls
+// the change back and is returned (wrapped). Callers use it to write the audit
+// entry in the same transaction.
+func SetInventorySourceWith(ctx context.Context, db DBTX, s InventorySource, inTx func(context.Context, DBTX) error) error {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("set inventory source: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The status row is the lock row for inventory writers.
+	if _, err := tx.Exec(ctx, "SELECT 1 FROM inventory_status WHERE id = 1 FOR UPDATE"); err != nil {
+		return fmt.Errorf("set inventory source: lock: %w", err)
+	}
+	previous, configured, err := GetInventorySource(ctx, tx)
+	if err != nil {
+		return err
+	}
 	value, err := json.Marshal(map[string]string{"repo": s.Repo, "branch": s.Branch, "path": s.Path})
 	if err != nil {
 		return fmt.Errorf("encode inventory source: %w", err)
 	}
-	_, err = db.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO instance_settings (key, value) VALUES ($1, $2)
 		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
-		inventorySourceKey, value)
-	if err != nil {
+		inventorySourceKey, value); err != nil {
 		return fmt.Errorf("set inventory source: %w", err)
+	}
+	if configured && previous != s {
+		if _, err := tx.Exec(ctx,
+			"UPDATE inventory_status SET checked_at = NULL, problems = NULL, problems_commit = '' WHERE id = 1"); err != nil {
+			return fmt.Errorf("set inventory source: reset status: %w", err)
+		}
+	}
+	if inTx != nil {
+		if err := inTx(ctx, tx); err != nil {
+			return fmt.Errorf("set inventory source: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("set inventory source: commit: %w", err)
 	}
 	return nil
 }
@@ -108,6 +147,17 @@ func ActivateSnapshot(ctx context.Context, db DBTX, commit string, inventory []b
 		return Snapshot{}, fmt.Errorf("activate snapshot: commit: %w", err)
 	}
 	return created, nil
+}
+
+// DeactivateActiveSnapshot clears the active flag so ActivateSnapshot can store
+// a new snapshot for the same commit (the inventory source changed, so the same
+// commit now yields different content). The caller does this inside the
+// transaction that activates the replacement.
+func DeactivateActiveSnapshot(ctx context.Context, db DBTX) error {
+	if _, err := db.Exec(ctx, "UPDATE inventory_snapshots SET active = false WHERE active"); err != nil {
+		return fmt.Errorf("deactivate snapshot: %w", err)
+	}
+	return nil
 }
 
 // ActiveSnapshot reports false when no snapshot is active.

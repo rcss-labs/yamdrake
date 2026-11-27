@@ -3,10 +3,13 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/rcss-labs/yamdrake/internal/github"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -18,6 +21,20 @@ const environmentsFile = "environments.yaml"
 // alone and records the problems with the rejected commit.
 func (e *Engine) SyncInventory(ctx context.Context) error {
 	return e.withLock(ctx, e.syncInventory)
+}
+
+// SetInventorySource stores the source and syncs it while holding the lock, so
+// a poll that read the old source cannot record its outcome after the change.
+// A failed sync is returned, but the new source stays stored. inTx, when not
+// nil, runs in the transaction that stores the source (the API writes its
+// audit entry there); if it fails nothing is stored and nothing is synced.
+func (e *Engine) SetInventorySource(ctx context.Context, source store.InventorySource, inTx func(context.Context, store.DBTX) error) error {
+	return e.withLock(ctx, func(ctx context.Context) error {
+		if err := store.SetInventorySourceWith(ctx, e.pool, source, inTx); err != nil {
+			return err
+		}
+		return e.syncInventory(ctx)
+	})
 }
 
 // syncInventory is SyncInventory without the lock; the caller must hold it.
@@ -57,7 +74,10 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if haveActive && active.Commit == head {
+	// A nil CheckedAt means the source changed since the last check (the store
+	// resets the status then), so the same head must be read again.
+	sourceChecked := status.CheckedAt != nil
+	if haveActive && active.Commit == head && sourceChecked {
 		// The head is the valid active commit; stale problems from a rejected
 		// commit that was since reverted no longer apply.
 		at := e.now()
@@ -88,6 +108,12 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("encode inventory: %w", err)
 	}
+	// The same commit read through a changed source can differ from the active
+	// snapshot; replace it then, and do nothing when the content is the same.
+	replacing := haveActive && active.Commit == head
+	if replacing && sameJSON(active.Inventory, encoded) {
+		return store.SaveInventoryStatus(ctx, e.pool, store.InventoryStatus{CheckedAt: &at})
+	}
 	// One transaction: the new snapshot, the jobs re-validated against it and
 	// the cleared status become visible together. The status row lock taken by
 	// ActivateSnapshot is held until Commit, and every statement uses this one
@@ -97,6 +123,11 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 		return fmt.Errorf("begin activation: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if replacing {
+		if err := store.DeactivateActiveSnapshot(ctx, tx); err != nil {
+			return err
+		}
+	}
 	if _, err := store.ActivateSnapshot(ctx, tx, head, encoded, at); err != nil {
 		return err
 	}
@@ -113,6 +144,16 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 	return nil
 }
 
+// sameJSON reports whether two JSON documents have the same content,
+// regardless of formatting (PostgreSQL normalises jsonb).
+func sameJSON(a, b []byte) bool {
+	var left, right any
+	if json.Unmarshal(a, &left) != nil || json.Unmarshal(b, &right) != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
+}
+
 // readInventory reads and checks every inventory file at commit. The error is
 // a source error; problems are definitions errors. File names in problems are
 // relative to the inventory path (for example services/orders.yaml).
@@ -127,10 +168,17 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 		prefix = dir + "/"
 	}
 	files, err := source.ListFiles(ctx, src.Repo, commit, dir)
+	if errors.Is(err, github.ErrNotFound) && dir != "" {
+		// The commit was just read from the branch head, so a missing
+		// directory is a wrong path: reported below as a missing
+		// environments.yaml, not as a source failure.
+		files, err = nil, nil
+	}
 	if err != nil {
 		return spec.Inventory{}, nil, fail("list inventory files", err, "commit", commit)
 	}
 
+	var problems spec.Problems
 	var haveEnvironments bool
 	var serviceFiles []string
 	for _, file := range files {
@@ -141,13 +189,15 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 		switch {
 		case relative == environmentsFile:
 			haveEnvironments = true
+		case strings.HasPrefix(relative, "services/") && strings.HasSuffix(relative, ".yml") &&
+			!strings.Contains(strings.TrimPrefix(relative, "services/"), "/"):
+			problems = append(problems, spec.YmlExtensionProblem(relative))
 		case strings.HasPrefix(relative, "services/") && strings.HasSuffix(relative, ".yaml") &&
 			!strings.Contains(strings.TrimPrefix(relative, "services/"), "/"):
 			serviceFiles = append(serviceFiles, relative)
 		}
 	}
 
-	var problems spec.Problems
 	var environments []spec.Environment
 	if haveEnvironments {
 		data, err := source.ReadFile(ctx, src.Repo, commit, prefix+environmentsFile)

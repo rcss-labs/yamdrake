@@ -42,6 +42,7 @@ bin/yumdrake-runner         # health endpoint on 127.0.0.1:8081; waits for the s
 - The orchestrator applies database migrations on start (`YUMDRAKE_MIGRATE_ON_START=true` by default).
 - The runner never migrates. It waits until the schema is at the expected version.
 - The orchestrator serves `/readyz` on port 8080, which reports status `ok` when the service is ready.
+- Both services serve `GET /healthz` (liveness, always 200, runs no checks) and `GET /readyz` (readiness, 200 when the `postgres` and `valkey` checks pass, 503 otherwise): the orchestrator on `:8080`, the runner on `127.0.0.1:8081` by default.
 - Both binaries accept subcommands: `version` prints the build version, and `healthcheck` runs a health check against the service's own address.
 
 ```sh

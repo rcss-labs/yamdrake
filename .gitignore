@@ -1,2 +1,4 @@
 .idea/
 .superpowers/
+/bin/
+/coverage.out

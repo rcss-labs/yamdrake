@@ -275,8 +275,12 @@ function AddGrantForm({ group, folders, environmentNames, labels }: AddGrantForm
       </Field>
       {scoped && (
         <>
-          <Field label="Label">
-            <Select value={label} onChange={(event) => setLabel(event.target.value)}>
+          <Field label="Label" hint={environment || label ? 'A grant has a label or an environment, not both.' : undefined}>
+            <Select
+              value={label}
+              disabled={environment !== ''}
+              onChange={(event) => setLabel(event.target.value)}
+            >
               <option value="">Any label</option>
               {labels.map((value) => (
                 <option key={value} value={value}>
@@ -286,7 +290,11 @@ function AddGrantForm({ group, folders, environmentNames, labels }: AddGrantForm
             </Select>
           </Field>
           <Field label="Environment">
-            <Select value={environment} onChange={(event) => setEnvironment(event.target.value)}>
+            <Select
+              value={environment}
+              disabled={label !== ''}
+              onChange={(event) => setEnvironment(event.target.value)}
+            >
               <option value="">Any environment</option>
               {environmentNames.map((value) => (
                 <option key={value} value={value}>

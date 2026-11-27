@@ -132,6 +132,30 @@ describe('the groups and permissions section', () => {
     expect(post?.body).toEqual({ group_id: 2, action: 'cancel', environment: 'hetzner-02' })
   })
 
+  it('lets a grant carry a label or an environment, never both', async () => {
+    const user = userEvent.setup()
+    await openGroups()
+    const form = await startGrant(user, 'QA', 'Run jobs')
+    const label = within(form).getByLabelText('Label')
+    const environment = within(form).getByLabelText('Environment')
+
+    await user.selectOptions(environment, 'hetzner-02')
+    expect(label).toBeDisabled()
+    expect(label).toHaveValue('')
+    await user.selectOptions(environment, 'Any environment')
+    expect(label).toBeEnabled()
+
+    await user.selectOptions(label, 'dev')
+    expect(environment).toBeDisabled()
+    await user.click(within(form).getByRole('button', { name: 'Add grant' }))
+    await waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.path === '/api/v1/admin/grants')).toBe(true))
+    expect(requests.find((r) => r.method === 'POST' && r.path === '/api/v1/admin/grants')?.body).toEqual({
+      group_id: 2,
+      action: 'run',
+      label: 'dev',
+    })
+  })
+
   it.each(GLOBAL_ACTIONS)('never offers a scope for the global action %s', async (label, action) => {
     const user = userEvent.setup()
     await openGroups()

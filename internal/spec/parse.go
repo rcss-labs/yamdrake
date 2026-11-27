@@ -30,6 +30,32 @@ var (
 	yamlLinePattern     = regexp.MustCompile(`line (\d+)`)
 )
 
+// Accepted keys per mapping. The parser and KnownFields both read these, so
+// the published JSON Schemas cannot drift from what the parser accepts.
+var (
+	headerFields      = []string{"apiVersion", "kind"}
+	environmentsFile  = []string{"environments"}
+	environmentFields = []string{"name", "label", "aws_account"}
+	serviceFile       = []string{"name", "versions", "environments"}
+	versionsFields    = []string{"pattern", "sort", "limit"}
+	serviceEnvFields  = []string{"ecs_service", "ecr_repository", "env_files", "tomls"}
+	envFileFields     = []string{"name", "source_env_path", "destination_env_path"}
+	tomlFields        = []string{"name", "source_toml_path", "destination_toml_path"}
+	jobFile           = []string{"job", "title", "environment", "groups", "approval", "notify", "steps"}
+	jobEnvironment    = []string{"labels"}
+	groupFields       = []string{"label", "services"}
+	approvalFields    = []string{"when", "expires"}
+	approvalWhen      = []string{"labels"}
+	notifyFields      = []string{"slack"}
+	stepFields        = []string{"name", "use", "group", "max_parallel", "timeout", "needs"}
+	needFields        = []string{"step", "scope"}
+)
+
+// withHeader prepends apiVersion and kind to a file's own top-level keys.
+func withHeader(own []string) []string {
+	return append(append([]string{}, headerFields...), own...)
+}
+
 var allowedLabels = []string{"dev", "preprod", "prod"}
 
 const defaultVersionPattern = `^v?\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`
@@ -42,7 +68,7 @@ func ParseEnvironments(file string, data []byte) (environments []Environment, pr
 	if root == nil {
 		return nil, p.problems.Sorted()
 	}
-	fields := p.fields(root, "file", "apiVersion", "kind", "environments")
+	fields := p.fields(root, "file", withHeader(environmentsFile)...)
 	items := p.sequence(p.require(fields, root, "environments"), "environments")
 	for _, item := range items {
 		environments = append(environments, p.environment(item))
@@ -58,7 +84,7 @@ func ParseService(file string, data []byte) (service Service, problems Problems)
 	if root == nil {
 		return Service{}, p.problems.Sorted()
 	}
-	fields := p.fields(root, "service", "apiVersion", "kind", "name", "versions", "environments")
+	fields := p.fields(root, "service", withHeader(serviceFile)...)
 	service = Service{File: file, Environments: map[string]ServiceEnv{}}
 	nameNode := p.require(fields, root, "name")
 	service.Name = p.name(nameNode, "service name")
@@ -85,12 +111,12 @@ func ParseJob(file string, data []byte) (job Job, problems Problems) {
 	if root == nil {
 		return Job{}, p.problems.Sorted()
 	}
-	fields := p.fields(root, "job", "apiVersion", "kind", "job", "title", "environment", "groups", "approval", "notify", "steps")
+	fields := p.fields(root, "job", withHeader(jobFile)...)
 	job = Job{File: file}
 	job.ID = p.name(p.require(fields, root, "job"), "job id")
 	job.Title = p.text(p.require(fields, root, "title"), "title")
 
-	environment := p.fields(p.require(fields, root, "environment"), "environment", "labels")
+	environment := p.fields(p.require(fields, root, "environment"), "environment", jobEnvironment...)
 	labelsNode := p.require(environment, fields["environment"], "labels")
 	job.Labels = p.labels(labelsNode, "environment.labels")
 	if labelsNode != nil {
@@ -103,7 +129,7 @@ func ParseJob(file string, data []byte) (job Job, problems Problems) {
 		job.Approval = p.approval(node)
 	}
 	if node := fields["notify"]; node != nil {
-		notify := p.fields(node, "notify", "slack")
+		notify := p.fields(node, "notify", notifyFields...)
 		channel := p.text(p.require(notify, node, "slack"), "notify.slack")
 		if channel != "" && !strings.HasPrefix(channel, "#") {
 			p.add(notify["slack"].Line, "notify.slack %q must start with #", channel)
@@ -429,7 +455,7 @@ func (p *parser) s3Location(n *yaml.Node, context string) string {
 
 func (p *parser) environment(n *yaml.Node) Environment {
 	environment := Environment{Line: n.Line}
-	fields := p.fields(n, "environment", "name", "label", "aws_account")
+	fields := p.fields(n, "environment", environmentFields...)
 	environment.Name = p.name(p.require(fields, n, "name"), "environment name")
 	environment.Label = p.oneOf(p.require(fields, n, "label"), "label", allowedLabels)
 	if account := p.require(fields, n, "aws_account"); account != nil {
@@ -447,7 +473,7 @@ func (p *parser) versions(n *yaml.Node) VersionRule {
 	if n == nil {
 		return rule
 	}
-	fields := p.fields(n, "versions", "pattern", "sort", "limit")
+	fields := p.fields(n, "versions", versionsFields...)
 	if node := fields["pattern"]; node != nil {
 		if pattern := p.text(node, "versions.pattern"); pattern != "" {
 			if _, err := regexp.Compile(pattern); err != nil {
@@ -469,13 +495,13 @@ func (p *parser) versions(n *yaml.Node) VersionRule {
 
 func (p *parser) serviceEnv(n *yaml.Node) ServiceEnv {
 	env := ServiceEnv{Line: n.Line}
-	fields := p.fields(n, "service environment", "ecs_service", "ecr_repository", "env_files", "tomls")
+	fields := p.fields(n, "service environment", serviceEnvFields...)
 	env.ECSService = p.matching(p.require(fields, n, "ecs_service"), "ecs_service", ecsServicePattern,
 		"a full ARN such as arn:aws:ecs:<region>:<account>:service/<cluster>/<service>")
 	env.ECRRepository = p.matching(p.require(fields, n, "ecr_repository"), "ecr_repository", ecrRepositoryRegexp,
 		"a full URI such as <account>.dkr.ecr.<region>.amazonaws.com/<repository>")
 	for _, item := range p.optionalSequence(fields["env_files"], "env_files") {
-		itemFields := p.fields(item, "env file", "name", "source_env_path", "destination_env_path")
+		itemFields := p.fields(item, "env file", envFileFields...)
 		file := EnvFile{Line: item.Line}
 		file.Name = p.text(p.require(itemFields, item, "name"), "env file name")
 		file.Source = p.sourceEnvPath(p.require(itemFields, item, "source_env_path"))
@@ -483,7 +509,7 @@ func (p *parser) serviceEnv(n *yaml.Node) ServiceEnv {
 		env.EnvFiles = append(env.EnvFiles, file)
 	}
 	for _, item := range p.optionalSequence(fields["tomls"], "tomls") {
-		itemFields := p.fields(item, "toml", "name", "source_toml_path", "destination_toml_path")
+		itemFields := p.fields(item, "toml", tomlFields...)
 		toml := Toml{Line: item.Line}
 		toml.Name = p.text(p.require(itemFields, item, "name"), "toml name")
 		toml.Source = p.s3Location(p.require(itemFields, item, "source_toml_path"), "source_toml_path")
@@ -531,11 +557,11 @@ func (p *parser) groups(n *yaml.Node) []Group {
 			continue
 		}
 		group := Group{ID: p.name(key, "group id"), Line: key.Line}
-		groupFields := p.fields(node, "group "+key.Value, "label", "services")
-		if labelNode := groupFields["label"]; labelNode != nil {
+		values := p.fields(node, "group "+key.Value, groupFields...)
+		if labelNode := values["label"]; labelNode != nil {
 			group.Label = p.text(labelNode, "group label")
 		}
-		for _, service := range p.sequence(p.require(groupFields, node, "services"), "group services") {
+		for _, service := range p.sequence(p.require(values, node, "services"), "group services") {
 			group.Services = append(group.Services, p.name(service, "service name"))
 		}
 		groups = append(groups, group)
@@ -544,9 +570,9 @@ func (p *parser) groups(n *yaml.Node) []Group {
 }
 
 func (p *parser) approval(n *yaml.Node) *Approval {
-	fields := p.fields(n, "approval", "when", "expires")
+	fields := p.fields(n, "approval", approvalFields...)
 	approval := &Approval{Expires: 24 * time.Hour}
-	when := p.fields(p.require(fields, n, "when"), "approval.when", "labels")
+	when := p.fields(p.require(fields, n, "when"), "approval.when", approvalWhen...)
 	labelsNode := p.require(when, fields["when"], "labels")
 	approval.Labels = p.labels(labelsNode, "approval.when.labels")
 	if labelsNode != nil {
@@ -562,7 +588,7 @@ func (p *parser) approval(n *yaml.Node) *Approval {
 
 func (p *parser) step(n *yaml.Node) Step {
 	step := Step{Line: n.Line}
-	fields := p.fields(n, "step", "name", "use", "group", "max_parallel", "timeout", "needs")
+	fields := p.fields(n, "step", stepFields...)
 	step.Name = p.name(p.require(fields, n, "name"), "step name")
 	step.Use = p.oneOf(p.require(fields, n, "use"), "step use", []string{"copy-config", "ecs-deploy"})
 	step.Group = p.name(p.require(fields, n, "group"), "step group")
@@ -584,7 +610,7 @@ func (p *parser) need(n *yaml.Node) Need {
 	if n.Kind == yaml.ScalarNode {
 		return Need{Step: p.name(n, "needs step"), Scope: "step", Line: n.Line}
 	}
-	fields := p.fields(n, "needs item", "step", "scope")
+	fields := p.fields(n, "needs item", needFields...)
 	need := Need{Scope: "step", Line: n.Line}
 	need.Step = p.name(p.require(fields, n, "step"), "needs step")
 	if node := fields["scope"]; node != nil {

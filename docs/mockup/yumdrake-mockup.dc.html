@@ -1,0 +1,1824 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Yumdrake app mockup</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root,body{--bg:#F6F7F8;--raised:#EEF0F2;--line:rgba(23,26,31,.10);--line2:rgba(23,26,31,.18);--ink:#171A1F;--ink2:#4A5160;--ink3:#69707D;--accent:#1F5FD1;--ok:#1E9E5A;--ok-t:#0F6B3A;--ok-b:#E3F3EA;--bad:#D03A26;--bad-t:#A32012;--bad-b:#FBE7E3;--run:#2A6BE0;--run-t:#1A4FB0;--run-b:#E4ECFB;--wait:#C98200;--wait-t:#7A4A00;--wait-b:#FBEFD5;--mute:#9AA1AC;--con:#14171C;--ease:cubic-bezier(.22,1,.36,1)}
+*{box-sizing:border-box}
+body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:var(--ink);background:var(--bg);font-size:14px;line-height:20px;-webkit-font-smoothing:antialiased}
+a{color:#1F5FD1}a:hover{color:#174AA6}
+h1,h2,h3{margin:0;font-weight:500}
+h1{font-size:24px;line-height:32px}h2{font-size:15px;line-height:20px}h3{font-size:14px;line-height:20px}
+button,select,input{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:13px}
+.num{font-variant-numeric:tabular-nums}
+.sub{color:var(--ink3);font-size:13px}
+.nowrap{white-space:nowrap}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.z{display:none!important}
+
+.side{flex:1 1 232px;background:var(--raised);border-right:1px solid var(--line);padding:16px 12px;display:flex;flex-direction:column;gap:2px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:16px;line-height:24px;padding:4px 10px 16px}
+.logo{display:flex;align-items:flex-end;gap:2px;height:16px}
+.logo span{width:4px;border-radius:1px;background:var(--ink)}
+.nav{display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:0 10px;border:0;border-radius:8px;background:transparent;color:var(--ink2);text-align:left;font-weight:500;transition:background-color .15s var(--ease),color .15s var(--ease)}
+.nav:hover{background:rgba(23,26,31,.06);color:var(--ink)}
+.nav.on{background:#fff;color:var(--ink);box-shadow:0 0 0 1px var(--line),0 1px 2px rgba(0,0,0,.05)}
+.nav .count{margin-left:auto;font:500 12px/20px 'IBM Plex Mono',monospace;color:var(--wait-t);background:var(--wait-b);border-radius:6px;padding:0 6px}
+.nav-gap{height:16px}
+.me{margin-top:24px;padding:16px 10px 4px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:12px}
+.me select{height:32px;width:100%;border:1px solid var(--line2);border-radius:8px;background:#fff;padding:0 8px;font-size:13px}
+
+.main{flex:999 1 560px;min-width:0;padding:28px clamp(16px,3vw,32px) 64px}
+.page{max-width:1320px;display:flex;flex-direction:column;gap:20px}
+.ph{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between}
+.ph h1{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.lead{color:var(--ink2);margin-top:4px;max-width:76ch}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.crumbs{display:flex;flex-wrap:wrap;gap:8px;align-items:center;color:var(--ink3);font-size:13px;margin-bottom:-12px}
+.crumbs button{border:0;background:none;padding:0;color:var(--ink2)}
+.crumbs button:hover{color:var(--ink);text-decoration:underline}
+.meta{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--ink2);font-size:13px;margin-top:4px}
+.meta span+span{border-left:1px solid var(--line2);padding-left:12px}
+
+.btn{height:36px;padding:0 14px;border-radius:8px;border:1px solid var(--line2);background:#fff;font-weight:500;white-space:nowrap;transition:background-color .15s var(--ease)}
+.btn:hover{background:var(--raised)}
+.btn.primary{background:var(--ink);border-color:var(--ink);color:#fff}
+.btn.primary:hover{background:#2B3038}
+.btn.danger{color:var(--bad-t)}
+.btn:disabled,.btn.primary:disabled{background:var(--raised);border-color:transparent;color:var(--ink3);cursor:not-allowed}
+.btn.sm{height:30px;padding:0 10px;font-size:13px}
+.link{border:0;background:none;padding:0;color:var(--ink);font-weight:500;text-align:left;text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:3px}
+.link:hover{text-decoration-color:var(--ink)}
+.field{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:500;color:var(--ink2)}
+.field input,.field select,.sel{height:36px;border:1px solid var(--line2);border-radius:8px;padding:0 10px;background:#fff;font-weight:400;font-size:14px;color:var(--ink)}
+.sel.sm{height:30px;font-size:13px;padding:0 6px}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:16px}
+.search{display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border:1px solid var(--line2);border-radius:8px;background:#fff;color:var(--ink3);flex:1 1 220px;max-width:340px}
+.search input{border:0;outline:0;background:transparent;flex:1;min-width:0;height:100%;color:var(--ink)}
+.search:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.seg{display:inline-flex;flex-wrap:wrap;gap:2px;padding:2px;background:var(--raised);border-radius:10px}
+.seg button{height:32px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:var(--ink2);font-weight:500;font-size:13px}
+.seg button:hover{color:var(--ink)}
+.seg button.on{background:#fff;color:var(--ink);box-shadow:0 0 0 1px var(--line),0 1px 2px rgba(0,0,0,.05)}
+.tog{height:30px;min-width:64px;padding:0 10px;border-radius:8px;border:1px solid var(--line2);background:#fff;color:var(--ink3);font-size:13px}
+.tog.on{background:var(--ink);border-color:var(--ink);color:#fff;font-weight:500}
+.tog:disabled{cursor:not-allowed}
+.check{display:flex;align-items:center;gap:8px;min-height:32px;cursor:pointer}
+.check input{width:16px;height:16px;accent-color:#171A1F}
+
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;min-width:0}
+.card.flush{padding:0;overflow:hidden}
+.card-h{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:flex-start;justify-content:space-between;margin-bottom:16px}
+.stack{display:flex;flex-direction:column;gap:16px;min-width:0}
+.row{display:flex;flex-wrap:wrap;gap:20px;align-items:stretch}
+.row.top{align-items:flex-start}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+th{text-align:left;font-size:12px;line-height:16px;font-weight:500;color:var(--ink3);padding:10px 16px;border-bottom:1px solid var(--line);white-space:nowrap;background:#FAFBFB}
+td{padding:10px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:#FAFBFB}
+tr.sel td,tbody tr.sel:hover td{background:var(--run-b)}
+tr.grp td,tbody tr.grp:hover td{background:var(--bg);padding:8px 16px}
+.grp-h{display:flex;align-items:center;gap:8px;font-weight:500;color:var(--ink2)}
+.tag{display:inline-block;font-size:12px;line-height:18px;padding:0 6px;border-radius:5px;background:var(--raised);color:var(--ink2);white-space:nowrap}
+.pill{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:6px;font-size:12px;font-weight:500;white-space:nowrap;background:var(--raised);color:var(--ink2)}
+.p-succeeded{background:var(--ok-b);color:var(--ok-t)}
+.p-failed{background:var(--bad-b);color:var(--bad-t)}
+.p-running{background:var(--run-b);color:var(--run-t)}
+.p-waiting{background:var(--wait-b);color:var(--wait-t)}
+.p-rejected{background:#E3E5E9;color:#3A3F4A}
+.mk{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mute);flex:none}
+.mk-succeeded{background:var(--ok)}
+.mk-failed{background:var(--bad);border-radius:1px;transform:rotate(45deg)}
+.mk-running{background:transparent;border:2px solid var(--run);animation:live 1.4s var(--ease) infinite alternate}
+.mk-waiting{width:3px;border-radius:1px;background:var(--wait);box-shadow:5px 0 0 var(--wait);margin-right:5px}
+.mk-skipped{height:2px;border-radius:1px}
+.mk-pending,.mk-never{background:transparent;border:1.5px solid var(--mute)}
+.mk-rejected{background:#5B6270;border-radius:1px}
+.mk-behind{background:transparent;border:1.5px solid var(--wait)}
+.mk-hide{visibility:hidden}
+@keyframes live{from{opacity:1}to{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.mk-running{animation:none}}
+.tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--line)}
+.tab{height:36px;padding:0 12px;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;background:none;color:var(--ink3);font-weight:500}
+.tab:hover{color:var(--ink)}
+.tab.on{color:var(--ink);border-bottom-color:var(--ink)}
+.facts{display:flex;flex-wrap:wrap;gap:16px 0;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 0}
+.facts>div{padding:0 20px;border-left:1px solid var(--line);min-width:0}
+.facts>div:first-child{border-left:0}
+.k{font-size:12px;line-height:16px;color:var(--ink3);margin-bottom:4px}
+.v{font-weight:500}
+.note{background:var(--wait-b);color:#5C3900;border-radius:8px;padding:12px 16px}
+.info{background:var(--raised);color:var(--ink2);border-radius:8px;padding:12px 16px;font-size:13px}
+.empty{padding:32px 20px;text-align:center;color:var(--ink3)}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:16px}
+.tile{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 20px}
+.t-value{font-size:28px;line-height:36px;font-weight:500;font-variant-numeric:tabular-nums;margin:4px 0 2px}
+.plot{position:relative;height:200px;margin-left:28px}
+.grid{position:absolute;left:0;right:0;height:1px;background:var(--line)}
+.grid span{position:absolute;left:-28px;top:-8px;font:11px/16px 'IBM Plex Mono',monospace;color:var(--ink3)}
+.bars{position:absolute;inset:0;display:flex;align-items:stretch;gap:4px;padding:0 4px}
+.bar{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:2px;border:0;background:transparent;padding:0;border-radius:4px}
+.bar span{display:block;width:100%;max-width:28px;border-radius:3px 3px 0 0}
+.b-ok{background:#5B8DC9}
+.b-fail{background:var(--bad)}
+.bar:hover,.bar.on{background:rgba(23,26,31,.05)}
+.bar:hover .b-ok,.bar.on .b-ok{background:#4476B5}
+.xaxis{display:flex;gap:4px;padding:0 4px;margin:6px 0 0 28px}
+.xaxis span{flex:1;min-width:0;text-align:center;font:11px/16px 'IBM Plex Mono',monospace;color:var(--ink3)}
+.xaxis .today{color:var(--ink);font-weight:500}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--ink2)}
+.legend>span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:10px;height:10px;border-radius:2px}
+.rank{padding:10px 0;border-bottom:1px solid var(--line)}
+.rank:last-child{border-bottom:0;padding-bottom:0}
+.rank-top{display:flex;justify-content:space-between;gap:12px}
+.rank-bar{height:4px;border-radius:2px;background:var(--raised);margin:6px 0}
+.rank-bar span{display:block;height:4px;border-radius:2px;background:var(--bad)}
+.att{display:flex;gap:12px;align-items:flex-start;width:100%;padding:12px 0;border:0;border-bottom:1px solid var(--line);background:none;text-align:left}
+.att:last-child{border-bottom:0;padding-bottom:0}
+.att:hover .att-title{text-decoration:underline}
+.att-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.att-title{font-weight:500}
+
+.strip{display:inline-flex;align-items:flex-end;gap:2px;height:16px;vertical-align:middle}
+.sc{display:block;width:5px;height:10px;border-radius:1.5px;background:var(--mute)}
+.sc.c-succeeded{background:#57B585}
+.sc.c-failed{height:16px;background:var(--bad)}
+.sc.c-running{background:var(--run)}
+.sc.c-pending{background:transparent;box-shadow:inset 0 0 0 1px var(--mute)}
+.sc.c-skipped{height:3px}
+.sc.gap{margin-left:5px}
+.strip.lg{height:24px;gap:3px}
+.strip.lg .sc{width:8px;height:14px;border-radius:2px}
+.strip.lg .sc.c-failed{height:24px}
+.strip.lg .sc.c-skipped{height:4px}
+.svc-cell{display:flex;align-items:center;gap:10px}
+
+.fail{border:1px solid #E7B9AF;border-radius:12px;background:#fff;overflow:hidden}
+.fail-h{display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--bad-b);color:var(--bad-t);font-weight:500}
+.fail td{vertical-align:top}
+.work{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+.tree{flex:1 1 260px;max-width:360px;min-width:0}
+.tree-h{padding:12px 16px;border-bottom:1px solid var(--line);font-weight:500}
+.tree-list{max-height:640px;overflow-y:auto;padding:6px}
+.tn{display:flex;align-items:center;gap:10px;width:100%;min-height:32px;padding:4px 10px;border:0;border-radius:6px;background:none;text-align:left}
+.tn:hover{background:var(--raised)}
+.tn.on,.tn.on:hover{background:var(--run-b)}
+.tn-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.tn-meta{font:12px/16px 'IBM Plex Mono',monospace;color:var(--ink3);white-space:nowrap}
+.t-svc{padding-left:30px;min-height:28px}
+.t-svc .tn-name{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:400}
+.con{flex:3 1 520px;min-width:0;background:var(--con);border-radius:12px;color:#D7DCE3;overflow:hidden}
+.con-h{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;padding:10px 12px 10px 16px;border-bottom:1px solid rgba(255,255,255,.08)}
+.con-title{display:flex;flex-wrap:wrap;gap:2px 12px;align-items:baseline;color:#fff;min-width:0}
+.con-count{font-size:12px;color:#9AA4B2}
+.con-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.con-search{display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;border-radius:6px;background:rgba(255,255,255,.07);color:#9AA4B2}
+.con-search input{border:0;outline:0;background:transparent;color:#fff;width:150px;height:100%;font-size:13px}
+.con-search input::placeholder{color:#9AA4B2}
+.con-search:focus-within{outline:2px solid #7FA6F5}
+.con-tog{height:30px;padding:0 10px;border-radius:6px;border:1px solid rgba(255,255,255,.16);background:transparent;color:#D7DCE3;font-size:13px}
+.con-tog.on{background:#FFC2B5;border-color:#FFC2B5;color:#3A0F08;font-weight:500}
+.con-body{max-height:640px;overflow:auto;padding:8px 0;font:12.5px/20px 'IBM Plex Mono',ui-monospace,monospace}
+.ln{display:flex;gap:12px;padding-right:16px}
+.ln:hover{background:rgba(255,255,255,.04)}
+.ln .no{flex:none;width:44px;text-align:right;color:#6F7A89;user-select:none}
+.ln .ts{flex:none;color:#8B96A5}
+.ln .tx{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
+.ln-err,.ln-err:hover{background:rgba(208,58,38,.2)}
+.ln-err .tx{color:#FFC2B5}
+.ln-warn .tx{color:#F3CF7A}
+.ln-ok .tx{color:#93E3B8}
+.code{margin:0;background:var(--con);color:#D7DCE3;border-radius:12px;padding:16px;overflow:auto;font:12.5px/20px 'IBM Plex Mono',ui-monospace,monospace}
+.plan-list{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;color:var(--ink2)}
+.list{max-height:600px;overflow-y:auto;padding:6px}
+.li{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:32px;padding:4px 10px;border:0;border-radius:6px;background:none;text-align:left}
+.li:hover{background:var(--raised)}
+.li.sel,.li.sel:hover{background:var(--run-b)}
+.vcell{display:inline-flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;white-space:nowrap}
+.v-none{color:var(--ink3)}
+.slack{border-top:1px solid var(--line);padding:10px 0}
+.slack:first-of-type{border-top:0;padding-top:0}
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; flex-direction: column">
+
+<sc-if value="{{ loggedOut }}" hint-placeholder-val="{{ false }}">
+<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; padding: 32px 16px">
+  <div class="card" style="width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 20px; padding: 32px">
+    <div>
+      <div class="brand" style="padding: 0 0 8px"><span class="logo" aria-hidden="true"><span style="height: 10px"></span><span style="height: 16px"></span><span style="height: 6px"></span></span>Yumdrake</div>
+      <div class="sub">Deployment jobs for DevOps, QA and developers</div>
+    </div>
+    <button class="btn primary" style="height: 40px" onClick="{{ login }}">Sign in with company SSO</button>
+    <div style="border-top: 1px solid rgba(23,26,31,.10); padding-top: 20px; display: flex; flex-direction: column; gap: 12px">
+      <div>
+        <h3>Local account</h3>
+        <div class="sub">Only for the break-glass admin and service accounts</div>
+      </div>
+      <label class="field">Username<input type="text" autocomplete="off"></label>
+      <label class="field">Password<input type="password" autocomplete="off"></label>
+      <button class="btn" onClick="{{ login }}">Sign in</button>
+    </div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ loggedIn }}" hint-placeholder-val="{{ true }}">
+<div style="flex-grow: 1; display: flex; flex-wrap: wrap">
+
+  <div class="side">
+    <div class="brand"><span class="logo" aria-hidden="true"><span style="height: 10px"></span><span style="height: 16px"></span><span style="height: 6px"></span></span>Yumdrake</div>
+    <button class="nav {{ nv.overview }}" onClick="{{ go.overview }}"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg><span>Overview</span></button>
+    <button class="nav {{ nv.jobs }}" onClick="{{ go.jobs }}"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg><span>Jobs</span></button>
+    <button class="nav {{ nv.runs }}" onClick="{{ go.runs }}"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>Runs</span></button>
+    <button class="nav {{ nv.approvals }}" onClick="{{ go.approvals }}"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg><span>Approvals</span><sc-if value="{{ hasApprovals }}" hint-placeholder-val="{{ false }}"><span class="count">{{ approvalCount }}</span></sc-if></button>
+    <div class="nav-gap"></div>
+    <button class="nav {{ nv.versions }}" onClick="{{ go.versions }}"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg><span>Versions</span></button>
+    <button class="nav {{ nv.inventory }}" onClick="{{ go.inventory }}"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/></svg><span>Inventory</span></button>
+    <div class="nav-gap"></div>
+    <button class="nav {{ nv.cli }}" onClick="{{ go.cli }}"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6M12 19h8"/></svg><span>CLI</span></button>
+    <sc-if value="{{ isAdminUser }}" hint-placeholder-val="{{ true }}">
+      <button class="nav {{ nv.admin }}" onClick="{{ go.admin }}"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/></svg><span>Admin</span></button>
+    </sc-if>
+    <div class="me">
+      <div>
+        <div style="font-weight: 500">{{ user.name }}</div>
+        <div class="sub">{{ user.groupLabel }}, signed in with {{ user.src }}</div>
+      </div>
+      <label class="sub" style="display: flex; flex-direction: column; gap: 4px">Mockup only: view as
+        <select value="{{ user.id }}" onChange="{{ setPersona }}">
+          <sc-for list="{{ personas }}" as="p" hint-placeholder-count="4"><option value="{{ p.id }}">{{ p.label }}</option></sc-for>
+        </select>
+      </label>
+      <button class="link sub" onClick="{{ logout }}">Sign out</button>
+    </div>
+  </div>
+
+  <div class="main">
+  <div class="page">
+
+    <sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
+      <div class="ph">
+        <div>
+          <h1>Overview</h1>
+          <div class="lead">Deployments over the last 14 days, 14 to 27 November. Sample data in this mockup.</div>
+        </div>
+        <div class="seg" role="group" aria-label="Filter by environment label">
+          <sc-for list="{{ ov.labels }}" as="f" hint-placeholder-count="4"><button class="{{ f.cls }}" aria-pressed="{{ f.on }}" onClick="{{ f.pick }}">{{ f.label }}</button></sc-for>
+        </div>
+      </div>
+      <div class="tiles">
+        <sc-for list="{{ ov.tiles }}" as="t" hint-placeholder-count="4">
+          <div class="tile">
+            <div class="k" style="margin: 0">{{ t.label }}</div>
+            <div class="t-value">{{ t.value }}</div>
+            <div class="sub">{{ t.delta }}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div class="row">
+        <div class="card" style="flex: 2 1 520px">
+          <div class="card-h">
+            <div>
+              <h2>Runs per day</h2>
+              <div class="sub num">{{ ov.readout }}</div>
+            </div>
+            <div class="legend"><span><span class="sw" style="background: #5B8DC9"></span>Succeeded</span><span><span class="sw" style="background: #D03A26"></span>Failed</span></div>
+          </div>
+          <div class="plot">
+            <sc-for list="{{ ov.ticks }}" as="t" hint-placeholder-count="5"><div class="grid" style="bottom: {{ t.y }}px"><span>{{ t.label }}</span></div></sc-for>
+            <div class="bars">
+              <sc-for list="{{ ov.days }}" as="d" hint-placeholder-count="14">
+                <button class="bar {{ d.cls }}" aria-label="{{ d.tip }}" onMouseEnter="{{ d.hover }}" onFocus="{{ d.hover }}" onMouseLeave="{{ ov.unhover }}" onBlur="{{ ov.unhover }}">
+                  <span class="b-fail {{ d.failCls }}" style="height: {{ d.failH }}px"></span>
+                  <span class="b-ok {{ d.okCls }}" style="height: {{ d.okH }}px"></span>
+                </button>
+              </sc-for>
+            </div>
+          </div>
+          <div class="xaxis" aria-hidden="true">
+            <sc-for list="{{ ov.days }}" as="d" hint-placeholder-count="14"><span class="{{ d.xcls }}">{{ d.day }}</span></sc-for>
+          </div>
+        </div>
+        <div class="card" style="flex: 1 1 300px">
+          <h2>Services that failed most</h2>
+          <div class="sub" style="margin-bottom: 8px">Failed deploys per service in the period</div>
+          <sc-for list="{{ ov.failing }}" as="f" hint-placeholder-count="5">
+            <div class="rank">
+              <div class="rank-top"><span class="mono">{{ f.name }}</span><span class="num" style="font-weight: 500">{{ f.count }}</span></div>
+              <div class="rank-bar"><span style="width: {{ f.w }}%"></span></div>
+              <div class="sub">{{ f.reason }}</div>
+            </div>
+          </sc-for>
+          <sc-if value="{{ ov.noFailing }}" hint-placeholder-val="{{ false }}"><div class="empty">No service failed to deploy here in this period</div></sc-if>
+        </div>
+      </div>
+      <div class="row">
+        <div class="card" style="flex: 3 1 460px">
+          <h2>Needs attention</h2>
+          <div class="sub" style="margin-bottom: 4px">Latest runs that failed and were not fixed by a later run, and runs waiting for approval</div>
+          <sc-for list="{{ ov.attention }}" as="a" hint-placeholder-count="3">
+            <button class="att" onClick="{{ a.open }}">
+              <span class="pill p-{{ a.cls }}"><span class="mk mk-{{ a.cls }}"></span>{{ a.statusLabel }}</span>
+              <span class="att-main">
+                <span class="att-title">{{ a.job }} in {{ a.env }}</span>
+                <span class="sub">{{ a.fail }}</span>
+              </span>
+              <span class="sub nowrap">#{{ a.id }}, {{ a.when }}</span>
+            </button>
+          </sc-for>
+          <sc-if value="{{ ov.noAttention }}" hint-placeholder-val="{{ false }}"><div class="empty">Nothing needs attention</div></sc-if>
+        </div>
+        <div class="card flush" style="flex: 2 1 340px">
+          <div style="padding: 20px 20px 12px"><h2>Environments</h2></div>
+          <div class="scroll">
+            <table>
+              <thead><tr><th>Environment</th><th>Last run</th><th>When</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ ov.envs }}" as="e" hint-placeholder-count="5">
+                  <tr>
+                    <td><span class="mono">{{ e.id }}</span> <span class="tag">{{ e.stage }}</span></td>
+                    <td><span class="pill p-{{ e.cls }}"><span class="mk mk-{{ e.cls }}"></span>{{ e.statusLabel }}</span></td>
+                    <td class="sub nowrap">{{ e.when }}</td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isJobs }}" hint-placeholder-val="{{ false }}">
+      <div class="ph">
+        <div>
+          <h1>Jobs</h1>
+          <div class="lead">{{ cat.count }}</div>
+        </div>
+        <sc-if value="{{ cat.adminBar }}" hint-placeholder-val="{{ true }}">
+          <div class="actions">
+            <button class="btn" onClick="{{ cat.openFolder }}">New folder</button>
+            <button class="btn primary" onClick="{{ cat.openForm }}">Add job</button>
+          </div>
+        </sc-if>
+      </div>
+      <sc-if value="{{ cat.folderOpen }}" hint-placeholder-val="{{ false }}">
+        <div class="card stack">
+          <div>
+            <h2>New folder</h2>
+            <div class="sub">Folders only organise this page. They do not change what a job does or who may run it.</div>
+          </div>
+          <label class="field" style="max-width: 320px">Folder name<input type="text" placeholder="Search" value="{{ cat.ff.name }}" onChange="{{ cat.setFolderName }}"></label>
+          <div class="actions">
+            <button class="btn primary" disabled="{{ cat.cannotCreateFolder }}" onClick="{{ cat.createFolder }}">Create folder</button>
+            <button class="btn" onClick="{{ cat.closeFolder }}">Cancel</button>
+          </div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ cat.formOpen }}" hint-placeholder-val="{{ false }}">
+        <div class="card stack">
+          <div>
+            <h2>Add job</h2>
+            <div class="sub">Point Yumdrake at a YAML file in GitHub. It reads and checks the file, builds the job's page from it, and re-reads it whenever the repository changes.</div>
+          </div>
+          <div class="form-grid">
+            <label class="field">Job name<input type="text" placeholder="Search services" value="{{ cat.f.title }}" onChange="{{ cat.setTitle }}"></label>
+            <label class="field">Folder
+              <select value="{{ cat.formFolder }}" onChange="{{ cat.setFolder }}">
+                <sc-for list="{{ cat.folderOpts }}" as="o" hint-placeholder-count="5"><option value="{{ o.name }}">{{ o.name }}</option></sc-for>
+              </select>
+            </label>
+            <label class="field">GitHub connection
+              <select value="{{ cat.f.conn }}" onChange="{{ cat.setConn }}">
+                <sc-for list="{{ cat.conns }}" as="o" hint-placeholder-count="1"><option value="{{ o.name }}">{{ o.name }}</option></sc-for>
+              </select>
+            </label>
+            <label class="field">Repository<input type="text" placeholder="example-org/search" value="{{ cat.f.repo }}" onChange="{{ cat.setRepo }}"></label>
+            <label class="field">Branch<input type="text" value="{{ cat.f.branch }}" onChange="{{ cat.setBranch }}"></label>
+            <label class="field">Path to the job YAML<input type="text" placeholder="deploy/yumdrake.yaml" value="{{ cat.f.path }}" onChange="{{ cat.setPath }}"></label>
+          </div>
+          <div class="actions">
+            <button class="btn primary" disabled="{{ cat.cannotAdd }}" onClick="{{ cat.add }}">Read YAML and add job</button>
+            <button class="btn" onClick="{{ cat.closeForm }}">Cancel</button>
+          </div>
+        </div>
+      </sc-if>
+      <div class="toolbar">
+        <label class="search"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input type="search" placeholder="Find a job" aria-label="Find a job" value="{{ cat.q }}" onChange="{{ cat.setQ }}"></label>
+        <div class="seg" role="group" aria-label="Folder">
+          <sc-for list="{{ cat.folders }}" as="f" hint-placeholder-count="6"><button class="{{ f.cls }}" aria-pressed="{{ f.on }}" onClick="{{ f.pick }}">{{ f.label }}</button></sc-for>
+        </div>
+      </div>
+      <div class="card flush scroll">
+        <table style="min-width: 880px">
+          <thead><tr><th>Job</th><th>Deploys</th><th>Approval</th><th>Last run</th><th>{{ cat.moveHead }}</th></tr></thead>
+          <tbody>
+            <sc-for list="{{ cat.sections }}" as="sec" hint-placeholder-count="3">
+              <tr class="grp"><td colspan="5"><div class="grp-h"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg><span>{{ sec.name }}</span><span class="sub" style="font-weight: 400">{{ sec.countLabel }}</span></div></td></tr>
+              <sc-for list="{{ sec.rows }}" as="j" hint-placeholder-count="2">
+                <tr>
+                  <td><button class="link" onClick="{{ j.open }}">{{ j.title }}</button><div class="mono sub">{{ j.id }}</div></td>
+                  <td>{{ j.deploys }}</td>
+                  <td>{{ j.approval }}</td>
+                  <td>
+                    <div class="svc-cell"><span class="pill p-{{ j.lastCls }}"><span class="mk mk-{{ j.lastCls }}"></span>{{ j.lastLabel }}</span><span class="strip" aria-hidden="true"><sc-for list="{{ j.strip }}" as="c" hint-placeholder-count="0"><span class="sc {{ c.cls }}" title="{{ c.tip }}"></span></sc-for></span></div>
+                    <div class="sub">{{ j.lastMeta }}</div>
+                  </td>
+                  <td>
+                    <sc-if value="{{ j.canMove }}" hint-placeholder-val="{{ true }}">
+                      <select class="sel sm" aria-label="Folder for this job" value="{{ j.folder }}" onChange="{{ j.move }}">
+                        <sc-for list="{{ cat.folderOpts }}" as="o" hint-placeholder-count="5"><option value="{{ o.name }}">{{ o.name }}</option></sc-for>
+                      </select>
+                    </sc-if>
+                  </td>
+                </tr>
+              </sc-for>
+              <sc-if value="{{ sec.empty }}" hint-placeholder-val="{{ false }}">
+                <tr><td colspan="5" class="sub">No jobs in this folder yet</td></tr>
+              </sc-if>
+            </sc-for>
+          </tbody>
+        </table>
+        <sc-if value="{{ cat.noMatch }}" hint-placeholder-val="{{ false }}"><div class="empty">No job matches your search</div></sc-if>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isJob }}" hint-placeholder-val="{{ false }}">
+      <div class="crumbs"><button onClick="{{ dep.back }}">Jobs</button><span>/</span><span>{{ dep.folder }}</span></div>
+      <div class="ph">
+        <div>
+          <h1>{{ dep.title }}</h1>
+          <div class="meta"><span class="mono">{{ dep.id }}</span><span>{{ dep.deploys }}</span><span>{{ dep.approvalText }}</span></div>
+        </div>
+        <div class="actions"><button class="btn primary" onClick="{{ dep.showRun }}">Run this job</button></div>
+      </div>
+      <sc-if value="{{ dep.standIn }}" hint-placeholder-val="{{ false }}">
+        <div class="note">Mockup only: there is no real file to read, so this new job shows the "Portal services" options as a stand-in.</div>
+      </sc-if>
+      <div class="facts">
+        <sc-for list="{{ dep.stats }}" as="st" hint-placeholder-count="4"><div><div class="k">{{ st.k }}</div><div class="v num">{{ st.v }}</div></div></sc-for>
+      </div>
+      <div class="tabs">
+        <button class="tab {{ dep.histTabCls }}" onClick="{{ dep.showHist }}">History</button>
+        <button class="tab {{ dep.runTabCls }}" onClick="{{ dep.showRun }}">Run</button>
+        <button class="tab {{ dep.defTabCls }}" onClick="{{ dep.showDef }}">Definition</button>
+      </div>
+
+      <sc-if value="{{ dep.isHistTab }}" hint-placeholder-val="{{ true }}">
+        <div class="toolbar">
+          <div class="seg" role="group" aria-label="Filter by status">
+            <sc-for list="{{ dep.histChips }}" as="f" hint-placeholder-count="4"><button class="{{ f.cls }}" aria-pressed="{{ f.on }}" onClick="{{ f.pick }}">{{ f.label }}</button></sc-for>
+          </div>
+          <select class="sel" aria-label="Filter by environment" value="{{ dep.histEnv }}" onChange="{{ dep.setHistEnv }}">
+            <sc-for list="{{ dep.envOpts }}" as="o" hint-placeholder-count="6"><option value="{{ o.id }}">{{ o.label }}</option></sc-for>
+          </select>
+        </div>
+        <div class="card flush scroll">
+          <sc-if value="{{ dep.hasHistory }}" hint-placeholder-val="{{ true }}">
+            <table style="min-width: 960px">
+              <thead><tr><th>Run</th><th>Status</th><th>Environment</th><th>Services</th><th>Started</th><th>Duration</th><th>What failed</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ dep.history }}" as="h" hint-placeholder-count="5">
+                  <tr>
+                    <td><button class="link mono" onClick="{{ h.open }}">#{{ h.id }}</button></td>
+                    <td><span class="pill p-{{ h.cls }}"><span class="mk mk-{{ h.cls }}"></span>{{ h.statusLabel }}</span></td>
+                    <td class="nowrap"><span class="mono">{{ h.env }}</span> <span class="tag">{{ h.stage }}</span></td>
+                    <td>
+                      <div class="svc-cell"><span class="strip" role="img" aria-label="{{ h.okCount }} services updated"><sc-for list="{{ h.strip }}" as="c" hint-placeholder-count="8"><span class="sc {{ c.cls }}" title="{{ c.tip }}"></span></sc-for></span><span class="sub num nowrap">{{ h.okCount }}</span></div>
+                      <div class="sub">{{ h.what }}</div>
+                    </td>
+                    <td class="nowrap">{{ h.by }}<div class="sub">{{ h.when }}, {{ h.via }}</div></td>
+                    <td class="num nowrap">{{ h.duration }}</td>
+                    <td style="min-width: 200px">{{ h.fail }}</td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </sc-if>
+          <sc-if value="{{ dep.noHistory }}" hint-placeholder-val="{{ false }}"><div class="empty">{{ dep.histEmptyText }}</div></sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ dep.isRunTab }}" hint-placeholder-val="{{ false }}">
+        <div class="row top">
+          <div class="stack" style="flex: 3 1 480px">
+            <div class="card stack" style="gap: 12px">
+              <h2>Environment</h2>
+              <select class="sel" style="max-width: 320px" aria-label="Environment" value="{{ dep.envId }}" onChange="{{ dep.setEnv }}">
+                <sc-for list="{{ dep.envs }}" as="o" hint-placeholder-count="5"><option value="{{ o.id }}">{{ o.label }}</option></sc-for>
+              </select>
+              <div class="sub">One environment for the whole run. {{ dep.envId }} is labelled {{ dep.env.stage }} and lives in AWS account <span class="mono">{{ dep.env.account }}</span>. Every service brings its own ECS service, ECR repository and config paths for it.</div>
+            </div>
+
+            <sc-if value="{{ dep.isScript }}" hint-placeholder-val="{{ false }}">
+              <div class="card stack" style="gap: 12px">
+                <h2>Options</h2>
+                <label class="field" style="max-width: 320px">Version<input type="text" value="{{ dep.scriptVersion }}" onChange="{{ dep.setScriptVersion }}"></label>
+                <div class="sub">This job declares one text input in its YAML, so that is all this page asks for.</div>
+              </div>
+            </sc-if>
+
+            <sc-for list="{{ dep.groups }}" as="g" hint-placeholder-count="2">
+              <div class="card stack" style="gap: 12px">
+                <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between">
+                  <label class="check">
+                    <input type="checkbox" checked="{{ g.all }}" onChange="{{ g.toggleAll }}">
+                    <span style="font-weight: 500; font-size: 15px">{{ g.label }}</span>
+                    <span class="sub">{{ g.countLabel }}</span>
+                  </label>
+                  <label class="sub" style="display: flex; align-items: center; gap: 8px">Version
+                    <select class="sel mono" value="{{ g.version }}" onChange="{{ g.setVersion }}">
+                      <sc-for list="{{ g.versionOpts }}" as="o" hint-placeholder-count="4"><option value="{{ o.v }}">{{ o.l }}</option></sc-for>
+                    </select>
+                  </label>
+                </div>
+                <sc-if value="{{ g.many }}" hint-placeholder-val="{{ true }}">
+                  <div><button class="btn sm" onClick="{{ g.toggleOpen }}">{{ g.openLabel }}</button></div>
+                  <sc-if value="{{ g.open }}" hint-placeholder-val="{{ false }}">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 4px 24px">
+                      <sc-for list="{{ g.services }}" as="sv" hint-placeholder-count="6">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px">
+                          <label class="check"><input type="checkbox" checked="{{ sv.on }}" disabled="{{ sv.missing }}" onChange="{{ sv.toggle }}"><span class="mono">{{ sv.name }}</span></label>
+                          <sc-if value="{{ sv.missing }}" hint-placeholder-val="{{ false }}"><span class="sub" style="font-size: 12px">not set up here</span></sc-if>
+                          <sc-if value="{{ sv.present }}" hint-placeholder-val="{{ true }}">
+                            <select class="sel sm mono" aria-label="Version for this service" value="{{ sv.ovr }}" onChange="{{ sv.setOvr }}">
+                              <sc-for list="{{ sv.ovrOpts }}" as="o" hint-placeholder-count="4"><option value="{{ o.v }}">{{ o.l }}</option></sc-for>
+                            </select>
+                          </sc-if>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+                </sc-if>
+              </div>
+            </sc-for>
+            <sc-if value="{{ dep.isDeployJob }}" hint-placeholder-val="{{ true }}">
+              <div class="sub">{{ dep.registryNote }} A group's version list shows the tags every selected service has.</div>
+            </sc-if>
+          </div>
+
+          <div class="card stack" style="flex: 2 1 300px">
+            <h2>Plan for {{ dep.envId }}</h2>
+            <ol class="plan-list">
+              <sc-for list="{{ dep.summary }}" as="l" hint-placeholder-count="4"><li>{{ l.text }}</li></sc-for>
+            </ol>
+            <sc-if value="{{ dep.nothing }}" hint-placeholder-val="{{ false }}"><div class="sub">Nothing is selected yet</div></sc-if>
+            <sc-if value="{{ dep.needsApproval }}" hint-placeholder-val="{{ false }}">
+              <div class="note">This job needs approval in {{ dep.env.stage }}. The run will wait, and a request goes to Slack {{ dep.slack }}.</div>
+            </sc-if>
+            <sc-if value="{{ dep.blocked }}" hint-placeholder-val="{{ false }}">
+              <div class="info">{{ dep.blockReason }}</div>
+            </sc-if>
+            <button class="btn primary" style="height: 40px" disabled="{{ dep.cannotStart }}" onClick="{{ dep.start }}">{{ dep.startLabel }}</button>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ dep.isDefTab }}" hint-placeholder-val="{{ false }}">
+        <div class="toolbar" style="justify-content: space-between">
+          <div class="sub">Read from GitHub <span class="mono">{{ dep.file }}</span>, {{ dep.synced }}. Edited in git, read-only here.</div>
+          <button class="btn sm" onClick="{{ dep.sync }}">Re-read from GitHub</button>
+        </div>
+        <div class="row top">
+          <pre class="code" style="flex: 3 1 420px; min-width: 0">{{ dep.yaml }}</pre>
+          <div class="card stack" style="flex: 2 1 300px">
+            <div>
+              <h2>Steps</h2>
+              <div class="sub">A job may only use built-in step types</div>
+            </div>
+            <sc-for list="{{ dep.steps }}" as="js" hint-placeholder-count="4">
+              <div>
+                <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center"><span class="mono" style="font-weight: 500">{{ js.name }}</span><span class="tag mono">{{ js.use }}</span></div>
+                <div class="sub">{{ js.desc }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ isRun }}" hint-placeholder-val="{{ false }}">
+      <div class="crumbs"><button onClick="{{ run.toJobs }}">Jobs</button><span>/</span><button onClick="{{ run.again }}">{{ run.jobTitle }}</button><span>/</span><span>Run #{{ run.id }}</span></div>
+      <div class="ph">
+        <div>
+          <h1><span>Run #{{ run.id }}</span><span class="pill p-{{ run.cls }}"><span class="mk mk-{{ run.cls }}"></span>{{ run.statusLabel }}</span></h1>
+          <div class="lead">{{ run.result }}</div>
+        </div>
+        <div class="actions">
+          <button class="btn" onClick="{{ run.again }}">Job history</button>
+          <button class="btn" onClick="{{ run.back }}">All runs</button>
+        </div>
+      </div>
+      <div class="facts">
+        <div><div class="k">Environment</div><div class="v"><span class="mono">{{ run.env }}</span> <span class="tag">{{ run.stage }}</span></div></div>
+        <div><div class="k">Started by</div><div class="v">{{ run.by }}, {{ run.via }}</div></div>
+        <div><div class="k">Started</div><div class="v">{{ run.when }}</div></div>
+        <div><div class="k">Duration</div><div class="v num">{{ run.duration }}</div></div>
+        <div><div class="k">Versions</div><div class="v">{{ run.what }}</div></div>
+        <sc-if value="{{ run.hasStrip }}" hint-placeholder-val="{{ true }}">
+          <div>
+            <div class="k">Services, {{ run.okCount }} updated</div>
+            <span class="strip lg" role="img" aria-label="{{ run.okCount }} services updated"><sc-for list="{{ run.strip }}" as="c" hint-placeholder-count="12"><span class="sc {{ c.cls }}" title="{{ c.tip }}"></span></sc-for></span>
+          </div>
+        </sc-if>
+      </div>
+
+      <sc-if value="{{ run.waiting }}" hint-placeholder-val="{{ false }}">
+        <div class="note" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between">
+          <div><span style="font-weight: 500">Waiting for approval.</span> {{ run.approveReason }}</div>
+          <div class="actions">
+            <button class="btn primary" disabled="{{ run.cannotApprove }}" onClick="{{ run.approve }}">Approve</button>
+            <button class="btn danger" disabled="{{ run.cannotApprove }}" onClick="{{ run.reject }}">Reject</button>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ run.hasFailures }}" hint-placeholder-val="{{ false }}">
+        <div class="fail">
+          <div class="fail-h"><span class="mk mk-failed"></span>What failed</div>
+          <div class="scroll">
+            <table>
+              <thead><tr><th>Failed</th><th>In step</th><th>Why</th><th>Log</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ run.failures }}" as="f" hint-placeholder-count="1">
+                  <tr>
+                    <td><span class="mono" style="font-weight: 500">{{ f.what }}</span><div class="sub">{{ f.type }}</div></td>
+                    <td class="mono">{{ f.step }}</td>
+                    <td style="min-width: 300px">{{ f.reason }}</td>
+                    <td><button class="btn sm" onClick="{{ f.show }}">Show its log</button></td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+          <sc-for list="{{ run.skipped }}" as="sk" hint-placeholder-count="0"><div class="sub" style="padding: 12px 16px; border-top: 1px solid rgba(23,26,31,.10)">{{ sk.text }}</div></sc-for>
+        </div>
+      </sc-if>
+
+      <div class="work">
+        <div class="card flush tree">
+          <div class="tree-h">Steps and services</div>
+          <div class="tree-list">
+            <sc-for list="{{ run.tree }}" as="n" hint-placeholder-count="8">
+              <button class="tn {{ n.cls }} {{ n.selCls }}" onClick="{{ n.select }}">
+                <span class="mk mk-{{ n.mark }}"></span>
+                <span class="tn-name">{{ n.name }}</span>
+                <span class="tn-meta">{{ n.meta }}</span>
+              </button>
+            </sc-for>
+          </div>
+        </div>
+        <div class="con">
+          <div class="con-h">
+            <div class="con-title"><span class="mono">{{ run.logTitle }}</span><span class="con-count">{{ run.logCount }}</span></div>
+            <div class="con-tools">
+              <label class="con-search"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input type="search" placeholder="Filter lines" aria-label="Filter log lines" value="{{ run.logQ }}" onChange="{{ run.setLogQ }}"></label>
+              <button class="con-tog {{ run.errCls }}" aria-pressed="{{ run.errOn }}" onClick="{{ run.toggleErr }}">Errors only</button>
+            </div>
+          </div>
+          <div class="con-body">
+            <sc-for list="{{ run.lines }}" as="l" hint-placeholder-count="12"><div class="ln ln-{{ l.lvl }}"><span class="no">{{ l.n }}</span><span class="ts">{{ l.t }}</span><span class="tx">{{ l.text }}</span></div></sc-for>
+            <sc-if value="{{ run.noLines }}" hint-placeholder-val="{{ false }}"><div class="ln"><span class="no"></span><span class="tx">No lines match</span></div></sc-if>
+          </div>
+        </div>
+      </div>
+
+      <sc-if value="{{ run.hasSlack }}" hint-placeholder-val="{{ true }}">
+        <div class="card">
+          <h2 style="margin-bottom: 12px">Sent to Slack {{ run.slackChannel }}</h2>
+          <sc-for list="{{ run.slack }}" as="m" hint-placeholder-count="2"><div class="slack">{{ m.text }}</div></sc-for>
+        </div>
+      </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ isHistory }}" hint-placeholder-val="{{ false }}">
+      <div class="ph">
+        <div>
+          <h1>Runs</h1>
+          <div class="lead">Every run of every job, started from the web or the CLI</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <label class="search"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input type="search" placeholder="Job, service or person" aria-label="Find runs" value="{{ rl.q }}" onChange="{{ rl.setQ }}"></label>
+        <div class="seg" role="group" aria-label="Filter by status">
+          <sc-for list="{{ rl.chips }}" as="f" hint-placeholder-count="4"><button class="{{ f.cls }}" aria-pressed="{{ f.on }}" onClick="{{ f.pick }}">{{ f.label }}</button></sc-for>
+        </div>
+        <select class="sel" aria-label="Filter by environment" value="{{ rl.env }}" onChange="{{ rl.setEnv }}">
+          <sc-for list="{{ rl.envOpts }}" as="o" hint-placeholder-count="6"><option value="{{ o.id }}">{{ o.label }}</option></sc-for>
+        </select>
+      </div>
+      <div class="card flush scroll">
+        <sc-if value="{{ rl.hasRows }}" hint-placeholder-val="{{ true }}">
+          <table style="min-width: 1080px">
+            <thead><tr><th>Run</th><th>Status</th><th>Job</th><th>Environment</th><th>Services</th><th>Started</th><th>Duration</th><th>What failed</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ rl.rows }}" as="r" hint-placeholder-count="6">
+                <tr>
+                  <td><button class="link mono" onClick="{{ r.open }}">#{{ r.id }}</button></td>
+                  <td><span class="pill p-{{ r.cls }}"><span class="mk mk-{{ r.cls }}"></span>{{ r.statusLabel }}</span></td>
+                  <td><button class="link" style="font-weight: 400" onClick="{{ r.openJob }}">{{ r.job }}</button></td>
+                  <td class="nowrap"><span class="mono">{{ r.env }}</span> <span class="tag">{{ r.stage }}</span></td>
+                  <td>
+                    <div class="svc-cell"><span class="strip" role="img" aria-label="{{ r.okCount }} services updated"><sc-for list="{{ r.strip }}" as="c" hint-placeholder-count="8"><span class="sc {{ c.cls }}" title="{{ c.tip }}"></span></sc-for></span><span class="sub num nowrap">{{ r.okCount }}</span></div>
+                  </td>
+                  <td class="nowrap">{{ r.by }}<div class="sub">{{ r.when }}, {{ r.via }}</div></td>
+                  <td class="num nowrap">{{ r.duration }}</td>
+                  <td style="min-width: 200px">{{ r.fail }}</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </sc-if>
+        <sc-if value="{{ rl.empty }}" hint-placeholder-val="{{ false }}"><div class="empty">No runs match these filters</div></sc-if>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isApprovals }}" hint-placeholder-val="{{ false }}">
+      <div class="ph">
+        <div>
+          <h1>Approvals</h1>
+          <div class="lead">Runs waiting for a second person. Only jobs that ask for approval appear here.</div>
+        </div>
+      </div>
+      <sc-if value="{{ noApprovals }}" hint-placeholder-val="{{ false }}"><div class="card empty">Nothing is waiting for approval</div></sc-if>
+      <sc-for list="{{ approvals }}" as="a" hint-placeholder-count="1">
+        <div class="card" style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between">
+          <div style="min-width: 0; display: flex; flex-direction: column; gap: 4px">
+            <div style="font-weight: 500">{{ a.by }} wants to run {{ a.job }} in <span class="mono">{{ a.env }}</span> <span class="tag">{{ a.stage }}</span></div>
+            <div class="sub">{{ a.what }}. Requested {{ a.when }}.</div>
+            <div class="sub">{{ a.reason }}</div>
+          </div>
+          <div class="actions">
+            <button class="btn" onClick="{{ a.open }}">Details</button>
+            <button class="btn primary" disabled="{{ a.cannot }}" onClick="{{ a.approve }}">Approve</button>
+            <button class="btn danger" disabled="{{ a.cannot }}" onClick="{{ a.reject }}">Reject</button>
+          </div>
+        </div>
+      </sc-for>
+    </sc-if>
+
+    <sc-if value="{{ isVersions }}" hint-placeholder-val="{{ false }}">
+      <div class="ph">
+        <div>
+          <h1>Versions</h1>
+          <div class="lead">What every service is running in every environment, read from ECS. Sample data in this mockup.</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <label class="search"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input type="search" placeholder="Find a service" aria-label="Find a service" value="{{ ver.q }}" onChange="{{ ver.setQ }}"></label>
+        <div class="seg" role="group" aria-label="Rows to show">
+          <sc-for list="{{ ver.chips }}" as="f" hint-placeholder-count="3"><button class="{{ f.cls }}" aria-pressed="{{ f.on }}" onClick="{{ f.pick }}">{{ f.label }}</button></sc-for>
+        </div>
+        <div class="legend"><span><span class="mk mk-behind"></span>Behind the newest release</span><span><span class="mk mk-failed"></span>Last deploy failed</span></div>
+      </div>
+      <div class="card flush scroll">
+        <table style="min-width: 820px">
+          <thead><tr><th>Service</th><sc-for list="{{ ver.cols }}" as="e" hint-placeholder-count="5"><th><span class="mono" style="color: #171A1F">{{ e.id }}</span> <span class="tag">{{ e.stage }}</span></th></sc-for></tr></thead>
+          <tbody>
+            <sc-for list="{{ ver.rows }}" as="r" hint-placeholder-count="8">
+              <tr>
+                <td class="mono" style="font-weight: 500">{{ r.name }}</td>
+                <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="5"><td><span class="vcell {{ c.cls }}" title="{{ c.tip }}"><span class="mk {{ c.mk }}"></span>{{ c.text }}</span></td></sc-for>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+        <sc-if value="{{ ver.empty }}" hint-placeholder-val="{{ false }}"><div class="empty">No service matches</div></sc-if>
+      </div>
+      <div class="sub">{{ ver.count }}</div>
+    </sc-if>
+
+    <sc-if value="{{ isInventory }}" hint-placeholder-val="{{ false }}">
+      <div class="ph">
+        <div>
+          <h1>Inventory</h1>
+          <div class="lead">Defined in YAML in <span class="mono">{{ inv.src }}</span>, read-only here. Synced {{ inv.synced }}.</div>
+        </div>
+        <div class="actions"><button class="btn" onClick="{{ inv.sync }}">Sync from git</button></div>
+      </div>
+      <div class="tabs">
+        <button class="tab {{ inv.envTabCls }}" onClick="{{ inv.showEnvs }}">Environments</button>
+        <button class="tab {{ inv.appTabCls }}" onClick="{{ inv.showApps }}">Services</button>
+      </div>
+      <sc-if value="{{ inv.isEnvs }}" hint-placeholder-val="{{ true }}">
+        <div class="row top">
+          <div class="card flush scroll" style="flex: 3 1 460px">
+            <table>
+              <thead><tr><th>Environment</th><th>Label</th><th>AWS account</th><th>Services set up</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ inv.envRows }}" as="e" hint-placeholder-count="5">
+                  <tr><td class="mono" style="font-weight: 500">{{ e.id }}</td><td><span class="tag">{{ e.stage }}</span></td><td class="mono">{{ e.account }}</td><td class="num">{{ e.svcCount }}</td></tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+          <div class="stack" style="flex: 2 1 300px; gap: 8px">
+            <div class="mono sub">{{ inv.envFile }}</div>
+            <pre class="code">{{ inv.envYaml }}</pre>
+          </div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ inv.isApps }}" hint-placeholder-val="{{ false }}">
+        <div class="row top">
+          <div class="card flush" style="flex: 1 1 280px; max-width: 380px">
+            <div style="padding: 12px; border-bottom: 1px solid rgba(23,26,31,.10)">
+              <label class="search" style="max-width: none"><svg class="ic" aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input type="search" placeholder="Find a service" aria-label="Find a service" value="{{ inv.svcQ }}" onChange="{{ inv.setSvcQ }}"></label>
+            </div>
+            <div class="list">
+              <sc-for list="{{ inv.svcRows }}" as="sv" hint-placeholder-count="10">
+                <button class="li {{ sv.cls }}" onClick="{{ sv.select }}"><span class="mono">{{ sv.name }}</span><span class="sub" style="font-size: 12px">{{ sv.envShort }}</span></button>
+              </sc-for>
+            </div>
+          </div>
+          <div class="stack" style="flex: 3 1 460px; gap: 12px">
+            <div>
+              <h2 class="mono" style="font-size: 15px">{{ inv.svcFile }}</h2>
+              <div class="sub">Used by: {{ inv.svcJobs }}</div>
+            </div>
+            <div class="seg" role="group" aria-label="Environment to show" style="align-self: flex-start">
+              <sc-for list="{{ inv.svcEnvChips }}" as="f" hint-placeholder-count="6"><button class="{{ f.cls }}" aria-pressed="{{ f.on }}" onClick="{{ f.pick }}">{{ f.label }}</button></sc-for>
+            </div>
+            <pre class="code">{{ inv.svcYaml }}</pre>
+            <div class="sub">One block per environment the service exists in, each with its full ECS service, ECR repository and, if it has any, env files and TOMLs. Paths are written out in full, with no variables. An env file path names the repository and the file, not a branch: at deploy time the file is read from the branch named after the version being deployed, such as v2.212.0, and from dev when no such branch exists.</div>
+          </div>
+        </div>
+      </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ isCli }}" hint-placeholder-val="{{ false }}">
+      <div class="ph">
+        <div>
+          <h1>CLI</h1>
+          <div class="lead">The CLI talks to the same service with the same permissions. Its runs appear in Runs next to the ones started here.</div>
+        </div>
+      </div>
+      <pre class="code">{{ cli }}</pre>
+      <div class="card flush">
+        <div style="padding: 20px 20px 12px"><h2>Your CLI tokens</h2><div class="sub">A token carries your own role and scope, never more</div></div>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Name</th><th>Created</th><th>Last used</th><th>Expires</th></tr></thead>
+            <tbody><tr><td>laptop</td><td>3 Nov 2026</td><td>Today 09:12</td><td>3 Feb 2027</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ false }}">
+      <div class="ph">
+        <div>
+          <h1>Admin</h1>
+          <div class="lead">Users, roles and connections are managed here and stored encrypted in the database, not in YAML</div>
+        </div>
+      </div>
+      <div class="tabs">
+        <sc-for list="{{ adm.tabs }}" as="t" hint-placeholder-count="7"><button class="tab {{ t.cls }}" onClick="{{ t.go }}">{{ t.label }}</button></sc-for>
+      </div>
+
+      <sc-if value="{{ adm.isUsers }}" hint-placeholder-val="{{ true }}">
+        <div class="card flush scroll">
+          <table>
+            <thead><tr><th>Name</th><th>Email</th><th>Sign-in</th><th>Group</th><th>Last sign-in</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ adm.users }}" as="u" hint-placeholder-count="6">
+                <tr><td style="font-weight: 500">{{ u.name }}</td><td class="mono">{{ u.email }}</td><td>{{ u.src }}</td><td>{{ u.groupLabel }}</td><td class="sub">{{ u.last }}</td></tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ adm.isRoles }}" hint-placeholder-val="{{ false }}">
+        <div class="info">Select an environment label to grant or remove it. Then use "view as" in the sidebar to see the effect on job pages and Approvals.</div>
+        <div class="card flush scroll">
+          <table>
+            <thead><tr><th>Group</th><th>Level</th><th>May run jobs in</th><th>May approve in</th><th>Jobs</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ adm.roles }}" as="ro" hint-placeholder-count="4">
+                <tr>
+                  <td style="font-weight: 500">{{ ro.label }}</td>
+                  <td>{{ ro.level }}</td>
+                  <td><div style="display: flex; gap: 6px">
+                    <sc-for list="{{ ro.deploy }}" as="c" hint-placeholder-count="3"><button class="tog {{ c.cls }}" aria-pressed="{{ c.on }}" disabled="{{ ro.locked }}" onClick="{{ c.toggle }}">{{ c.stage }}</button></sc-for>
+                  </div></td>
+                  <td><div style="display: flex; gap: 6px">
+                    <sc-for list="{{ ro.approve }}" as="c" hint-placeholder-count="3"><button class="tog {{ c.cls }}" aria-pressed="{{ c.on }}" disabled="{{ ro.locked }}" onClick="{{ c.toggle }}">{{ c.stage }}</button></sc-for>
+                  </div></td>
+                  <td>{{ ro.apps }}</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ adm.isSso }}" hint-placeholder-val="{{ false }}">
+        <div class="card stack">
+          <h2>SAML single sign-on</h2>
+          <div class="form-grid">
+            <div><div class="k">Identity provider metadata URL</div><div class="mono">https://idp.example.com/app/yumdrake/metadata</div></div>
+            <div><div class="k">Service provider entity ID</div><div class="mono">https://yumdrake.example.com/saml</div></div>
+            <div><div class="k">Sign-in callback (ACS) URL</div><div class="mono">https://yumdrake.example.com/saml/acs</div></div>
+            <div><div class="k">Attribute carrying the user's groups</div><div class="mono">groups</div></div>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center">
+            <button class="btn" onClick="{{ adm.testSso }}">Test connection</button>
+            <sc-if value="{{ adm.ssoTested }}" hint-placeholder-val="{{ false }}"><span class="pill p-succeeded"><span class="mk mk-succeeded"></span>Connection works</span></sc-if>
+          </div>
+        </div>
+        <div class="card flush">
+          <div style="padding: 20px 20px 12px"><h2>Group mapping</h2></div>
+          <div class="scroll">
+            <table>
+              <thead><tr><th>Group from the identity provider</th><th>Yumdrake group</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">eng-devops</td><td>DevOps</td></tr>
+                <tr><td class="mono">qa-senior</td><td>Senior QA</td></tr>
+                <tr><td class="mono">qa-all</td><td>QA</td></tr>
+                <tr><td class="mono">eng-developers</td><td>Developers</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Local accounts</h2>
+          <div class="sub">Allowed for the break-glass admin and for service accounts. Passwords are stored as salted hashes only.</div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ adm.isAws }}" hint-placeholder-val="{{ false }}">
+        <div class="ph">
+          <div class="sub" style="max-width: 76ch">Yumdrake can only act in AWS accounts connected here. A role is preferred: Yumdrake assumes it when a run starts and nothing long-lived is stored. An access key also works, encrypted before it is saved and never shown again.</div>
+          <button class="btn primary" onClick="{{ adm.aws.open }}">Connect AWS account</button>
+        </div>
+        <sc-if value="{{ adm.aws.formOpen }}" hint-placeholder-val="{{ false }}">
+          <div class="card stack">
+            <h2>Connect AWS account</h2>
+            <div class="form-grid">
+              <label class="field">Name<input type="text" placeholder="staging" value="{{ adm.aws.f.name }}" onChange="{{ adm.aws.setName }}"></label>
+              <label class="field">AWS account ID<input type="text" placeholder="444444444444" value="{{ adm.aws.f.id }}" onChange="{{ adm.aws.setId }}"></label>
+              <label class="field">Access method
+                <select value="{{ adm.aws.f.method }}" onChange="{{ adm.aws.setMethod }}">
+                  <option value="role">Role (recommended)</option>
+                  <option value="key">Access key and secret key</option>
+                </select>
+              </label>
+            </div>
+            <sc-if value="{{ adm.aws.isRole }}" hint-placeholder-val="{{ true }}">
+              <div class="form-grid">
+                <label class="field">Role ARN to assume<input type="text" placeholder="arn:aws:iam::444444444444:role/yumdrake-deploy" value="{{ adm.aws.f.role }}" onChange="{{ adm.aws.setRole }}"></label>
+                <label class="field">External ID<input type="text" value="{{ adm.aws.f.ext }}" onChange="{{ adm.aws.setExt }}"></label>
+              </div>
+              <div class="sub">Create the role in that account and let Yumdrake's own identity assume it. Yumdrake shows the trust policy to paste.</div>
+            </sc-if>
+            <sc-if value="{{ adm.aws.isKey }}" hint-placeholder-val="{{ false }}">
+              <div class="form-grid">
+                <label class="field">Access key ID<input type="text" autocomplete="off" value="{{ adm.aws.f.key }}" onChange="{{ adm.aws.setKey }}"></label>
+                <label class="field">Secret access key<input type="password" autocomplete="off" value="{{ adm.aws.f.secret }}" onChange="{{ adm.aws.setSecret }}"></label>
+              </div>
+              <div class="sub">Stored encrypted. After saving, the secret can be replaced but not read back.</div>
+            </sc-if>
+            <div class="actions">
+              <button class="btn primary" disabled="{{ adm.aws.cannotSave }}" onClick="{{ adm.aws.save }}">Test and save</button>
+              <button class="btn" onClick="{{ adm.aws.cancel }}">Cancel</button>
+            </div>
+          </div>
+        </sc-if>
+        <div class="card flush scroll">
+          <table>
+            <thead><tr><th>Name</th><th>Account ID</th><th>Access</th><th>Details</th><th>Used by environments</th><th>Status</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ adm.aws.rows }}" as="a" hint-placeholder-count="3">
+                <tr><td style="font-weight: 500">{{ a.name }}</td><td class="mono">{{ a.id }}</td><td>{{ a.method }}</td><td class="mono">{{ a.detail }}</td><td>{{ a.usedBy }}</td><td><span class="pill p-succeeded"><span class="mk mk-succeeded"></span>{{ a.status }}</span></td></tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ adm.isGithub }}" hint-placeholder-val="{{ false }}">
+        <div class="ph">
+          <div class="sub" style="max-width: 76ch">Yumdrake reads every YAML file, jobs and inventory, from GitHub, and the copy-config step reads env files from GitHub. Both use the connections here.</div>
+          <button class="btn primary" onClick="{{ adm.gh.open }}">Connect GitHub</button>
+        </div>
+        <sc-if value="{{ adm.gh.formOpen }}" hint-placeholder-val="{{ false }}">
+          <div class="card stack">
+            <h2>Connect GitHub</h2>
+            <div class="form-grid">
+              <label class="field">Organisation or owner<input type="text" placeholder="example-org" value="{{ adm.gh.f.name }}" onChange="{{ adm.gh.setName }}"></label>
+              <label class="field">Access method
+                <select value="{{ adm.gh.f.method }}" onChange="{{ adm.gh.setMethod }}">
+                  <option value="app">GitHub App (recommended)</option>
+                  <option value="token">Access token</option>
+                </select>
+              </label>
+              <label class="field">{{ adm.gh.secretLabel }}<input type="password" autocomplete="off" value="{{ adm.gh.f.secret }}" onChange="{{ adm.gh.setSecret }}"></label>
+            </div>
+            <div class="sub">Read-only access to the chosen repositories is enough. The secret is stored encrypted and never shown again.</div>
+            <div class="actions">
+              <button class="btn primary" disabled="{{ adm.gh.cannotSave }}" onClick="{{ adm.gh.save }}">Test and save</button>
+              <button class="btn" onClick="{{ adm.gh.cancel }}">Cancel</button>
+            </div>
+          </div>
+        </sc-if>
+        <div class="card flush scroll">
+          <table>
+            <thead><tr><th>Organisation or owner</th><th>Access</th><th>Details</th><th>Status</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ adm.gh.rows }}" as="a" hint-placeholder-count="1">
+                <tr><td style="font-weight: 500">{{ a.name }}</td><td>{{ a.method }}</td><td>{{ a.detail }}</td><td><span class="pill p-succeeded"><span class="mk mk-succeeded"></span>{{ a.status }}</span></td></tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ adm.isSources }}" hint-placeholder-val="{{ false }}">
+        <div class="card stack">
+          <div>
+            <h2>Inventory source</h2>
+            <div class="sub">Yumdrake reads <span class="mono">environments.yaml</span>, one file with every environment, and <span class="mono">services/*.yaml</span> under this path</div>
+          </div>
+          <div class="form-grid">
+            <label class="field">GitHub connection
+              <select value="{{ adm.src.f.conn }}" onChange="{{ adm.src.setConn }}">
+                <sc-for list="{{ adm.gh.rows }}" as="o" hint-placeholder-count="1"><option value="{{ o.name }}">{{ o.name }}</option></sc-for>
+              </select>
+            </label>
+            <label class="field">Repository<input type="text" value="{{ adm.src.f.repo }}" onChange="{{ adm.src.setRepo }}"></label>
+            <label class="field">Branch<input type="text" value="{{ adm.src.f.branch }}" onChange="{{ adm.src.setBranch }}"></label>
+            <label class="field">Path<input type="text" value="{{ adm.src.f.path }}" onChange="{{ adm.src.setPath }}"></label>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center">
+            <button class="btn primary" onClick="{{ adm.src.save }}">Save and re-read</button>
+            <sc-if value="{{ adm.src.saved }}" hint-placeholder-val="{{ false }}"><span class="pill p-succeeded"><span class="mk mk-succeeded"></span>{{ adm.src.savedText }}</span></sc-if>
+          </div>
+        </div>
+        <div class="card flush">
+          <div style="padding: 20px 20px 12px"><h2>Job sources</h2><div class="sub">Each job points at its own YAML file. Add jobs from the Jobs page.</div></div>
+          <div class="scroll">
+            <table>
+              <thead><tr><th>Job</th><th>Repository</th><th>Branch</th><th>Path</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ adm.src.jobs }}" as="j" hint-placeholder-count="5">
+                  <tr><td>{{ j.title }}</td><td class="mono">{{ j.repo }}</td><td class="mono">{{ j.branch }}</td><td class="mono">{{ j.path }}</td></tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ adm.isAudit }}" hint-placeholder-val="{{ false }}">
+        <div class="card flush scroll">
+          <table>
+            <thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ adm.audit }}" as="au" hint-placeholder-count="5">
+                <tr><td class="sub nowrap">{{ au.when }}</td><td class="nowrap" style="font-weight: 500">{{ au.who }}</td><td>{{ au.text }}</td></tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+      </sc-if>
+    </sc-if>
+
+  </div>
+  </div>
+</div>
+</sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"scenario":{"editor":"enum","options":["All steps succeed","One service fails","AWS API error on a service","Config copy fails"],"default":"One service fails","section":"New runs"},"$preview":{"width":1360,"height":1040}}'>
+class Component extends DCLogic {
+  init() {
+    const dev = '111111111111', pre = '222222222222', prod = '333333333333';
+    const mkEnv = (id, stage, account) => ({ id, stage, account, region: 'eu-central-1', cluster: id, bucket: id + '-config', registry: stage === 'dev' ? dev : prod, registryName: stage === 'dev' ? 'dev' : 'prod' });
+    this.STAGES = ['dev', 'preprod', 'prod'];
+    this.ENVS = [mkEnv('hetzner-01', 'dev', dev), mkEnv('hetzner-02', 'dev', dev), mkEnv('hetzner-03', 'dev', dev), mkEnv('preprod-01', 'preprod', pre), mkEnv('prod-01', 'prod', prod)];
+    const env = { cfgName: 'env-files', cfgUse: 'copy-config', config: 'env files from the env config repo', type: 'env-files', from: 'env-config-repo' };
+    const toml = { cfgName: 'tomls', cfgUse: 'copy-config', config: 'TOML files from the main config bucket', type: 'toml', from: 'main-config-bucket' };
+    // A job deploys services. A job may put them in named groups so one version can be picked for a whole group.
+    this.SETS = {
+      backends: Object.assign({ label: 'Backend services', services: ['backend-socket', 'admin-history', 'backend-api', 'backend-worker'], devOnly: ['2.32.0-rc2', '2.32.0-rc1'], versions: ['2.31.0', '2.30.4', '2.30.3', '2.29.0'] }, toml),
+      microservices: Object.assign({ label: 'Microservices', services: ['orders', 'billing', 'catalog', 'search', 'notifications', 'auth', 'profiles', 'payments', 'shipping', 'inventory', 'pricing', 'reviews', 'media', 'reports', 'scheduler', 'gateway', 'audit', 'export', 'import', 'webhooks'], devOnly: ['1.5.0-rc1'], versions: ['1.4.2', '1.4.1', '1.4.0', '1.3.9'] }, env),
+      portal: Object.assign({ label: 'Portal services', services: ['portal', 'ingest', 'reports-api', 'mailer', 'sync'], devOnly: ['0.19.0-rc1'], versions: ['0.18.1', '0.18.0', '0.17.6'] }, env),
+      mobile: Object.assign({ label: 'Mobile services', services: ['mobile-api', 'mobile-worker', 'mobile-cron', 'mobile-web'], devOnly: ['3.3.0-rc4'], versions: ['3.2.1', '3.2.0', '3.1.7'] }, env),
+      billing: Object.assign({ label: 'billing', services: ['billing'], devOnly: ['1.5.0-rc1'], versions: ['1.4.2', '1.4.1', '1.4.0', '1.3.9'] }, env)
+    };
+    // Per service, all optional: any number of env files (git path -> S3 path) and one TOML (S3 path -> S3 path).
+    const E = '$' + '{env.name}', B = '$' + '{env.config_bucket}';
+    this.TOK = { E, B };
+    // E and B only help this mockup generate the per-environment paths; the service files hold complete paths.
+    const envFile = (svc, file) => ({ name: file, src: 'example-org/env-config-repo/' + E + '/' + svc + '/' + file, dst: 's3://' + B + '/env/' + svc + '/' + file });
+    this.SVC = {};
+    Object.keys(this.SETS).forEach((id) => this.SETS[id].services.forEach((n) => {
+      if (this.SVC[n]) return;
+      const d = { name: n, env: [], toml: [] };
+      if (this.SETS[id].type === 'toml') d.toml.push({ name: n + '.toml', src: 's3://main-config-bucket/' + E + '/' + n + '.toml', dst: 's3://' + B + '/toml/' + n + '.toml' });
+      else d.env.push(envFile(n, n + '.env'));
+      this.SVC[n] = d;
+    }));
+    this.SVC.gateway.env.push(envFile('gateway', 'routes.env'));
+    this.SVC['backend-api'].env.push(Object.assign(envFile('backend-api', 'backend-api.env'), { only: 'dev' }));
+    this.SVC['mobile-web'].env = [];
+    // Services that do not exist in every environment.
+    this.NOT_IN = { 'mobile-cron': ['hetzner-03'], 'reports-api': ['prod-01'], search: ['preprod-01', 'prod-01'] };
+    // Sample analytics for the Overview: runs per day for 14 to 27 November, per environment label.
+    this.OV = {
+      dev: { ok: [1, 0, 7, 9, 6, 11, 8, 0, 2, 9, 10, 7, 5, 2], fail: [0, 0, 1, 2, 0, 2, 1, 0, 0, 1, 3, 1, 1, 2], prev: 78, prevRate: 88, med: '2m 12s', medDelta: '9s faster than the previous 14 days' },
+      preprod: { ok: [0, 0, 1, 2, 1, 2, 1, 0, 0, 1, 2, 1, 1, 1], fail: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0], prev: 12, prevRate: 92, med: '3m 05s', medDelta: '14s slower than the previous 14 days' },
+      prod: { ok: [0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0], fail: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], prev: 7, prevRate: 100, med: '4m 30s', medDelta: 'Same as the previous 14 days' },
+      all: { prevRate: 89, med: '2m 41s', medDelta: '6s faster than the previous 14 days' }
+    };
+    this.OVFAIL = {
+      all: [['billing', 4, 'Health checks failed'], ['catalog', 3, 'AccessDenied on iam:PassRole'], ['mobile-worker', 3, 'Health checks failed'], ['backend-socket', 2, 'Config copy was denied by S3'], ['gateway', 2, 'Health checks failed']],
+      dev: [['billing', 3, 'Health checks failed'], ['catalog', 3, 'AccessDenied on iam:PassRole'], ['mobile-worker', 2, 'Health checks failed'], ['backend-socket', 2, 'Config copy was denied by S3'], ['gateway', 2, 'Health checks failed']],
+      preprod: [['billing', 1, 'Health checks failed'], ['mobile-worker', 1, 'Health checks failed']],
+      prod: []
+    };
+    this.JOBS = [
+      { id: 'deploy-backend', title: 'Backend and microservices', folder: 'Backend', groups: ['backends', 'microservices'], approval: ['prod'], slack: '#deployments' },
+      { id: 'deploy-billing', title: 'Billing service only', folder: 'Backend', groups: ['billing'], approval: [], slack: '#deployments' },
+      { id: 'deploy-portal', title: 'Portal services', folder: 'Portal', groups: ['portal'], approval: [], slack: '#deployments' },
+      { id: 'deploy-mobile', title: 'Mobile services', folder: 'Mobile', groups: ['mobile'], approval: ['prod'], slack: '#deployments' },
+      { id: 'deploy-platform', title: 'Platform release', folder: 'Releases', groups: ['backends', 'microservices', 'portal', 'mobile'], approval: ['preprod', 'prod'], slack: '#releases' },
+      { id: 'publish-report-tool', title: 'Publish the report tool', folder: 'Tools', groups: [], script: true, approval: [], slack: '#deployments' }
+    ];
+    this.JOBS.forEach((j) => { j.repo = 'example-org/deploy-jobs'; j.branch = 'main'; j.path = 'jobs/' + j.id + '.yaml'; });
+    this.JOBS[2].repo = 'example-org/portal'; this.JOBS[2].path = 'deploy/yumdrake.yaml';
+    this.JOBS[3].repo = 'example-org/mobile'; this.JOBS[3].path = 'deploy/yumdrake.yaml';
+    this.GROUPS = { devops: 'DevOps', 'senior-qa': 'Senior QA', qa: 'QA', developers: 'Developers' };
+    this.USERS = [
+      { id: 'dana', name: 'Dana Levi', group: 'devops', src: 'SSO', email: 'dana@example.com', last: 'Today 08:41' },
+      { id: 'noa', name: 'Noa Peretz', group: 'senior-qa', src: 'SSO', email: 'noa@example.com', last: 'Today 13:55' },
+      { id: 'omer', name: 'Omer Katz', group: 'qa', src: 'SSO', email: 'omer@example.com', last: 'Today 11:20' },
+      { id: 'lior', name: 'Lior Amar', group: 'developers', src: 'SSO', email: 'lior@example.com', last: 'Yesterday' }
+    ];
+    const sel = {};
+    Object.keys(this.SETS).forEach((id) => {
+      const svc = {}; this.SETS[id].services.forEach((n) => { svc[n] = true; });
+      sel[id] = { version: '', open: false, svc, ovr: {} };
+    });
+    const full = (ids) => ids.map((id) => {
+      const g = this.SETS[id];
+      return { id, label: g.label, cfgUse: g.cfgUse, stepCfg: 'config-' + id, stepRoll: 'roll-' + id, version: g.versions[0], services: g.services.map((n) => ({ name: n, version: g.versions[0] })) };
+    });
+    this.D = {
+      userId: null, screen: 'overview', jobId: 'deploy-backend', jobTab: 'history', errOnly: false, q: '',
+      ovLabel: 'all', ovDay: null, histStatus: 'all', histEnv: 'all', runsStatus: 'all', runsEnv: 'all', runsQ: '', logQ: '', verQ: '', verMode: 'all', invSvcQ: '', invSvcEnv: 'all', folder: 'All', envId: 'hetzner-01', sel, scriptVersion: '0.9.0',
+      tick: 0, nextId: 1042, runId: null, selStep: null, jobs: this.JOBS, jobSynced: 'read 12 minutes ago',
+      jobForm: { open: false, title: '', folder: '', conn: 'example-org', repo: '', branch: 'main', path: '' },
+      folders: ['Backend', 'Portal', 'Mobile', 'Releases', 'Tools'], folderForm: { open: false, name: '' },
+      aws: [
+        { name: 'dev', id: dev, method: 'Role', detail: 'arn:aws:iam::' + dev + ':role/yumdrake-deploy', status: 'Connected' },
+        { name: 'preprod', id: pre, method: 'Access key', detail: 'Key ID ending 7Q2F, secret stored encrypted', status: 'Connected' },
+        { name: 'prod', id: prod, method: 'Role', detail: 'arn:aws:iam::' + prod + ':role/yumdrake-deploy', status: 'Connected' }
+      ],
+      awsForm: { open: false, name: '', id: '', method: 'role', role: '', ext: '', key: '', secret: '' },
+      gh: [{ name: 'example-org', method: 'GitHub App', detail: 'Read-only on deploy-jobs, yumdrake-config, env-config-repo, portal, mobile', status: 'Connected' }],
+      ghForm: { open: false, name: '', method: 'app', secret: '' },
+      invSrc: { conn: 'example-org', repo: 'example-org/yumdrake-config', branch: 'main', path: 'inventory/' }, invSaved: false,
+      invTab: 'envs', invEnv: 'hetzner-01', invSvc: 'orders', synced: '12 minutes ago', admTab: 'users', ssoTested: false,
+      perms: {
+        devops: { admin: true, deploy: {}, approve: {} },
+        'senior-qa': { deploy: { dev: true, preprod: true, prod: true }, approve: { dev: true, preprod: true, prod: true } },
+        qa: { deploy: { dev: true }, approve: {} },
+        developers: { deploy: {}, approve: {} }
+      },
+      runs: [
+        { id: 1041, job: 'deploy-backend', env: 'prod-01', by: 'Noa Peretz', via: 'Web', when: 'Today 14:02', mode: 'waiting', scenario: 'ok', groups: full(['backends']) },
+        { id: 1040, job: 'deploy-backend', env: 'hetzner-01', by: 'Omer Katz', via: 'Web', when: 'Today 11:26', mode: 'done', scenario: 'svc', groups: full(['microservices']) },
+        { id: 1039, job: 'deploy-platform', env: 'hetzner-02', by: 'ci-pipeline', via: 'CLI', when: 'Today 09:40', mode: 'done', scenario: 'cfg', groups: full(['backends', 'microservices', 'portal', 'mobile']) },
+        { id: 1038, job: 'deploy-portal', env: 'preprod-01', by: 'Dana Levi', via: 'Web', when: 'Yesterday 17:15', mode: 'done', scenario: 'ok', groups: full(['portal']) },
+        { id: 1037, job: 'deploy-backend', env: 'hetzner-03', by: 'Omer Katz', via: 'Web', when: 'Yesterday 15:02', mode: 'done', scenario: 'api', groups: full(['backends', 'microservices']) },
+        { id: 1036, job: 'deploy-backend', env: 'hetzner-01', by: 'Dana Levi', via: 'CLI', when: 'Yesterday 10:11', mode: 'done', scenario: 'ok', groups: full(['backends', 'microservices']) },
+        { id: 1035, job: 'deploy-billing', env: 'hetzner-01', by: 'Omer Katz', via: 'Web', when: 'Yesterday 09:30', mode: 'done', scenario: 'ok', groups: full(['billing']) },
+        { id: 1034, job: 'deploy-backend', env: 'hetzner-02', by: 'Omer Katz', via: 'Web', when: '25 Nov 16:40', mode: 'done', scenario: 'cfg', groups: full(['backends']) },
+        { id: 1031, job: 'deploy-backend', env: 'preprod-01', by: 'Noa Peretz', via: 'Web', when: '25 Nov 11:05', mode: 'done', scenario: 'ok', groups: full(['backends', 'microservices']) }
+      ],
+      audit: [
+        { when: 'Today 14:02', who: 'Noa Peretz', text: 'Requested run #1041 of "Backend and microservices" in prod-01' },
+        { when: 'Today 08:50', who: 'Dana Levi', text: 'Granted Senior QA: approve in prod' },
+        { when: 'Yesterday 16:30', who: 'Dana Levi', text: 'Mapped identity provider group qa-senior to Senior QA' }
+      ]
+    };
+  }
+  S() { if (!this.D) this.init(); return Object.assign({}, this.D, this.state || {}); }
+  componentDidMount() {
+    this.timer = setInterval(() => {
+      const s = this.S();
+      if (s.runs.some((r) => r.mode === 'live' && s.tick - r.start < 9)) this.setState({ tick: s.tick + 1 });
+    }, 900);
+  }
+  componentWillUnmount() { clearInterval(this.timer); }
+  updSel(key, patch) {
+    const s = this.S();
+    const next = Object.assign({}, s.sel); next[key] = Object.assign({}, s.sel[key], patch);
+    this.setState({ sel: next });
+  }
+  log(who, text) { return [{ when: 'Just now', who, text }].concat(this.S().audit); }
+  can(s, user, action, stage) { const p = s.perms[user.group]; return !!(p.admin || (p[action] && p[action][stage])); }
+  label(status) { return { succeeded: 'Succeeded', failed: 'Failed', running: 'Running', pending: 'Not started', skipped: 'Skipped', waiting: 'Waiting for approval', rejected: 'Rejected' }[status]; }
+  compute(run, tick) {
+    const t = run.mode === 'done' ? 99 : run.mode === 'live' ? tick - run.start : -1;
+    const last = run.groups.length - 1;
+    let failed = [], ok = 0, total = 0, busy = false, bad = false, solo = null;
+    const failures = [], skipped = [];
+    const WHY = {
+      health: { short: 'health checks failed', reason: 'The new tasks failed their container health checks, so the new version never became stable. ECS kept the previous version running.' },
+      api: { short: 'AccessDenied on iam:PassRole', reason: 'AWS refused ecs:RegisterTaskDefinition with AccessDeniedException: the Yumdrake role is not allowed to pass this service\'s task role (iam:PassRole). The service was not changed.' },
+      cfg: { short: 'AccessDenied on s3:PutObject', reason: 'AWS refused s3:PutObject on the environment config bucket with 403 AccessDenied, so no config files were copied.' }
+    };
+    if (run.script) { solo = t < 0 ? 'pending' : t < 4 ? 'running' : 'succeeded'; if (solo !== 'succeeded') busy = true; }
+    const lanes = run.groups.map((g, gi) => {
+      let cfg = t < 0 ? 'pending' : t < 2 ? 'running' : (run.scenario === 'cfg' && gi === 0) ? 'failed' : 'succeeded';
+      const legs = g.services.map((sv, i) => {
+        let st = 'pending', kind = '';
+        if (cfg === 'failed') st = 'skipped';
+        else if (cfg === 'succeeded') {
+          if (t < 3 + (i % 4)) st = 'running';
+          else if (run.scenario === 'svc' && gi === last && i === 1) { st = 'failed'; kind = 'health'; }
+          else if (run.scenario === 'api' && gi === last && i === 2) { st = 'failed'; kind = 'api'; }
+          else st = 'succeeded';
+        }
+        total++; if (st === 'succeeded') ok++; if (st === 'running') busy = true;
+        if (st === 'failed') { failed.push(sv.name); failures.push(Object.assign({ what: sv.name, type: 'Service', step: g.stepRoll, scope: g.stepRoll + '::' + sv.name }, WHY[kind])); }
+        return { name: sv.name, version: sv.version, cls: st, kind, statusLabel: this.label(st) };
+      });
+      let roll = 'pending';
+      if (cfg === 'failed') roll = 'skipped';
+      else if (legs.some((l) => l.cls === 'running')) roll = 'running';
+      else if (legs.some((l) => l.cls === 'failed')) roll = 'failed';
+      else if (legs.length && legs.every((l) => l.cls === 'succeeded')) roll = 'succeeded';
+      if (cfg === 'running' || roll === 'pending') busy = true;
+      if (cfg === 'failed') {
+        bad = true; failed.push(g.stepCfg);
+        failures.push(Object.assign({ what: g.stepCfg, type: 'Step', step: g.stepCfg, scope: g.stepCfg }, WHY.cfg));
+        skipped.push({ text: g.stepRoll + ' was skipped because it needs ' + g.stepCfg + '. Its ' + legs.length + ' services were not touched.' });
+      }
+      if (roll === 'failed') bad = true;
+      const done = legs.filter((l) => l.cls === 'succeeded').length;
+      return { g, cfg, roll, legs, progress: done + ' of ' + legs.length + ' services updated' };
+    });
+    const overall = run.mode === 'waiting' ? 'waiting' : run.mode === 'rejected' ? 'rejected' : busy ? 'running' : bad ? 'failed' : 'succeeded';
+    return { lanes, solo, overall, failed, failures, skipped, ok, total };
+  }
+  stripOf(c) {
+    const cells = [];
+    c.lanes.forEach((ln, gi) => ln.legs.forEach((l, i) => cells.push({ cls: 'c-' + l.cls + (gi > 0 && i === 0 ? ' gap' : ''), tip: l.name + ' ' + l.version + ': ' + l.statusLabel.toLowerCase() })));
+    return cells;
+  }
+  avail(name, envId) { return (this.NOT_IN[name] || []).indexOf(envId) < 0; }
+  cfgFiles(name, env) {
+    const d = this.SVC[name], res = (p) => p.split(this.TOK.E).join(env.id).split(this.TOK.B).join(env.bucket);
+    const one = (kind) => (f) => ({ kind, name: f.name, src: res(f.src), dst: res(f.dst) });
+    return d.env.filter((f) => !f.only || f.only === env.stage).map(one('env')).concat(d.toml.map(one('toml')));
+  }
+  resultOf(run, c) {
+    if (c.overall === 'waiting') return 'Waiting for approval. Nothing has run yet.';
+    if (c.overall === 'rejected') return 'Rejected' + (run.decidedBy ? ' by ' + run.decidedBy : '') + '. Nothing ran.';
+    const count = c.total ? c.ok + ' of ' + c.total + ' services updated' : '';
+    if (c.overall === 'running') return c.total ? count + ' so far' : 'The script is running';
+    if (c.overall === 'failed') return 'Failed: ' + c.failures.map((f) => f.what + ' (' + f.short + ')').join(', ') + '. ' + count + '.';
+    return c.total === 1 ? 'The service was updated' : c.total ? 'All ' + c.total + ' services updated' : 'Script finished and the zip was uploaded';
+  }
+  durationOf(run, c) {
+    if (c.overall === 'waiting' || c.overall === 'rejected') return '-';
+    if (c.overall === 'running') return 'Running';
+    return (1 + run.id % 3) + 'm ' + (run.id * 13 % 60) + 's';
+  }
+  consoleFor(run, c, env, jobId) {
+    const m = /(\d\d):(\d\d)/.exec(run.when), base = m ? (+m[1]) * 3600 + (+m[2]) * 60 : 52200;
+    const p2 = (n) => String(n).padStart(2, '0');
+    const out = [];
+    const add = (sec, step, svc, lvl, text) => {
+      const x = base + sec;
+      out.push({ sec, step, svc, lvl, t: p2(Math.floor(x / 3600) % 24) + ':' + p2(Math.floor(x / 60) % 60) + ':' + p2(x % 60), text: (step ? '[' + step + (svc ? ' / ' + svc : '') + '] ' : '') + text });
+    };
+    const hex = (n) => ((run.id * 2654435761 + n * 40503) >>> 0).toString(16).padStart(8, '0');
+    add(0, '', '', 'info', 'Run #' + run.id + ' of ' + jobId + ', started by ' + run.by + ' via ' + run.via);
+    if (run.mode === 'waiting') { add(0, '', '', 'warn', 'Waiting for approval. Nothing has run yet.'); return out; }
+    if (run.mode === 'rejected') { add(0, '', '', 'warn', 'The request was rejected' + (run.decidedBy ? ' by ' + run.decidedBy : '') + '. Nothing ran.'); return out; }
+    const keyed = env.stage === 'preprod';
+    const actor = keyed ? 'arn:aws:iam::' + env.account + ':user/yumdrake' : 'arn:aws:sts::' + env.account + ':assumed-role/yumdrake-deploy/run-' + run.id;
+    add(0, '', '', 'info', 'Environment ' + env.id + ' (' + env.stage + '), AWS account ' + env.account);
+    add(0, '', '', 'info', keyed ? 'sts:GetCallerIdentity -> 200, using the stored access key as ' + actor : 'sts:AssumeRole arn:aws:iam::' + env.account + ':role/yumdrake-deploy -> 200, session run-' + run.id);
+    if (run.script && c.solo !== 'pending') {
+      const st = 'build-report-tool';
+      add(1, st, '', 'info', 'step started (run), container python:3.12-slim');
+      add(3, st, '', 'info', '$ pip install -r requirements.txt');
+      add(9, st, '', 'info', 'Successfully installed 14 packages');
+      add(9, st, '', 'info', '$ ./build.sh');
+      if (c.solo === 'succeeded') {
+        add(31, st, '', 'info', 'build: wrote 38 files to dist/');
+        add(33, st, '', 'info', 'container exited with code 0');
+        add(36, st, '', 'info', 's3:PutObject s3://artifacts-bucket/report-tool/' + run.scriptVersion + '.zip -> 200');
+        add(38, st, '', 'ok', 'step succeeded in 38s');
+      }
+    }
+    c.lanes.forEach((ln) => {
+      const g = ln.g, n = g.services.length, cs = g.stepCfg, rs = g.stepRoll;
+      if (ln.cfg === 'pending') return;
+      const files = [];
+      // Env files come from the branch named after the version being deployed (v<version>); if there is none, from dev.
+      const repo = 'example-org/env-config-repo', branchOf = (v) => /rc/.test(v) ? 'dev' : 'v' + v, wanted = [];
+      g.services.forEach((sv) => this.cfgFiles(sv.name, env).forEach((f) => {
+        if (f.kind === 'env' && wanted.indexOf(sv.version) < 0) wanted.push(sv.version);
+        files.push({ svc: sv.name, dst: f.dst, text: f.kind === 'env' ? 'env file ' + f.name + ': ' + repo + '@' + branchOf(sv.version) + ':' + f.src.replace(repo + '/', '') + ' -> s3:PutObject ' + f.dst : 'TOML ' + f.name + ': s3:CopyObject ' + f.src + ' -> ' + f.dst });
+      }));
+      add(1, cs, '', 'info', 'step started (copy-config), ' + files.length + ' files set on ' + n + (n === 1 ? ' service' : ' services'));
+      wanted.forEach((v) => {
+        if (branchOf(v) === 'dev') add(1, cs, '', 'warn', 'git ls-remote ' + repo + ' refs/heads/v' + v + ' -> no such branch, reading env files from branch dev instead (commit 5d20b7f)');
+        else add(1, cs, '', 'info', 'git ls-remote ' + repo + ' refs/heads/v' + v + ' -> found, reading env files from branch v' + v + ' (commit 9c41e7a)');
+      });
+      if (ln.cfg === 'running') return;
+      if (ln.cfg === 'failed') {
+        const f = files[0] || { svc: '', dst: 's3://' + env.bucket, text: 's3:HeadBucket s3://' + env.bucket };
+        add(2, cs, f.svc, 'err', f.text + ' -> 403 AccessDenied');
+        add(2, cs, f.svc, 'err', 'AccessDenied: User: ' + actor + ' is not authorized to perform: s3:PutObject on resource: "arn:aws:s3:::' + f.dst.replace('s3://', '') + '" because no identity-based policy allows the s3:PutObject action (RequestId: ' + hex(1).toUpperCase() + '7Q2FJ8K3)');
+        add(3, cs, '', 'err', 'step failed after 2s. 0 of ' + files.length + ' files copied.');
+        add(3, rs, '', 'warn', 'skipped: this step needs ' + cs + ', which failed. No service was touched.');
+        return;
+      }
+      files.forEach((f) => add(3, cs, f.svc, 'info', f.text + ' -> 200'));
+      g.services.forEach((sv) => { if (!this.cfgFiles(sv.name, env).length) add(3, cs, sv.name, 'info', 'no env files or TOMLs set for this service in ' + env.id + ', nothing to copy'); });
+      add(4, cs, '', 'ok', 'step succeeded in 4s, ' + files.length + ' files copied');
+      add(5, rs, '', 'info', 'step started (ecs-deploy), ' + n + ' services, one parallel leg each');
+      let rollEnd = 5;
+      ln.legs.forEach((l, i) => {
+        if (l.cls === 'pending') return;
+        const b = 5 + (i % 4), rev = 41 + i, image = env.registry + '.dkr.ecr.' + env.region + '.amazonaws.com/' + l.name + ':' + l.version;
+        const say = (sec, lvl, text) => { add(sec, rs, l.name, lvl, text); rollEnd = Math.max(rollEnd, sec); };
+        say(b, 'info', 'ecs:DescribeServices arn:aws:ecs:' + env.region + ':' + env.account + ':service/' + env.cluster + '/' + l.name + ' -> 200, running ' + l.name + ':' + (rev - 1) + ', 2 of 2 tasks');
+        say(b, 'info', 'ecr:DescribeImages repository=' + l.name + ' imageTag=' + l.version + ' -> 200, image found');
+        if (l.kind === 'api') {
+          say(b + 1, 'err', 'ecs:RegisterTaskDefinition family=' + l.name + ' image=' + image + ' -> 400 AccessDeniedException');
+          say(b + 1, 'err', 'AccessDeniedException: User: ' + actor + ' is not authorized to perform: iam:PassRole on resource: arn:aws:iam::' + env.account + ':role/' + l.name + '-task-role because no identity-based policy allows the iam:PassRole action (RequestId: ' + hex(i) + '-52c1-4e0b-9a6f-3d7e1b20c4a8)');
+          say(b + 1, 'err', 'FAILED after 1s. The service was not changed and still runs ' + l.name + ':' + (rev - 1) + '.');
+          return;
+        }
+        say(b + 1, 'info', 'ecs:RegisterTaskDefinition family=' + l.name + ' image=' + image + ' -> 200, ' + l.name + ':' + rev);
+        say(b + 1, 'info', 'ecs:UpdateService service=' + l.name + ' taskDefinition=' + l.name + ':' + rev + ' -> 200, deployment ecs-svc/' + (1000000000 + run.id * 7919 + i * 104729));
+        say(b + 2, 'info', 'waiting for the service to become stable');
+        if (l.cls === 'running') return;
+        if (l.kind === 'health') {
+          const task = hex(i + 7) + 'c0e44b7a9d12f3a65e08b1c7';
+          say(b + 38, 'info', 'ecs event: (service ' + l.name + ') has started 2 tasks: (task ' + task + ').');
+          say(b + 97, 'err', 'ecs event: (service ' + l.name + ') (task ' + task + ') failed container health checks.');
+          say(b + 98, 'err', 'ecs:DescribeTasks -> 200, stoppedReason: "Task failed container health checks", container ' + l.name + ' exitCode 1');
+          say(b + 126, 'err', 'ecs event: (service ' + l.name + ') deployment failed: tasks failed to start.');
+          say(b + 126, 'err', 'FAILED after 2m 6s: the new tasks did not pass health checks. ECS kept ' + l.name + ':' + (rev - 1) + ' (the previous version) running.');
+          return;
+        }
+        say(b + 34, 'info', 'ecs event: (service ' + l.name + ') has started 2 tasks.');
+        say(b + 66, 'info', 'ecs event: (service ' + l.name + ') has reached a steady state.');
+        say(b + 66, 'ok', 'stable on ' + l.version + ' (' + l.name + ':' + rev + '), 2 of 2 tasks running, in 1m 6s');
+      });
+      const done = ln.legs.filter((l) => l.cls === 'succeeded').length;
+      if (ln.roll === 'succeeded') add(rollEnd + 1, rs, '', 'ok', 'step succeeded: ' + done + ' of ' + n + ' services updated');
+      if (ln.roll === 'failed') add(rollEnd + 1, rs, '', 'err', 'step failed: ' + done + ' of ' + n + ' services updated. Failed: ' + ln.legs.filter((l) => l.cls === 'failed').map((l) => l.name).join(', '));
+    });
+    const end = out.reduce((mx, l) => Math.max(mx, l.sec), 0) + 1;
+    if (c.overall === 'succeeded') add(end, '', '', 'ok', 'Run succeeded.' + (c.total ? ' ' + c.ok + ' of ' + c.total + ' services updated.' : ''));
+    if (c.overall === 'failed') add(end, '', '', 'err', 'Run failed. ' + c.ok + ' of ' + c.total + ' services updated. Failed: ' + c.failed.join(', ') + '.');
+    return out.sort((a, b) => a.sec - b.sec);
+  }
+  what(run) {
+    if (run.script) return 'Report tool version ' + run.scriptVersion;
+    return run.groups.map((g) => g.label + ' ' + g.version + (g.services.length > 1 ? ' (' + g.services.length + ')' : '')).join(', ');
+  }
+  yamlFor(job) {
+    const L = ['job: ' + job.id, 'title: "' + job.title + '"', '', 'environment:              # the one environment picker', '  labels: [dev, preprod, prod]', ''];
+    const steps = [];
+    if (job.script) {
+      L.push('inputs:                   # becomes the Options box', '  - name: version', '    type: text', '    label: Version', '');
+      L.push('notify:', '  slack: "' + job.slack + '"', '', 'steps:', '  - name: build-report-tool', '    use: run', '    image: python:3.12-slim', '    commands:', '      - pip install -r requirements.txt', '      - ./build.sh', '    outputs:', '      - zip: dist/', '        to: s3://artifacts-bucket/report-tool/$' + '{inputs.version}.zip');
+      steps.push({ name: 'build-report-tool', use: 'run', desc: 'Runs the listed commands in a container, then zips the result and uploads it to S3. The one step type for scripts.' });
+      return { yaml: L.join('\n'), steps };
+    }
+    L.push('groups:                   # the services this job deploys; becomes the service and version pickers');
+    job.groups.forEach((id) => {
+      const g = this.SETS[id];
+      L.push('  ' + id + ':', '    label: ' + g.label);
+      if (g.services.length <= 5) L.push('    services: [' + g.services.join(', ') + ']');
+      else L.push('    services:', ...g.services.map((n) => '      - ' + n));
+    });
+    L.push('');
+    if (job.approval.length) L.push('approval:', '  when:', '    labels: [' + job.approval.join(', ') + ']');
+    else L.push('# no approval block: this job never asks, in any environment');
+    L.push('notify:', '  slack: "' + job.slack + '"', '', 'steps:');
+    job.groups.forEach((id) => {
+      const g = this.SETS[id];
+      L.push('  - name: config-' + id, '    use: copy-config          # paths come from each service in the inventory', '    group: ' + id, '');
+      L.push('  - name: roll-' + id, '    use: ecs-deploy', '    group: ' + id, '    needs: [config-' + id + ']', '    each: service', '');
+      steps.push({ name: 'config-' + id, use: g.cfgUse, desc: 'For each selected service, copies its env files (git to S3) and its TOMLs (S3 to S3), using the paths set on the service in the inventory. Env files are read from the branch named after the version being deployed, such as v2.212.0, or from dev when that branch does not exist. A service with no files is left alone.' });
+      steps.push({ name: 'roll-' + id, use: 'ecs-deploy', desc: 'Needs config-' + id + '. One leg per selected service; a failed leg does not stop the others.' });
+    });
+    return { yaml: L.join('\n'), steps };
+  }
+  renderVals() {
+    const s = this.S();
+    const scenario = { 'All steps succeed': 'ok', 'One service fails': 'svc', 'AWS API error on a service': 'api', 'Config copy fails': 'cfg' }[this.props.scenario ?? 'One service fails'] || 'svc';
+    const set = (patch) => () => this.setState(patch);
+    const user = this.USERS.find((u) => u.id === s.userId) || this.USERS[0];
+    const isAdminUser = !!s.perms[user.group].admin;
+    let screen = s.screen;
+    if (screen === 'admin' && !isAdminUser) screen = 'overview';
+    const chipsFor = (key, defs) => defs.map((d) => { const p = {}; p[key] = d[0]; return { label: d[1], on: s[key] === d[0], cls: s[key] === d[0] ? 'on' : '', pick: set(p) }; });
+    const statusDefs = [['all', 'All'], ['failed', 'Failed'], ['succeeded', 'Succeeded'], ['running', 'Running'], ['waiting', 'Waiting']];
+    const svcCount = (j) => j.groups.reduce((sum, id) => sum + this.SETS[id].services.length, 0);
+    const envOf = (id) => this.ENVS.find((e) => e.id === id);
+    const jobOf = (id) => s.jobs.find((j) => j.id === id);
+    const fld = (form, key) => (e) => { const o = Object.assign({}, s[form]); o[key] = e.target.value; const p = {}; p[form] = o; this.setState(p); };
+    const openForm = (form, open) => () => { const p = {}; p[form] = Object.assign({}, s[form], { open }); this.setState(p); };
+    const job = jobOf(s.jobId), env = envOf(s.envId);
+    const tagsFor = (g, e) => (e.stage === 'dev' ? g.devOnly : []).concat(g.versions);
+
+    const approveRule = (run) => {
+      const stage = envOf(run.env).stage;
+      if (isAdminUser) return { ok: true, reason: 'You are a global admin and may approve this.' };
+      if (!this.can(s, user, 'approve', stage)) return { ok: false, reason: 'Your role (' + this.GROUPS[user.group] + ') may not approve in ' + stage + '.' };
+      if (run.by === user.name) return { ok: false, reason: 'You started this run, so someone else has to approve it.' };
+      return { ok: true, reason: 'Your role may approve in ' + stage + '.' };
+    };
+    const decide = (run, mode) => () => {
+      const runs = s.runs.map((r) => r.id === run.id ? Object.assign({}, r, { mode, start: s.tick, decidedBy: user.name }) : r);
+      this.setState({ runs, audit: this.log(user.name, (mode === 'live' ? 'Approved' : 'Rejected') + ' run #' + run.id) });
+    };
+    const openRun = (id) => set({ screen: 'run', runId: id, selStep: null, errOnly: false, logQ: '' });
+    const openJob = (id, envId) => set(Object.assign({ screen: 'job', jobId: id, jobTab: 'history' }, envId ? { envId } : {}));
+
+    const waiting = s.runs.filter((r) => r.mode === 'waiting');
+    const navKey = screen === 'job' ? 'jobs' : (screen === 'run' || screen === 'history') ? 'runs' : screen;
+    const nv = {}, go = {};
+    ['overview', 'jobs', 'runs', 'approvals', 'versions', 'inventory', 'cli', 'admin'].forEach((k) => { nv[k] = navKey === k ? 'on' : ''; go[k] = set({ screen: k === 'runs' ? 'history' : k }); });
+
+    const rowOf = (r) => {
+      const c = this.compute(r, s.tick);
+      const fail = c.overall === 'failed' ? c.failures.map((f) => f.what + ': ' + f.short).join('; ') + (c.skipped.length ? '. ' + c.skipped.length + (c.skipped.length === 1 ? ' step skipped' : ' steps skipped') : '') : c.overall === 'rejected' ? 'Rejected' + (r.decidedBy ? ' by ' + r.decidedBy : '') : '';
+      const title = jobOf(r.job).title;
+      return {
+        id: r.id, jobId: r.job, result: this.resultOf(r, c), duration: this.durationOf(r, c), job: title, env: r.env, stage: envOf(r.env).stage, what: this.what(r), by: r.by, via: r.via, when: r.when,
+        cls: c.overall, statusLabel: this.label(c.overall), open: openRun(r.id), openJob: openJob(r.job), strip: this.stripOf(c), okCount: c.total ? c.ok + '/' + c.total : '', fail,
+        hay: (title + ' ' + r.job + ' ' + r.by + ' ' + r.env + ' ' + r.groups.map((g) => g.services.map((x) => x.name).join(' ')).join(' ')).toLowerCase()
+      };
+    };
+    const runs = s.runs.map(rowOf);
+    const approvals = waiting.map((r) => { const rule = approveRule(r); return Object.assign(rowOf(r), { reason: rule.reason, cannot: !rule.ok, approve: decide(r, 'live'), reject: decide(r, 'rejected') }); });
+
+    const q = s.q.trim().toLowerCase();
+    const folderNames = ['All'].concat(s.folders);
+    const jf = s.jobForm, ff = s.folderForm, newFolder = ff.name.trim();
+    const createFolder = () => this.setState({ folders: s.folders.concat([newFolder]), folderForm: Object.assign({}, this.D.folderForm), folder: newFolder, q: '', audit: this.log(user.name, 'Created folder "' + newFolder + '"') });
+    const moveJob = (j) => (e) => {
+      const to = e.target.value;
+      this.setState({ jobs: s.jobs.map((x) => x.id === j.id ? Object.assign({}, x, { folder: to }) : x), audit: this.log(user.name, 'Moved job "' + j.title + '" to folder "' + to + '"') });
+    };
+    const addJob = () => {
+      const slug = ((jf.path.split('/').pop() || '').replace(/\.ya?ml$/, '') === 'yumdrake' ? jf.title : (jf.path.split('/').pop() || jf.title)).replace(/\.ya?ml$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'new-job';
+      const nj = { id: slug, title: jf.title, folder: jf.folder || s.folders[0], groups: ['portal'], approval: [], slack: '#deployments', repo: jf.repo, branch: jf.branch || 'main', path: jf.path, standIn: true };
+      this.setState({ jobs: s.jobs.concat([nj]), jobForm: Object.assign({}, this.D.jobForm), screen: 'job', jobId: nj.id, jobTab: 'history', folder: 'All', q: '', audit: this.log(user.name, 'Added job "' + nj.title + '" from ' + nj.repo + ' : ' + nj.path) });
+    };
+    const shown = s.jobs.filter((j) => (s.folder === 'All' || j.folder === s.folder) && (!q || (j.id + ' ' + j.title + ' ' + j.folder).toLowerCase().indexOf(q) >= 0));
+    const jobRow = (j) => {
+      const lastRun = runs.find((r) => r.jobId === j.id), n = svcCount(j);
+      return {
+        id: j.id, title: j.title, folder: j.folder, canMove: isAdminUser, move: moveJob(j), open: openJob(j.id),
+        deploys: j.script ? 'Runs a script' : n === 1 ? this.SETS[j.groups[0]].services[0] : n + ' services',
+        approval: j.approval.length ? 'In ' + j.approval.join(', ') : 'None',
+        lastCls: lastRun ? lastRun.cls : 'never', lastLabel: lastRun ? lastRun.statusLabel : 'Never run',
+        lastMeta: lastRun ? '#' + lastRun.id + ' in ' + lastRun.env + ', ' + lastRun.when : '', strip: lastRun ? lastRun.strip : []
+      };
+    };
+    const secNames = s.folder === 'All' ? s.folders : [s.folder];
+    const cat = {
+      q: s.q, setQ: (e) => this.setState({ q: e.target.value }),
+      adminBar: isAdminUser, moveHead: isAdminUser ? 'Folder' : '', noMatch: !!q && shown.length === 0,
+      sections: secNames.map((name) => {
+        const rows = shown.filter((j) => j.folder === name).map(jobRow);
+        return { name, rows, countLabel: rows.length + (rows.length === 1 ? ' job' : ' jobs'), empty: rows.length === 0 };
+      }).filter((sec) => !q || sec.rows.length),
+      folders: folderNames.map((f) => ({ label: f, on: s.folder === f, cls: s.folder === f ? 'on' : '', pick: set({ folder: f }) })),
+      folderOpts: s.folders.map((name) => ({ name })), formFolder: jf.folder || s.folders[0],
+      folderOpen: isAdminUser && ff.open, openFolder: openForm('folderForm', true), closeFolder: openForm('folderForm', false),
+      ff, setFolderName: fld('folderForm', 'name'), cannotCreateFolder: !newFolder || s.folders.some((f) => f.toLowerCase() === newFolder.toLowerCase()), createFolder,
+      empty: shown.length === 0, emptyText: q ? 'No job matches your search.' : 'No jobs in this folder yet. To put one here, pick this folder in a job\'s Folder column.',
+      rows: shown.map((j) => {
+        const lastRun = runs.find((r) => r.job === j.title);
+        return { id: j.id, title: j.title, folder: j.folder, canMove: isAdminUser, cannotMove: !isAdminUser, move: moveJob(j), source: j.repo + ' : ' + j.path, open: openJob(j.id), deploys: j.script ? 'Runs a script, deploys nothing' : svcCount(j) === 1 ? '1 service: ' + this.SETS[j.groups[0]].services[0] : svcCount(j) + ' services', approval: j.approval.length ? 'Required in ' + j.approval.join(', ') : 'Never', last: lastRun ? lastRun.statusLabel + ' · ' + lastRun.env : 'Never run', lastCls: lastRun ? lastRun.cls : 'never' };
+      }),
+      count: s.jobs.length + ' jobs in ' + s.folders.length + ' folders. Each job has its own page, built from its YAML.',
+      canAdd: isAdminUser && !jf.open, formOpen: isAdminUser && jf.open, openForm: openForm('jobForm', true), closeForm: openForm('jobForm', false),
+      f: jf, conns: s.gh, setTitle: fld('jobForm', 'title'), setFolder: fld('jobForm', 'folder'), setConn: fld('jobForm', 'conn'), setRepo: fld('jobForm', 'repo'), setBranch: fld('jobForm', 'branch'), setPath: fld('jobForm', 'path'),
+      cannotAdd: !(jf.title && jf.repo && jf.path), add: addJob
+    };
+
+    const picked = [];
+    const groupsView = job.groups.map((key) => {
+        const g = this.SETS[key], gs = s.sel[key], tags = tagsFor(g, env), many = g.services.length > 1;
+        const version = tags.indexOf(gs.version) >= 0 ? gs.version : tags[0];
+        const here = g.services.filter((n) => this.avail(n, env.id)), on = here.filter((n) => gs.svc[n]), missing = g.services.length - here.length;
+        const all = here.length > 0 && on.length === here.length;
+        const ovrOf = (n) => tags.indexOf(gs.ovr[n]) >= 0 ? gs.ovr[n] : '';
+        if (on.length) picked.push({ id: key, label: g.label, cfgUse: g.cfgUse, config: g.config, stepCfg: 'config-' + key, stepRoll: 'roll-' + key, version, services: on.map((n) => ({ name: n, version: ovrOf(n) || version })) });
+        return {
+          label: g.label, config: g.config, all, version, open: gs.open, many,
+          note: many ? 'Each service brings its own env files and TOML paths from the inventory. The version list shows tags that exist in the ECR repo of every selected service.' : 'A single service. Its env files and TOML paths come from the inventory. Versions are the tags in its own ECR repo.',
+          countLabel: many ? on.length + ' of ' + here.length + ' selected' + (missing ? ' · ' + missing + ' not set up in ' + env.id : '') : (!here.length ? 'not set up in ' + env.id : all ? 'will be deployed' : 'not selected'),
+          openLabel: gs.open ? 'Hide individual services' : 'Pick individual services and versions',
+          versionOpts: tags.map((v, i) => ({ v, l: i === 0 ? v + ' (newest)' : v })),
+          toggleAll: () => { const svc = {}; g.services.forEach((n) => { svc[n] = !all; }); this.updSel(key, { svc }); },
+          setVersion: (e) => this.updSel(key, { version: e.target.value }),
+          toggleOpen: () => this.updSel(key, { open: !gs.open }),
+          services: g.services.map((n) => ({
+            name: n, missing: !this.avail(n, env.id), present: this.avail(n, env.id), on: this.avail(n, env.id) && !!gs.svc[n], ovr: ovrOf(n),
+            ovrOpts: [{ v: '', l: 'group version' }].concat(tags.map((v) => ({ v, l: v }))),
+            toggle: () => { const svc = Object.assign({}, gs.svc); svc[n] = !gs.svc[n]; this.updSel(key, { svc }); },
+            setOvr: (e) => { const ovr = Object.assign({}, gs.ovr); ovr[n] = e.target.value; this.updSel(key, { ovr }); }
+          }))
+        };
+    });
+    const summary = [];
+    if (job.script) {
+      summary.push({ text: 'Run the commands from the job YAML in a python:3.12-slim container' });
+      summary.push({ text: 'Zip dist/ and upload it to s3://artifacts-bucket/report-tool/' + s.scriptVersion + '.zip' });
+    }
+    picked.forEach((g) => {
+      const count = g.services.reduce((sum, x) => sum + this.cfgFiles(x.name, env).length, 0);
+      const hasEnvFiles = g.services.some((x) => this.cfgFiles(x.name, env).some((f) => f.kind === 'env'));
+      const tags = g.services.map((x) => x.version).filter((v, i, all) => all.indexOf(v) === i);
+      summary.push({ text: g.label + ': copy ' + count + ' config ' + (count === 1 ? 'file' : 'files') + ' to their S3 paths' + (hasEnvFiles ? '. Env files come from branch ' + tags.map((v) => 'v' + v).join(', ') + ' of the env config repo, or from dev if that branch does not exist' : '') });
+    });
+    picked.forEach((g) => {
+      const odd = g.services.filter((x) => x.version !== g.version).length;
+      summary.push({ text: 'Roll ' + (this.SETS[g.id].services.length > 1 ? g.services.length + ' ' + g.label.toLowerCase() : g.label) + ' to ' + g.version + (odd ? ' (' + odd + ' on a different version)' : '') + ', once the config copy has succeeded' });
+    });
+    const mayDeploy = this.can(s, user, 'deploy', env.stage);
+    const needsApproval = job.approval.indexOf(env.stage) >= 0;
+    const nothing = !job.script && picked.length === 0;
+    const start = () => {
+      const run = { id: s.nextId, job: job.id, env: env.id, by: user.name, via: 'Web', when: 'Just now', mode: needsApproval ? 'waiting' : 'live', start: s.tick, scenario, groups: picked, script: !!job.script, scriptVersion: s.scriptVersion };
+      this.setState({ runs: [run].concat(s.runs), nextId: s.nextId + 1, screen: 'run', runId: run.id, selStep: null, errOnly: false, logQ: '', audit: this.log(user.name, (needsApproval ? 'Requested' : 'Started') + ' run #' + run.id + ' of "' + job.title + '" in ' + env.id) });
+    };
+    const def = this.yamlFor(job);
+    const history = runs.filter((r) => r.jobId === job.id);
+    const finished = history.filter((r) => r.cls === 'succeeded' || r.cls === 'failed'), wins = finished.filter((r) => r.cls === 'succeeded');
+    const histShown = history.filter((r) => (s.histStatus === 'all' || r.cls === s.histStatus) && (s.histEnv === 'all' || r.env === s.histEnv));
+    const envOpts = [{ id: 'all', label: 'All environments' }].concat(this.ENVS.map((e) => ({ id: e.id, label: e.id + ' (' + e.stage + ')' })));
+    const jobSvc = svcCount(job);
+    const dep = {
+      id: job.id, title: job.title, folder: job.folder, back: set({ screen: 'jobs' }),
+      deploys: job.script ? 'Runs a script, deploys nothing' : jobSvc === 1 ? 'Deploys 1 service' : 'Deploys ' + jobSvc + ' services',
+      approvalText: job.approval.length ? 'Needs approval in ' + job.approval.join(', ') : 'No approval needed',
+      stats: [
+        { k: 'Last run', v: history[0] ? history[0].statusLabel + ', ' + history[0].when : 'Never run' },
+        { k: 'Success rate', v: finished.length ? Math.round(wins.length / finished.length * 100) + '% of ' + finished.length + ' finished runs' : 'No finished runs yet' },
+        { k: 'Last success', v: wins[0] ? wins[0].env + ', ' + wins[0].when : 'None yet' },
+        { k: 'Runs', v: String(history.length) }
+      ],
+      isHistTab: s.jobTab === 'history', histTabCls: s.jobTab === 'history' ? 'on' : '', showHist: set({ jobTab: 'history' }),
+      histChips: chipsFor('histStatus', statusDefs), histEnv: s.histEnv, setHistEnv: (e) => this.setState({ histEnv: e.target.value }), envOpts,
+      history: histShown, hasHistory: histShown.length > 0, noHistory: histShown.length === 0,
+      histEmptyText: history.length ? 'No runs match these filters' : 'This job has not run yet',
+      isRunTab: s.jobTab === 'run', isDefTab: s.jobTab === 'def', runTabCls: s.jobTab === 'run' ? 'on' : '', defTabCls: s.jobTab === 'def' ? 'on' : '', showRun: set({ jobTab: 'run' }), showDef: set({ jobTab: 'def' }),
+      envId: env.id, env, groups: groupsView, summary, nothing, needsApproval: needsApproval && mayDeploy, slack: job.slack,
+      isScript: !!job.script, isDeployJob: !job.script, scriptVersion: s.scriptVersion, setScriptVersion: (e) => this.setState({ scriptVersion: e.target.value }),
+      registryNote: 'Version lists are read from the ECR repository each service has set for ' + env.id + '. Here those are in the ' + env.registryName + ' AWS account (' + env.registry + ').',
+      envs: this.ENVS.map((e) => ({ id: e.id, label: e.id + ' (' + e.stage + ')' })),
+      setEnv: (e) => this.setState({ envId: e.target.value }),
+      blocked: !mayDeploy, blockReason: 'Your role (' + this.GROUPS[user.group] + ') may not run jobs in ' + env.stage + '. You can still look.',
+      cannotStart: !mayDeploy || nothing, start, startLabel: needsApproval ? 'Request run' : 'Start',
+      file: job.repo + ' @ ' + job.branch + ' : ' + job.path, yaml: def.yaml, steps: def.steps,
+      synced: s.jobSynced, sync: set({ jobSynced: 'read just now' }), standIn: !!job.standIn
+    };
+
+    let run = { tree: [], strip: [], slack: [], lines: [], failures: [], skipped: [] };
+    const cur = s.runs.find((r) => r.id === s.runId);
+    if (cur) {
+      const c = this.compute(cur, s.tick), cenv = envOf(cur.env), cjob = jobOf(cur.job), rule = approveRule(cur);
+      const scope = s.selStep || '', scopeParts = scope.split('::'), scopeStep = scopeParts[0], scopeSvc = scopeParts[1] || '';
+      const pick = (name) => set({ selStep: name, errOnly: false });
+      const allLines = this.consoleFor(cur, c, cenv, cjob.id);
+      allLines.forEach((l, i) => { l.n = i + 1; });
+      const errCount = allLines.filter((l) => l.lvl === 'err').length;
+      const node = (cls, name, meta, mark, key) => ({ cls, name, meta, mark, selCls: scope === key ? 'on' : '', select: pick(key) });
+      const tree = [node('t-all', 'Whole run', allLines.length + ' lines', c.overall, '')];
+      if (cur.script) tree.push(node('t-step', 'build-report-tool', 'run', c.solo, 'build-report-tool'));
+      c.lanes.forEach((ln) => {
+        const done = ln.legs.filter((l) => l.cls === 'succeeded').length;
+        tree.push(node('t-step', ln.g.stepCfg, 'copy-config', ln.cfg, ln.g.stepCfg));
+        tree.push(node('t-step', ln.g.stepRoll, done + '/' + ln.legs.length, ln.roll, ln.g.stepRoll));
+        ln.legs.forEach((l) => tree.push(node('t-svc', l.name, l.version, l.cls, ln.g.stepRoll + '::' + l.name)));
+      });
+      // A service's view also includes the lines of its own config files from the config step.
+      let lines = !scope ? allLines : scopeSvc ? allLines.filter((l) => l.svc === scopeSvc && (l.step === scopeStep || l.step === scopeStep.replace('roll-', 'config-'))) : allLines.filter((l) => l.step === scopeStep);
+      if (s.errOnly) lines = lines.filter((l) => l.lvl === 'err');
+      const logQ = s.logQ.trim().toLowerCase();
+      if (logQ) lines = lines.filter((l) => l.text.toLowerCase().indexOf(logQ) >= 0);
+      const slack = [], title = '"' + cjob.title + '" in ' + cur.env;
+      const asked = cjob.approval.indexOf(cenv.stage) >= 0;
+      if (asked) slack.push({ text: cur.by + ' wants to run ' + title + ': ' + this.what(cur) + '. Review and approve in Yumdrake.' });
+      if (asked && cur.decidedBy) slack.push({ text: (cur.mode === 'rejected' ? 'Rejected by ' : 'Approved by ') + cur.decidedBy + '.' });
+      if (cur.mode === 'live' || cur.mode === 'done') slack.push({ text: 'Started: ' + title + ' by ' + cur.by + '.' });
+      if (c.overall === 'succeeded') slack.push({ text: 'Succeeded: ' + title + '.' + (c.total ? ' ' + c.ok + ' of ' + c.total + ' services updated.' : '') });
+      if (c.overall === 'failed') slack.push({ text: 'Failed: ' + title + '. ' + c.ok + ' of ' + c.total + ' services updated. Failed: ' + c.failures.map((f) => f.what + ' (' + f.short + ')').join(', ') + '.' });
+      run = {
+        id: cur.id, by: cur.by, via: cur.via, when: cur.when, title: cjob.title + ' in ' + cur.env, what: this.what(cur), cls: c.overall, statusLabel: this.label(c.overall),
+        tree, slack, hasSlack: slack.length > 0, slackChannel: cjob.slack, env: cur.env, stage: cenv.stage, jobTitle: cjob.title, toJobs: set({ screen: 'jobs' }),
+        strip: this.stripOf(c), hasStrip: c.total > 0, okCount: c.ok + ' of ' + c.total, logQ: s.logQ, setLogQ: (e) => this.setState({ logQ: e.target.value }), waiting: cur.mode === 'waiting', approveReason: rule.reason, cannotApprove: !rule.ok,
+        result: this.resultOf(cur, c), duration: this.durationOf(cur, c),
+        failures: c.failures.map((f) => Object.assign({}, f, { show: pick(f.scope) })), hasFailures: c.failures.length > 0, skipped: c.skipped,
+        lines, noLines: lines.length === 0, logTitle: scope ? scopeStep + (scopeSvc ? ' / ' + scopeSvc : '') : 'Whole run',
+        logCount: lines.length + ' of ' + allLines.length + ' lines, ' + errCount + (errCount === 1 ? ' error line' : ' error lines') + ' in the run',
+        errOn: !!s.errOnly, errCls: s.errOnly ? 'on' : '', toggleErr: set({ errOnly: !s.errOnly }),
+        approve: decide(cur, 'live'), reject: decide(cur, 'rejected'), back: set({ screen: 'history' }), again: openJob(cur.job)
+      };
+    }
+
+    const ie = envOf(s.invEnv), svcList = [];
+    Object.keys(this.SETS).forEach((id) => this.SETS[id].services.forEach((n) => {
+      if (!svcList.some((x) => x.name === n)) svcList.push(this.SVC[n]);
+    }));
+    const svcYaml = (d, only) => {
+      const L = ['name: ' + d.name, '', 'environments:             # one block per environment this service exists in'];
+      this.ENVS.filter((e) => this.avail(d.name, e.id) && (!only || e.id === only)).forEach((e) => {
+        const files = this.cfgFiles(d.name, e), envs = files.filter((f) => f.kind === 'env'), tomls = files.filter((f) => f.kind === 'toml');
+        L.push('  ' + e.id + ':', '    ecs_service: arn:aws:ecs:' + e.region + ':' + e.account + ':service/' + e.cluster + '/' + d.name, '    ecr_repository: ' + e.registry + '.dkr.ecr.' + e.region + '.amazonaws.com/' + d.name);
+        if (envs.length) { L.push('    env_files:              # branch: v<deployed version>, else dev'); envs.forEach((f) => L.push('      - name: ' + f.name, '        source_env_path: ' + f.src, '        destination_env_path: ' + f.dst)); }
+        if (tomls.length) { L.push('    tomls:'); tomls.forEach((f) => L.push('      - name: ' + f.name, '        source_toml_path: ' + f.src, '        destination_toml_path: ' + f.dst)); }
+        L.push('');
+      });
+      return L.join('\n');
+    };
+    const isv = svcList.find((x) => x.name === s.invSvc) || svcList[0];
+    const isvEnvs = this.ENVS.filter((e) => this.avail(isv.name, e.id));
+    const isvOnly = isvEnvs.some((e) => e.id === s.invSvcEnv) ? s.invSvcEnv : '';
+    const svcQ = s.invSvcQ.trim().toLowerCase();
+
+    // Overview: sample analytics plus what the seeded runs say needs attention.
+    const labs = s.ovLabel === 'all' ? this.STAGES : [s.ovLabel];
+    const dates = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27], week = ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+    const okA = dates.map((d, i) => labs.reduce((t, l) => t + this.OV[l].ok[i], 0)), failA = dates.map((d, i) => labs.reduce((t, l) => t + this.OV[l].fail[i], 0));
+    const totOk = okA.reduce((a, b) => a + b, 0), totFail = failA.reduce((a, b) => a + b, 0), total = totOk + totFail;
+    const rate = total ? Math.round(totOk / total * 100) : 0, ovBase = this.OV[s.ovLabel], prevRuns = labs.reduce((t, l) => t + this.OV[l].prev, 0);
+    const signed = (n) => (n > 0 ? '+' : '') + n;
+    const ymax = Math.max(5, Math.ceil(Math.max.apply(null, okA.map((v, i) => v + failA[i])) / 5) * 5), plotH = 200;
+    const ovDays = dates.map((d, i) => ({
+      day: String(d), cls: s.ovDay === i ? 'on' : '', xcls: i === 13 ? 'today' : '', okH: Math.round(okA[i] / ymax * plotH), failH: Math.round(failA[i] / ymax * plotH),
+      okCls: okA[i] ? '' : 'z', failCls: failA[i] ? '' : 'z', tip: week[i % 7] + ' ' + d + ' Nov: ' + okA[i] + ' succeeded, ' + failA[i] + ' failed', hover: set({ ovDay: i })
+    }));
+    const inLabel = (r) => s.ovLabel === 'all' || r.stage === s.ovLabel;
+    const waitingRows = runs.filter((r) => r.cls === 'waiting' && inLabel(r));
+    const failMax = this.OVFAIL[s.ovLabel].reduce((m, f) => Math.max(m, f[1]), 1);
+    const ov = {
+      labels: chipsFor('ovLabel', [['all', 'All environments'], ['dev', 'dev'], ['preprod', 'preprod'], ['prod', 'prod']]),
+      tiles: [
+        { label: 'Runs', value: String(total), delta: signed(total - prevRuns) + ' vs the previous 14 days' },
+        { label: 'Success rate', value: rate + '%', delta: signed(rate - ovBase.prevRate) + ' points vs the previous 14 days' },
+        { label: 'Median duration', value: ovBase.med, delta: ovBase.medDelta },
+        { label: 'Waiting for approval', value: String(waitingRows.length), delta: waitingRows.length ? 'Oldest requested ' + waitingRows[waitingRows.length - 1].when : 'Nothing is waiting' }
+      ],
+      days: ovDays, unhover: set({ ovDay: null }),
+      ticks: [0, 1, 2, 3, 4, 5].map((k) => ({ label: String(ymax / 5 * k), y: Math.round(plotH / 5 * k) })),
+      readout: s.ovDay != null ? ovDays[s.ovDay].tip : total + ' runs: ' + totOk + ' succeeded, ' + totFail + ' failed. Point at a day for its numbers.',
+      failing: this.OVFAIL[s.ovLabel].map((f) => ({ name: f[0], count: f[1], reason: f[2], w: Math.round(f[1] / failMax * 100) })), noFailing: this.OVFAIL[s.ovLabel].length === 0,
+      attention: runs.filter((r, i) => inLabel(r) && (r.cls === 'waiting' || (r.cls === 'failed' && !runs.slice(0, i).some((x) => x.jobId === r.jobId && x.env === r.env && x.cls === 'succeeded'))))
+        .map((r) => Object.assign({}, r, { fail: r.cls === 'waiting' ? 'Requested by ' + r.by + ': ' + r.what : r.fail })),
+      envs: this.ENVS.filter((e) => s.ovLabel === 'all' || e.stage === s.ovLabel).map((e) => {
+        const last = runs.find((r) => r.env === e.id);
+        return { id: e.id, stage: e.stage, cls: last ? last.cls : 'never', statusLabel: last ? last.statusLabel : 'No runs yet', when: last ? last.when + ', ' + last.job : '' };
+      })
+    };
+    ov.noAttention = ov.attention.length === 0;
+
+    // Runs list with its filters.
+    const runsQ = s.runsQ.trim().toLowerCase();
+    const rlRows = runs.filter((r) => (s.runsStatus === 'all' || r.cls === s.runsStatus) && (s.runsEnv === 'all' || r.env === s.runsEnv) && (!runsQ || r.hay.indexOf(runsQ) >= 0));
+    const rl = { chips: chipsFor('runsStatus', statusDefs), env: s.runsEnv, setEnv: (e) => this.setState({ runsEnv: e.target.value }), envOpts, q: s.runsQ, setQ: (e) => this.setState({ runsQ: e.target.value }), rows: rlRows, hasRows: rlRows.length > 0, empty: rlRows.length === 0 };
+
+    // Versions: what each service runs in each environment. Sample data.
+    const setOf = (name) => Object.keys(this.SETS).find((id) => this.SETS[id].services.indexOf(name) >= 0);
+    const hashOf = (str) => str.split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 997, 7);
+    const verQ = s.verQ.trim().toLowerCase();
+    const verRows = svcList.map((x) => {
+      const g = this.SETS[setOf(x.name)];
+      const raw = this.ENVS.map((e, ei) => {
+        if (!this.avail(x.name, e.id)) return null;
+        const failed = x.name === 'billing' && e.id === 'hetzner-01';
+        const base = e.stage === 'prod' ? 2 : e.stage === 'preprod' ? 1 : 0;
+        const idx = failed ? 1 : Math.min(g.versions.length - 1, base + (ei === 2 && hashOf(x.name) % 5 === 0 ? 1 : 0));
+        return { e, idx, failed };
+      });
+      const cells = raw.map((c, ei) => {
+        const e = this.ENVS[ei];
+        if (!c) return { text: 'not set up', cls: 'v-none', mk: 'mk-hide', tip: x.name + ' is not set up in ' + e.id, flag: false };
+        const best = Math.min.apply(null, raw.filter((o) => o && o.e.stage === e.stage).map((o) => o.idx)), behind = c.idx > best;
+        return { text: g.versions[c.idx], cls: '', mk: c.failed ? 'mk-failed' : behind ? 'mk-behind' : 'mk-hide', flag: c.failed || behind,
+          tip: x.name + ' in ' + e.id + ': ' + g.versions[c.idx] + (c.failed ? ', the last deploy of ' + g.versions[0] + ' failed' : behind ? ', behind the other ' + e.stage + ' environments' : '') };
+      });
+      return { name: x.name, cells, flagged: cells.some((c) => c.flag) };
+    }).filter((r) => (!verQ || r.name.indexOf(verQ) >= 0) && (s.verMode === 'all' || r.flagged));
+    const ver = {
+      q: s.verQ, setQ: (e) => this.setState({ verQ: e.target.value }), chips: chipsFor('verMode', [['all', 'All services'], ['diff', 'Only differences']]),
+      cols: this.ENVS.map((e) => ({ id: e.id, stage: e.stage })), rows: verRows, empty: verRows.length === 0, count: 'Showing ' + verRows.length + ' of ' + svcList.length + ' services'
+    };
+    const inv = {
+      svcQ: s.invSvcQ, setSvcQ: (e) => this.setState({ invSvcQ: e.target.value }),
+      svcJobs: s.jobs.filter((j) => j.groups.some((id) => this.SETS[id].services.indexOf(isv.name) >= 0)).map((j) => j.title).join(', ') || 'no job yet',
+      svcEnvChips: [{ label: 'All', on: !isvOnly, cls: !isvOnly ? 'on' : '', pick: set({ invSvcEnv: 'all' }) }].concat(isvEnvs.map((e) => ({ label: e.id, on: isvOnly === e.id, cls: isvOnly === e.id ? 'on' : '', pick: set({ invSvcEnv: e.id }) }))),
+      src: s.invSrc.repo + ' @ ' + s.invSrc.branch + ' : ' + s.invSrc.path,
+      synced: s.synced, sync: set({ synced: 'just now' }), isEnvs: s.invTab === 'envs', isApps: s.invTab === 'apps',
+      envTabCls: s.invTab === 'envs' ? 'on' : '', appTabCls: s.invTab === 'apps' ? 'on' : '', showEnvs: set({ invTab: 'envs' }), showApps: set({ invTab: 'apps' }),
+      envRows: this.ENVS.map((e) => Object.assign({}, e, { cls: '', svcCount: svcList.filter((x) => this.avail(x.name, e.id)).length + ' of ' + svcList.length })),
+      envFile: 'environments.yaml',
+      envYaml: ['# every environment lives in this one file', 'environments:'].concat(...this.ENVS.map((e) => ['  - name: ' + e.id, '    label: ' + e.stage + (e === this.ENVS[0] ? '              # dev | preprod | prod' : ''), '    aws_account: "' + e.account + '"', ''])).join('\n'),
+      svcRows: svcList.filter((x) => !svcQ || x.name.indexOf(svcQ) >= 0).map((x) => {
+        const n = this.ENVS.filter((e) => this.avail(x.name, e.id)).length;
+        return { name: x.name, envShort: n === this.ENVS.length ? 'all environments' : n + ' of ' + this.ENVS.length + ' environments', cls: x.name === isv.name ? 'sel' : '', select: set({ invSvc: x.name, invSvcEnv: 'all' }) };
+      }),
+      svcFile: 'services/' + isv.name + '.yaml',
+      svcYaml: svcYaml(isv, isvOnly)
+    };
+
+    const chips = (group, action) => this.STAGES.map((stage) => {
+      const p = s.perms[group], on = !!(p.admin || p[action][stage]);
+      return { stage, on, cls: on ? 'on' : '', toggle: () => {
+        const perms = Object.assign({}, s.perms), g = Object.assign({}, p), a = Object.assign({}, p[action]);
+        a[stage] = !on; g[action] = a; perms[group] = g;
+        this.setState({ perms, audit: this.log(user.name, (on ? 'Removed from ' : 'Granted ') + this.GROUPS[group] + ': ' + (action === 'deploy' ? 'run jobs' : 'approve') + ' in ' + stage) });
+      } };
+    });
+    const adm = {
+      tabs: [['users', 'Users'], ['roles', 'Roles'], ['sso', 'Single sign-on'], ['aws', 'AWS accounts'], ['github', 'GitHub'], ['sources', 'Git sources'], ['audit', 'Audit log']].map((t) => ({ label: t[1], cls: s.admTab === t[0] ? 'on' : '', go: set({ admTab: t[0] }) })),
+      isAws: s.admTab === 'aws', isGithub: s.admTab === 'github', isSources: s.admTab === 'sources',
+      aws: {
+        rows: s.aws.map((a) => Object.assign({}, a, { usedBy: this.ENVS.filter((e) => e.account === a.id || e.registry === a.id).map((e) => e.id).join(', ') || 'None yet' })),
+        f: s.awsForm, formOpen: s.awsForm.open, open: openForm('awsForm', true), cancel: openForm('awsForm', false),
+        isRole: s.awsForm.method === 'role', isKey: s.awsForm.method === 'key',
+        setName: fld('awsForm', 'name'), setId: fld('awsForm', 'id'), setMethod: fld('awsForm', 'method'), setRole: fld('awsForm', 'role'), setExt: fld('awsForm', 'ext'), setKey: fld('awsForm', 'key'), setSecret: fld('awsForm', 'secret'),
+        cannotSave: !(s.awsForm.name && s.awsForm.id && (s.awsForm.method === 'role' ? s.awsForm.role : (s.awsForm.key && s.awsForm.secret))),
+        save: () => {
+          const f = s.awsForm, role = f.method === 'role';
+          const row = { name: f.name, id: f.id, method: role ? 'Role' : 'Access key', detail: role ? f.role : 'Key ID ending ' + f.key.slice(-4) + ', secret stored encrypted', status: 'Connected' };
+          this.setState({ aws: s.aws.concat([row]), awsForm: Object.assign({}, this.D.awsForm), audit: this.log(user.name, 'Connected AWS account ' + f.name + ' (' + f.id + ') using ' + (role ? 'a role' : 'an access key')) });
+        }
+      },
+      gh: {
+        rows: s.gh, f: s.ghForm, formOpen: s.ghForm.open, open: openForm('ghForm', true), cancel: openForm('ghForm', false),
+        setName: fld('ghForm', 'name'), setMethod: fld('ghForm', 'method'), setSecret: fld('ghForm', 'secret'),
+        secretLabel: s.ghForm.method === 'app' ? 'GitHub App private key' : 'Access token',
+        cannotSave: !(s.ghForm.name && s.ghForm.secret),
+        save: () => {
+          const f = s.ghForm, row = { name: f.name, method: f.method === 'app' ? 'GitHub App' : 'Access token', detail: 'Read-only, secret stored encrypted', status: 'Connected' };
+          this.setState({ gh: s.gh.concat([row]), ghForm: Object.assign({}, this.D.ghForm), audit: this.log(user.name, 'Connected GitHub ' + f.name) });
+        }
+      },
+      src: {
+        f: s.invSrc, saved: s.invSaved, savedText: 'Read ' + this.ENVS.length + ' environments and ' + svcList.length + ' services', setConn: fld('invSrc', 'conn'), setRepo: fld('invSrc', 'repo'), setBranch: fld('invSrc', 'branch'), setPath: fld('invSrc', 'path'),
+        save: () => this.setState({ invSaved: true, synced: 'just now', audit: this.log(user.name, 'Set the inventory source to ' + s.invSrc.repo + ' : ' + s.invSrc.path) }),
+        jobs: s.jobs
+      },
+      isUsers: s.admTab === 'users', isRoles: s.admTab === 'roles', isSso: s.admTab === 'sso', isAudit: s.admTab === 'audit',
+      users: this.USERS.map((u) => Object.assign({}, u, { groupLabel: this.GROUPS[u.group] })).concat([
+        { name: 'breakglass-admin', email: 'local account', src: 'Local password', groupLabel: 'DevOps', last: 'Never' },
+        { name: 'ci-pipeline', email: 'service account', src: 'CLI token', groupLabel: 'QA', last: 'Today 09:40' }
+      ]),
+      roles: Object.keys(this.GROUPS).map((g) => ({ label: this.GROUPS[g], locked: !!s.perms[g].admin, level: s.perms[g].admin ? 'Global admin' : 'Scoped', deploy: chips(g, 'deploy'), approve: chips(g, 'approve'), apps: 'All jobs' })),
+      audit: s.audit, ssoTested: s.ssoTested, testSso: set({ ssoTested: true })
+    };
+
+    const cli = ['$ yumdrake login --sso', 'Opening your browser for single sign-on... signed in as ' + user.email, '', '$ yumdrake jobs list --folder Backend', 'deploy-backend   Backend and microservices', 'deploy-billing   Billing service only', '', '$ yumdrake run deploy-backend --env hetzner-01 \\', '    --set microservices=1.4.2 --set microservices.billing=1.4.1', 'Run #1042 started. Follow it with: yumdrake runs watch 1042', '', '$ yumdrake run deploy-platform --env hetzner-02 \\', '    --only backends,mobile --set backends=2.31.0 --set mobile=3.2.1', '', '$ yumdrake run deploy-billing --env hetzner-01 --set billing=1.4.2', '', '$ yumdrake versions backend-socket --env prod-01', '2.31.0  2.30.4  2.30.3  2.29.0     (ECR, prod account)', '', '$ yumdrake approvals approve 1041', '', '$ yumdrake validate ./yumdrake-config', 'OK: 5 environments, 33 services, 6 jobs'].join('\n');
+
+    return {
+      loggedOut: !s.userId, loggedIn: !!s.userId, login: set({ userId: 'dana', screen: 'overview' }), logout: set({ userId: null }),
+      nv, go, isAdminUser, hasApprovals: waiting.length > 0, approvalCount: waiting.length, ov, rl, ver,
+      isOverview: screen === 'overview', isVersions: screen === 'versions',
+      user: { id: user.id, name: user.name, groupLabel: this.GROUPS[user.group], src: user.src },
+      personas: this.USERS.map((u) => ({ id: u.id, label: u.name + ' (' + this.GROUPS[u.group] + ')' })),
+      setPersona: (e) => this.setState({ userId: e.target.value }),
+      cat, dep, run, runs, approvals, noApprovals: approvals.length === 0, inv, adm, cli,
+      isJobs: screen === 'jobs', isJob: screen === 'job', isRun: screen === 'run' && !!cur, isHistory: screen === 'history' || (screen === 'run' && !cur), isApprovals: screen === 'approvals',
+      isInventory: screen === 'inventory', isCli: screen === 'cli', isAdmin: screen === 'admin'
+    };
+  }
+}
+</script>
+</body>
+</html>

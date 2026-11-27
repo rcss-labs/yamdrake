@@ -37,7 +37,8 @@ func (inv Inventory) ServiceNames() []string {
 // BuildInventory checks the rules that span files: environment and service
 // uniqueness, file-name agreement, known environments, account ids and
 // destination clashes. It reports every problem at once, sorted. The returned
-// inventory holds the first definition of any duplicated name.
+// inventory holds the first definition of any duplicated name; callers must
+// not use it when problems are returned.
 func BuildInventory(envFile string, envs []Environment, services []Service) (Inventory, Problems) {
 	var problems Problems
 	add := func(file string, line int, format string, args ...any) {
@@ -67,10 +68,10 @@ func BuildInventory(envFile string, envs []Environment, services []Service) (Inv
 	for _, service := range ordered {
 		expected := strings.TrimSuffix(path.Base(service.File), ".yaml")
 		if service.Name != expected {
-			add(service.File, 0, "service name %q must equal the file name %q", service.Name, expected)
+			add(service.File, service.Line, "service name %q must equal the file name %q", service.Name, expected)
 		}
 		if first, dup := inv.Services[service.Name]; dup {
-			add(service.File, 0, "service %q is defined more than once (also in %s)", service.Name, first.File)
+			add(service.File, service.Line, "service %q is defined more than once (also in %s)", service.Name, first.File)
 		} else {
 			inv.Services[service.Name] = service
 		}

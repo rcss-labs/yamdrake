@@ -93,6 +93,7 @@ type Service struct {
 	Name         string                `json:"name"`
 	Versions     VersionRule           `json:"versions"`
 	Environments map[string]ServiceEnv `json:"environments"`
+	Line         int                   `json:"line"` // line of the name field
 }
 
 // Need is a dependency of a step. Scope is "step" or "service".

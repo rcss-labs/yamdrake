@@ -46,6 +46,9 @@ func TestBuildInventoryAcceptsValidFixtures(t *testing.T) {
 	if _, ok := inv.Environment("nope"); ok {
 		t.Error("Environment(nope) should not be found")
 	}
+	if inv.Services["orders"].Line == 0 {
+		t.Error("service name line was not recorded")
+	}
 	if len(inv.Environments) != 5 || inv.Environments[0].Name != "hetzner-01" {
 		t.Errorf("environments not in file order: %+v", inv.Environments)
 	}
@@ -54,73 +57,91 @@ func TestBuildInventoryAcceptsValidFixtures(t *testing.T) {
 func TestBuildInventoryRejections(t *testing.T) {
 	tests := []struct {
 		name     string
-		mutate   func(envs *[]Environment, services []Service)
+		mutate   func(envs *[]Environment, services []Service) []Service
 		wantFile string
 		fragment string
+		wantLine bool // the problem must carry a real line, not 0
 	}{
 		{"duplicate environment name",
-			func(envs *[]Environment, _ []Service) { *envs = append(*envs, (*envs)[1]) },
-			testEnvFile, `"dev-02"`},
+			func(envs *[]Environment, s []Service) []Service { *envs = append(*envs, (*envs)[1]); return s },
+			testEnvFile, `"dev-02"`, true},
 		{"no environments",
-			func(envs *[]Environment, _ []Service) { *envs = nil },
-			testEnvFile, "at least one environment"},
+			func(envs *[]Environment, s []Service) []Service { *envs = nil; return s },
+			testEnvFile, "at least one environment", false},
 		{"duplicate service name",
-			func(_ *[]Environment, s []Service) { s[1].Name = "backend-api" },
-			"services/orders.yaml", `"backend-api"`},
+			func(_ *[]Environment, s []Service) []Service {
+				// Name matches its file, so only the duplicate rule can fire.
+				duplicate := s[0]
+				duplicate.File = "zz/backend-api.yaml"
+				duplicate.Environments = map[string]ServiceEnv{"prod-01": s[0].Environments["prod-01"]}
+				return append(s, duplicate)
+			},
+			"zz/backend-api.yaml", "defined more than once", true},
 		{"service name differs from file",
-			func(_ *[]Environment, s []Service) { s[1].Name = "orderz" },
-			"services/orders.yaml", `"orderz"`},
+			func(_ *[]Environment, s []Service) []Service { s[1].Name = "orderz"; return s },
+			"services/orders.yaml", `"orderz"`, true},
 		{"unknown environment",
-			func(_ *[]Environment, s []Service) { s[1].Environments["staging-09"] = s[1].Environments["dev-02"] },
-			"services/orders.yaml", `"staging-09"`},
+			func(_ *[]Environment, s []Service) []Service {
+				s[1].Environments["staging-09"] = s[1].Environments["dev-02"]
+				return s
+			},
+			"services/orders.yaml", `"staging-09"`, true},
 		{"account mismatch",
-			func(_ *[]Environment, s []Service) {
+			func(_ *[]Environment, s []Service) []Service {
 				e := s[1].Environments["dev-02"]
 				e.ECSService = "arn:aws:ecs:eu-central-1:999999999999:service/dev-02/orders"
 				s[1].Environments["dev-02"] = e
+				return s
 			},
-			"services/orders.yaml", `"999999999999"`},
+			"services/orders.yaml", `"999999999999"`, true},
 		{"duplicate env file name",
-			func(_ *[]Environment, s []Service) {
+			func(_ *[]Environment, s []Service) []Service {
 				e := s[0].Environments["hetzner-01"]
 				dup := e.EnvFiles[0]
 				dup.Destination = "s3://hetzner-01-config/env/backend-api/other.env"
 				e.EnvFiles = append(e.EnvFiles, dup)
 				s[0].Environments["hetzner-01"] = e
+				return s
 			},
-			"services/backend-api.yaml", `"backend-api.env"`},
+			"services/backend-api.yaml", `"backend-api.env"`, true},
 		{"duplicate toml name",
-			func(_ *[]Environment, s []Service) {
+			func(_ *[]Environment, s []Service) []Service {
 				e := s[0].Environments["hetzner-01"]
 				dup := e.Tomls[0]
 				dup.Destination = "s3://hetzner-01-config/toml/backend-api/other.toml"
 				e.Tomls = append(e.Tomls, dup)
 				s[0].Environments["hetzner-01"] = e
+				return s
 			},
-			"services/backend-api.yaml", `"backend-api.toml"`},
+			"services/backend-api.yaml", `"backend-api.toml"`, true},
 		{"same destination in two services",
-			func(_ *[]Environment, s []Service) {
+			func(_ *[]Environment, s []Service) []Service {
 				s[1].Environments["hetzner-01"] = ServiceEnv{
 					ECSService: "arn:aws:ecs:eu-central-1:111111111111:service/hetzner-01/orders",
 					Tomls: []Toml{{Name: "orders.toml", Source: "s3://b/orders.toml",
-						Destination: "s3://hetzner-01-config/env/backend-api/backend-api.env"}},
+						Destination: "s3://hetzner-01-config/env/backend-api/backend-api.env", Line: 7}},
+					Line: 5,
 				}
+				return s
 			},
-			"services/orders.yaml", `"s3://hetzner-01-config/env/backend-api/backend-api.env"`},
+			"services/orders.yaml", `"s3://hetzner-01-config/env/backend-api/backend-api.env"`, true},
 		{"service without environments",
-			func(_ *[]Environment, s []Service) { s[1].Environments = nil },
-			"services/orders.yaml", `"orders"`},
+			func(_ *[]Environment, s []Service) []Service { s[1].Environments = nil; return s },
+			"services/orders.yaml", `"orders"`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			envs, services := validModel(t)
-			tt.mutate(&envs, services)
+			services = tt.mutate(&envs, services)
 			_, problems := BuildInventory(testEnvFile, envs, services)
 			if len(problems) == 0 {
 				t.Fatal("expected a problem, got none")
 			}
 			for _, p := range problems {
 				if p.File == tt.wantFile && strings.Contains(p.Message, tt.fragment) {
+					if tt.wantLine && p.Line == 0 {
+						t.Errorf("problem has no line: %v", p)
+					}
 					return
 				}
 			}

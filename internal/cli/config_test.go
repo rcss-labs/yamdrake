@@ -109,3 +109,43 @@ func TestDefaultConfigPath(t *testing.T) {
 		t.Errorf("home path = %q", got)
 	}
 }
+
+func TestLoadConfigRefusesFileReadableByGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes")
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0o640); err != nil { //nolint:gosec // the test needs a group-readable file
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(envMap(nil), path); ExitCodeFor(err) != 2 {
+		t.Errorf("group-readable file accepted: %v", err)
+	}
+}
+
+func TestSaveConfigTightensExistingDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes")
+	}
+	dir := filepath.Join(t.TempDir(), "yumdrake")
+	if err := os.Mkdir(dir, 0o755); err != nil { //nolint:gosec // the test needs an open directory
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil { //nolint:gosec // the test needs an open directory
+		t.Fatal(err)
+	}
+	if err := SaveConfig(filepath.Join(dir, "config.json"), Config{Server: "https://x.example"}); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(dir)
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("dir mode = %v, want 0700", info.Mode().Perm())
+	}
+}
+
+func TestLoadConfigReadsInsecureHTTPFromEnvironment(t *testing.T) {
+	cfg, err := LoadConfig(envMap(map[string]string{"YUMDRAKE_INSECURE_HTTP": "1"}), filepath.Join(t.TempDir(), "c.json"))
+	if err != nil || !cfg.InsecureHTTP {
+		t.Errorf("cfg = %+v, err %v", cfg, err)
+	}
+}

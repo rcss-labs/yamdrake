@@ -19,6 +19,8 @@ const (
 	exitOK      = 0
 	exitProblem = 1
 	exitUsage   = 2
+	// exitInterrupted is the usual 128+SIGINT.
+	exitInterrupted = 130
 )
 
 const usageText = `usage: yumdrake <command>

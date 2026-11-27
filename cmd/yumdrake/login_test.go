@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,17 +26,20 @@ const (
 // fakeServer is a stand-in for the Plan 3 routes the commands use.
 type fakeServer struct {
 	*httptest.Server
-	mu          sync.Mutex
-	polls       int
-	pendingFor  int    // polls answered "pending" before "complete"
-	pollStatus  int    // when set, every poll answers this status
-	pollCode    string // error code for pollStatus
-	revokedID   string
-	revokeAuth  string
-	revokeCode  int
-	meCode      int
-	meAuth      string
-	pollReplies []int
+	mu              sync.Mutex
+	polls           int
+	pendingFor      int    // polls answered "pending" before "complete"
+	pollStatus      int    // when set, every poll answers this status
+	pollCode        string // error code for pollStatus
+	revokedID       string
+	revokeAuth      string
+	revokeCode      int
+	meCode          int
+	meAuth          string
+	pollReplies     []int
+	retryAfter      string // Retry-After header on the scripted replies
+	pendingInterval int    // interval in pending answers; 0 means 3
+	verifyURL       string // overrides verify_url when set
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -44,7 +49,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 	mux.HandleFunc("POST /api/v1/cli/login", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, 200, map[string]any{
 			"device_code": testDeviceCode, "user_code": "ABCD2345",
-			"verify_url": f.URL + "/device?user_code=ABCD2345", "interval": 3, "expires_in": 600,
+			"verify_url": f.verifyOr(f.URL + "/device?user_code=ABCD2345"), "interval": 3, "expires_in": 600,
 		})
 	})
 	mux.HandleFunc("POST /api/v1/cli/login/token", func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +67,9 @@ func newFakeServer(t *testing.T) *fakeServer {
 		if len(f.pollReplies) > 0 {
 			code := f.pollReplies[0]
 			f.pollReplies = f.pollReplies[1:]
+			if f.retryAfter != "" {
+				w.Header().Set("Retry-After", f.retryAfter)
+			}
 			writeTestJSON(w, code, errBody("too_many_requests", "slow down"))
 			return
 		}
@@ -70,7 +78,11 @@ func newFakeServer(t *testing.T) *fakeServer {
 			return
 		}
 		if f.polls <= f.pendingFor {
-			writeTestJSON(w, 200, map[string]any{"status": "pending", "interval": 3})
+			interval := f.pendingInterval
+			if interval == 0 {
+				interval = 3
+			}
+			writeTestJSON(w, 200, map[string]any{"status": "pending", "interval": interval})
 			return
 		}
 		writeTestJSON(w, 200, map[string]any{"status": "complete", "token": testToken, "token_id": 41, "expires_at": nil})
@@ -104,6 +116,13 @@ func newFakeServer(t *testing.T) *fakeServer {
 	return f
 }
 
+func (f *fakeServer) verifyOr(def string) string {
+	if f.verifyURL != "" {
+		return f.verifyURL
+	}
+	return def
+}
+
 func errBody(code, message string) map[string]any {
 	return map[string]any{"error": map[string]string{"code": code, "message": message}}
 }
@@ -122,11 +141,14 @@ type harness struct {
 	terminal   bool
 	stdin      string
 	environ    map[string]string
+	ctx        context.Context
+	clock      time.Time // fake time, advanced by every wait
+	onWait     func(call int) error
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	return &harness{configPath: filepath.Join(t.TempDir(), "yumdrake", "config.json"), environ: map[string]string{}}
+	return &harness{configPath: filepath.Join(t.TempDir(), "yumdrake", "config.json"), environ: map[string]string{}, clock: time.Unix(1_800_000_000, 0)}
 }
 
 func (h *harness) run(args ...string) (code int, stdout, stderr string) {
@@ -137,8 +159,16 @@ func (h *harness) run(args ...string) (code int, stdout, stderr string) {
 		StdoutIsTerminal: h.terminal,
 		ConfigPath:       h.configPath,
 		OpenBrowser:      func(u string) error { h.opened = append(h.opened, u); return h.openErr },
-		Wait:             func(_ context.Context, d time.Duration) error { h.waits = append(h.waits, d); return nil },
-		Now:              time.Now,
+		Wait: func(_ context.Context, d time.Duration) error {
+			h.waits = append(h.waits, d)
+			h.clock = h.clock.Add(d)
+			if h.onWait != nil {
+				return h.onWait(len(h.waits))
+			}
+			return nil
+		},
+		Now: func() time.Time { return h.clock },
+		Ctx: h.ctx,
 	}
 	code = runEnv(args, &out, &errOut, e)
 	return code, out.String(), errOut.String()
@@ -487,4 +517,143 @@ func TestWhoamiUnreachableServerExits7(t *testing.T) {
 		t.Errorf("exit = %d, want 7", code)
 	}
 	assertNoToken(t, stderr)
+}
+
+func TestLoginHonoursIntervalFromPendingAnswer(t *testing.T) {
+	srv := newFakeServer(t)
+	srv.pendingFor, srv.pendingInterval = 2, 7
+	h := newHarness(t)
+	if code, _, stderr := h.run("login", "--server", srv.URL); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	want := []time.Duration{3 * time.Second, 7 * time.Second, 7 * time.Second}
+	if fmt.Sprint(h.waits) != fmt.Sprint(want) {
+		t.Errorf("waits = %v, want %v", h.waits, want)
+	}
+}
+
+func TestLoginStopsAtTheDeviceCodeDeadlineEvenIfServerNeverExpiresIt(t *testing.T) {
+	srv := newFakeServer(t)
+	srv.pendingFor = 1 << 30
+	h := newHarness(t)
+	h.onWait = func(call int) error {
+		if call > 1000 {
+			return errors.New("the login never ended")
+		}
+		return nil
+	}
+	code, _, stderr := h.run("login", "--server", srv.URL)
+	if code != 6 || !strings.Contains(stderr, "expired") {
+		t.Errorf("exit %d stderr %q", code, stderr)
+	}
+	if len(h.waits) < 100 || len(h.waits) > 300 {
+		t.Errorf("waits = %d, want about 600s / 3s", len(h.waits))
+	}
+}
+
+func TestLoginNeverOpensANonWebURL(t *testing.T) {
+	for _, bad := range []string{"file:///etc/passwd", "javascript:alert(1)", "ftp://x.example/", "/device?user_code=A"} {
+		srv := newFakeServer(t)
+		srv.verifyURL = bad
+		h := newHarness(t)
+		h.terminal = true
+		if code, _, stderr := h.run("login", "--server", srv.URL); code != 0 {
+			t.Fatalf("%s: exit %d: %s", bad, code, stderr)
+		}
+		if len(h.opened) != 0 {
+			t.Errorf("%s was passed to the opener: %v", bad, h.opened)
+		}
+	}
+}
+
+func TestLogoutWithEnvTokenChangesNothing(t *testing.T) {
+	srv := newFakeServer(t)
+	h := newHarness(t)
+	h.seed(t, cli.Config{Server: srv.URL, Token: "file-token", TokenID: 41})
+	h.environ["YUMDRAKE_TOKEN"] = testToken
+	code, stdout, stderr := h.run("logout")
+	if code != 0 || !strings.Contains(stderr, "YUMDRAKE_TOKEN") {
+		t.Errorf("exit %d stderr %q", code, stderr)
+	}
+	if srv.revokedID != "" {
+		t.Errorf("revoked %q", srv.revokedID)
+	}
+	if cfg := h.saved(t); cfg.Token != "file-token" || cfg.TokenID != 41 {
+		t.Errorf("config changed: %+v", cfg)
+	}
+	assertNoToken(t, stdout, stderr)
+}
+
+func TestLoginBacksOffOnTooManyRequests(t *testing.T) {
+	t.Run("Retry-After wins", func(t *testing.T) {
+		srv := newFakeServer(t)
+		srv.pollReplies, srv.retryAfter = []int{429}, "9"
+		h := newHarness(t)
+		if code, _, stderr := h.run("login", "--server", srv.URL); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr)
+		}
+		if fmt.Sprint(h.waits) != fmt.Sprint([]time.Duration{3 * time.Second, 9 * time.Second}) {
+			t.Errorf("waits = %v", h.waits)
+		}
+	})
+	t.Run("doubles up to 30s", func(t *testing.T) {
+		srv := newFakeServer(t)
+		srv.pollReplies = []int{429, 429, 429, 429, 429}
+		h := newHarness(t)
+		if code, _, stderr := h.run("login", "--server", srv.URL); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr)
+		}
+		want := []time.Duration{3, 6, 12, 24, 30, 30}
+		for i := range want {
+			want[i] *= time.Second
+		}
+		if fmt.Sprint(h.waits) != fmt.Sprint(want) {
+			t.Errorf("waits = %v, want %v", h.waits, want)
+		}
+	})
+}
+
+func TestLoginRefusesPlainHTTPToARemoteHost(t *testing.T) {
+	h := newHarness(t)
+	code, _, stderr := h.run("login", "--server", "http://yumdrake.example.com")
+	if code != 2 || !strings.Contains(stderr, "unencrypted") {
+		t.Errorf("exit %d stderr %q", code, stderr)
+	}
+	// With the opt-in the URL is accepted (the failure is then about reading the token).
+	h.stdin = ""
+	code, _, stderr = h.run("login", "--with-token", "--insecure-http", "--server", "http://yumdrake.example.com")
+	if code != 2 || strings.Contains(stderr, "unencrypted") {
+		t.Errorf("flag: exit %d stderr %q", code, stderr)
+	}
+}
+
+func TestLoginCancelledByInterrupt(t *testing.T) {
+	srv := newFakeServer(t)
+	srv.pendingFor = 1 << 30
+	h := newHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.ctx = ctx
+	h.onWait = func(call int) error {
+		if call == 2 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	}
+	code, stdout, stderr := h.run("login", "--server", srv.URL)
+	if code != 130 || !strings.Contains(stderr, "Sign-in cancelled") || stdout != "" {
+		t.Errorf("exit %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(h.configPath); err == nil {
+		t.Error("config written")
+	}
+}
+
+func TestLoginHelpSaysFileModeChecksSkipWindows(t *testing.T) {
+	h := newHarness(t)
+	_, stdout, _ := h.run("login", "-h")
+	if !strings.Contains(stdout, "Windows") {
+		t.Errorf("help = %q", stdout)
+	}
 }

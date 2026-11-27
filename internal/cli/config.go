@@ -21,6 +21,8 @@ type Config struct {
 	TokenID int64 `json:"token_id,omitempty"`
 	// TokenFromEnv is set when Token came from YUMDRAKE_TOKEN, not the file.
 	TokenFromEnv bool `json:"-"`
+	// InsecureHTTP allows plain http:// to a non-local host.
+	InsecureHTTP bool `json:"-"`
 }
 
 // WithServer returns the config with server replaced by the --server flag
@@ -83,6 +85,7 @@ func LoadConfig(getenv func(string) string, path string) (Config, error) {
 	if v := getenv("YUMDRAKE_TOKEN"); v != "" {
 		cfg.Token, cfg.TokenID, cfg.TokenFromEnv = v, 0, true
 	}
+	cfg.InsecureHTTP = getenv("YUMDRAKE_INSECURE_HTTP") == "1"
 	return cfg, nil
 }
 
@@ -93,6 +96,11 @@ func SaveConfig(path string, c Config) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return &ExitError{Code: ExitUsage, Message: fmt.Sprintf("cannot create %s: %v", dir, errors.Unwrap(err))}
+	}
+	// A directory made earlier with looser modes holds the token file: tighten
+	// it when we own it (chmod fails otherwise, and then we leave it alone).
+	if info, err := os.Stat(dir); err == nil && info.Mode().Perm()&0o077 != 0 {
+		_ = os.Chmod(dir, 0o700) //nolint:gosec // a directory needs the execute bit
 	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

@@ -26,6 +26,8 @@ type env struct {
 	// Wait sleeps for d or until ctx ends.
 	Wait func(ctx context.Context, d time.Duration) error
 	Now  func() time.Time
+	// Ctx ends the command early; nil means the background context.
+	Ctx context.Context
 }
 
 func defaultEnv(stdout io.Writer) env {
@@ -77,7 +79,7 @@ func (e env) configPath() (string, error) {
 
 // loadConfig reads the config file and environment; serverFlag (--server)
 // wins over both.
-func (e env) loadConfig(serverFlag string) (cli.Config, string, error) {
+func (e env) loadConfig(serverFlag string, insecure bool) (cli.Config, string, error) {
 	path, err := e.configPath()
 	if err != nil {
 		return cli.Config{}, "", err
@@ -86,6 +88,7 @@ func (e env) loadConfig(serverFlag string) (cli.Config, string, error) {
 	if err != nil {
 		return cli.Config{}, "", err
 	}
+	cfg.InsecureHTTP = cfg.InsecureHTTP || insecure
 	return cfg.WithServer(serverFlag), path, nil
 }
 
@@ -103,11 +106,14 @@ type commandFlags struct {
 	*flag.FlagSet
 	output string
 	help   string
+	// insecure is --insecure-http: allow plain http:// to a remote host.
+	insecure bool
 }
 
 func newCommandFlags(name, help string, withOutput bool) *commandFlags {
 	c := &commandFlags{FlagSet: flag.NewFlagSet(name, flag.ContinueOnError), help: help}
 	c.SetOutput(io.Discard)
+	c.BoolVar(&c.insecure, "insecure-http", false, "allow plain http:// to a remote server")
 	if withOutput {
 		c.StringVar(&c.output, "o", "text", "output format: text or json")
 		c.StringVar(&c.output, "output", "text", "output format: text or json")
@@ -129,8 +135,20 @@ func (c *commandFlags) parse(args []string, stdout, stderr io.Writer) (code int,
 	return 0, false
 }
 
+// context is the command's context: the caller's, or the background one.
+func (e env) context() context.Context {
+	if e.Ctx != nil {
+		return e.Ctx
+	}
+	return context.Background()
+}
+
 // fail prints err for a person and returns its exit code.
 func fail(stderr io.Writer, err error) int {
+	if errors.Is(err, context.Canceled) {
+		_, _ = fmt.Fprintln(stderr, "Sign-in cancelled")
+		return exitInterrupted
+	}
 	_, _ = fmt.Fprintf(stderr, "yumdrake: %s\n", err)
 	return cli.ExitCodeFor(err)
 }

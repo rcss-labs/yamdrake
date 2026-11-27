@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const secretToken = "yd_SECRET-TOKEN-VALUE" //nolint:gosec // a fake token
@@ -148,5 +149,49 @@ func TestAPIErrorCarriesStatusAndCode(t *testing.T) {
 func TestExitCodeFor(t *testing.T) {
 	if ExitCodeFor(nil) != 0 || ExitCodeFor(context.Canceled) != 1 || ExitCodeFor(&ExitError{Code: 3}) != 3 {
 		t.Error("unexpected exit codes")
+	}
+}
+
+func TestNewClientServerURLRules(t *testing.T) {
+	for _, ok := range []string{"http://localhost:8080", "http://127.0.0.1:9", "http://[::1]:9", "https://yumdrake.example.com", "https://example.com/yumdrake/"} {
+		if _, err := NewClient(Config{Server: ok}); err != nil {
+			t.Errorf("%s refused: %v", ok, err)
+		}
+	}
+	_, err := NewClient(Config{Server: "http://yumdrake.example.com"})
+	if ExitCodeFor(err) != 2 || err == nil || !strings.Contains(err.Error(), "unencrypted") {
+		t.Errorf("remote http: %v", err)
+	}
+	if _, err := NewClient(Config{Server: "http://yumdrake.example.com", InsecureHTTP: true}); err != nil {
+		t.Errorf("opt-in refused: %v", err)
+	}
+	for _, bad := range []string{"https://x.example/?a=b", "https://x.example/#frag", "https://x.example/p?"} {
+		if _, err := NewClient(Config{Server: bad}); ExitCodeFor(err) != 2 {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+}
+
+func TestClientKeepsPathPrefix(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = r.URL.Path }))
+	defer srv.Close()
+	client, _ := NewClient(Config{Server: srv.URL + "/yumdrake/"})
+	_ = client.Do(context.Background(), "GET", "/api/v1/me", nil, nil)
+	if got != "/yumdrake/api/v1/me" {
+		t.Errorf("path = %q", got)
+	}
+}
+
+func TestClientReportsRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "9")
+		w.WriteHeader(429)
+	}))
+	defer srv.Close()
+	client, _ := NewClient(Config{Server: srv.URL})
+	var exit *ExitError
+	if err := client.Do(context.Background(), "GET", "/x", nil, nil); !errors.As(err, &exit) || exit.RetryAfter != 9*time.Second {
+		t.Errorf("err = %#v", err)
 	}
 }

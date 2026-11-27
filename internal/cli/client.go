@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +35,8 @@ type ExitError struct {
 	// Status and APICode are set for errors that came from an API response.
 	Status  int
 	APICode string
+	// RetryAfter is the server's Retry-After, when it sent one.
+	RetryAfter time.Duration
 }
 
 func (e *ExitError) Error() string { return e.Message }
@@ -73,6 +76,12 @@ func NewClient(c Config) (*Client, error) {
 	u, err := url.Parse(server)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, &ExitError{Code: ExitUsage, Message: "the server must be an http:// or https:// URL"}
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return nil, &ExitError{Code: ExitUsage, Message: "the server URL must not have a query string or fragment"}
+	}
+	if u.Scheme == "http" && !c.InsecureHTTP && !isLoopbackHost(u.Hostname()) {
+		return nil, &ExitError{Code: ExitUsage, Message: "the server URL is plain http:// to a remote host, so your token would be sent unencrypted; use https:// or pass --insecure-http (or set YUMDRAKE_INSECURE_HTTP=1)"}
 	}
 	return &Client{server: server, token: c.Token, http: &http.Client{Timeout: 30 * time.Second}}, nil
 }
@@ -117,7 +126,7 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 		return &ExitError{Code: ExitServer, Message: "the server's answer was cut off"}
 	}
 	if resp.StatusCode >= 400 {
-		return c.statusError(resp.StatusCode, data)
+		return c.statusError(resp.StatusCode, resp.Header.Get("Retry-After"), data)
 	}
 	if out == nil || len(data) == 0 {
 		return nil
@@ -126,6 +135,10 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 		return &ExitError{Code: ExitServer, Message: "the server's answer was not understood"}
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func rootCause(err error) string {
@@ -144,7 +157,7 @@ func (c *Client) scrub(s string) string {
 	return strings.ReplaceAll(s, c.token, "[redacted]")
 }
 
-func (c *Client) statusError(status int, data []byte) error {
+func (c *Client) statusError(status int, retryAfter string, data []byte) error {
 	var body struct {
 		Error struct {
 			Code    string `json:"code"`
@@ -157,6 +170,9 @@ func (c *Client) statusError(status int, data []byte) error {
 		message = fmt.Sprintf("the server answered %d", status)
 	}
 	e := &ExitError{Code: ExitUsage, Message: message, Status: status, APICode: body.Error.Code}
+	if seconds, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && seconds > 0 {
+		e.RetryAfter = time.Duration(seconds) * time.Second
+	}
 	switch {
 	case status == http.StatusUnauthorized:
 		e.Code, e.Message = ExitNotSignIn, NotSignedInMessage

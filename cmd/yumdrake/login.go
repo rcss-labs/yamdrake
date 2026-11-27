@@ -8,7 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rcss-labs/yamdrake/internal/cli"
@@ -23,7 +26,12 @@ input instead; the token is never accepted as an argument.
   --server URL    the Yumdrake server (else YUMDRAKE_SERVER, else the config file)
   --no-browser    do not try to open the browser
   --with-token    read a token from standard input
+  --insecure-http allow plain http:// to a host other than localhost (the token
+                  would be sent unencrypted; also YUMDRAKE_INSECURE_HTTP=1)
   -o json         print the signed-in user as JSON
+
+The config file must not be readable by group or others; this check does not
+apply on Windows, where file modes are not enforced.
 
 Example:
   yumdrake login --server https://yumdrake.example.com
@@ -48,6 +56,9 @@ Example:
 
 // defaultPollInterval is used when the server names no usable interval.
 const defaultPollInterval = 5 * time.Second
+
+// maxBackoff caps the wait after "polling too fast" answers.
+const maxBackoff = 30 * time.Second
 
 type meResponse struct {
 	ID     int64       `json:"id"`
@@ -97,13 +108,14 @@ func login(args []string, stdout, stderr io.Writer, e env) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	cfg, path, err := e.loadConfig(server)
+	cfg, path, err := e.loadConfig(server, flags.insecure)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	// A token from the environment or the file is replaced by the new one.
 	cfg.Token, cfg.TokenID, cfg.TokenFromEnv = "", 0, false
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(e.context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	if withToken {
 		token, err := readToken(e.Stdin)
@@ -189,13 +201,14 @@ func deviceSignIn(ctx context.Context, client *cli.Client, stderr io.Writer, e e
 	_, _ = fmt.Fprintln(stderr, "Waiting for you to confirm...")
 
 	interval := pollInterval(start.Interval)
+	wait := interval
 	deadline := e.Now().Add(time.Duration(start.ExpiresIn) * time.Second)
 	expired := &cli.ExitError{Code: cli.ExitNotSignIn, Message: "The sign-in expired before it was confirmed. Run yumdrake login again."}
 	for {
 		if start.ExpiresIn > 0 && !e.Now().Before(deadline) {
 			return "", 0, expired
 		}
-		if err := e.Wait(ctx, interval); err != nil {
+		if err := e.Wait(ctx, wait); err != nil {
 			return "", 0, err
 		}
 		var poll devicePoll
@@ -205,7 +218,14 @@ func deviceSignIn(ctx context.Context, client *cli.Client, stderr io.Writer, e e
 		case errors.As(err, &apiErr) && apiErr.APICode == "expired_token":
 			return "", 0, expired
 		case errors.As(err, &apiErr) && apiErr.Status == http.StatusTooManyRequests:
-			continue // polled too early; wait another interval
+			// Polled too early: obey Retry-After, else back off up to 30s.
+			if apiErr.RetryAfter > 0 {
+				wait = apiErr.RetryAfter
+			} else {
+				interval = min(interval*2, maxBackoff)
+				wait = interval
+			}
+			continue
 		case err != nil:
 			return "", 0, err
 		}
@@ -219,6 +239,7 @@ func deviceSignIn(ctx context.Context, client *cli.Client, stderr io.Writer, e e
 			if poll.Interval > 0 {
 				interval = pollInterval(poll.Interval)
 			}
+			wait = interval
 		default:
 			return "", 0, &cli.ExitError{Code: cli.ExitServer, Message: "the server's answer was not understood"}
 		}
@@ -237,7 +258,7 @@ func logout(args []string, stdout, stderr io.Writer, e env) int {
 	if code, done := flags.parse(args, stdout, stderr); done {
 		return code
 	}
-	cfg, path, err := e.loadConfig("")
+	cfg, path, err := e.loadConfig("", flags.insecure)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -283,7 +304,7 @@ func whoami(args []string, stdout, stderr io.Writer, e env) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	cfg, _, err := e.loadConfig("")
+	cfg, _, err := e.loadConfig("", flags.insecure)
 	if err != nil {
 		return fail(stderr, err)
 	}

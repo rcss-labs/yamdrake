@@ -69,6 +69,13 @@ describe('the AWS accounts section', () => {
     expect(await screen.findByRole('table', { name: 'AWS accounts' })).toBeInTheDocument()
   })
 
+  it('puts the Connection column, with the Test action, right after the name so it never scrolls out of view', async () => {
+    renderApp(<App />, { route, me: connectionsManagerMe })
+    const table = await screen.findByRole('table', { name: 'AWS accounts' })
+    const headers = within(table).getAllByRole('columnheader').map((header) => header.textContent)
+    expect(headers.slice(0, 2)).toEqual(['Name', 'Connection'])
+  })
+
   it('tests an account and shows a working connection in its row', async () => {
     renderApp(<App />, { route, me: connectionsManagerMe })
     const development = await screen.findByRole('row', { name: /Development/ })

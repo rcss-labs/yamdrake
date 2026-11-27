@@ -198,6 +198,8 @@ export function AWSAccountsSection() {
 
   const columns: DataColumn<AwsAccount>[] = [
     { key: 'name', header: 'Name', render: (account) => <span className="conn-name">{account.name}</span> },
+    // Second, so the Test action is visible without scrolling the wide table sideways.
+    { key: 'test', header: 'Connection', render: (account) => <TestCell account={account} /> },
     { key: 'id', header: 'Account ID', render: (account) => <span className="mono">{account.account_id}</span> },
     { key: 'discovery', header: 'Discovery connects with', render: (account) => describeCredential(account.discovery) },
     { key: 'deploy', header: 'Deployment connects with', render: (account) => describeCredential(account.deploy) },
@@ -206,7 +208,6 @@ export function AWSAccountsSection() {
       header: 'Used by environments',
       render: (account) => (account.environments.length === 0 ? 'None yet' : account.environments.join(', ')),
     },
-    { key: 'test', header: 'Connection', render: (account) => <TestCell account={account} /> },
   ]
 
   return (

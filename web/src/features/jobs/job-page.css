@@ -1,0 +1,95 @@
+.job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--ink2);
+  font-size: 13px;
+}
+.job-meta > span + span {
+  border-left: 1px solid var(--line2);
+  padding-left: 12px;
+}
+.job-run {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.job-sub {
+  color: var(--ink3);
+  font-size: 13px;
+  margin: 0;
+}
+.job-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+.job-definition {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.job-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.job-sync {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.job-sync-error {
+  color: var(--bad-t);
+  font-size: 13px;
+}
+.job-problems p {
+  margin: 0 0 8px;
+}
+.job-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+.job-section {
+  flex: 1 1 300px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.job-section h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.job-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.job-name {
+  font-weight: 500;
+}
+.job-step-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.job-services {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--ink2);
+  font-size: 13px;
+  margin-top: 4px;
+}

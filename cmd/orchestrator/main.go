@@ -59,6 +59,7 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 		Name:   serviceName,
 		Common: cfg.Common,
 		Addr:   cfg.HTTPAddr,
+		Extend: app.OrchestratorExtension(cfg),
 		Fields: []any{"migrate_on_start", cfg.MigrateOnStart, "migrate_timeout", cfg.MigrateTimeout.String()},
 		Prepare: func(ctx context.Context, log *slog.Logger, _ *pgxpool.Pool) error {
 			if !cfg.MigrateOnStart {

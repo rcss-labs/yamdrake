@@ -408,3 +408,23 @@ func TestSyncErrorsAreRecordedAndClearedWithoutTouchingDefinitions(t *testing.T)
 		t.Fatalf("SetJobSyncError on missing job = %v, want ErrNotFound", err)
 	}
 }
+
+func TestUnknownFolderIsErrInvalidReference(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := newPool(t)
+	if _, err := CreateJobSource(ctx, pool, JobSource{FolderID: 9999, Repo: "acme/ops", Branch: "main", Path: "jobs/a.yaml"}); !errors.Is(err, ErrInvalidReference) {
+		t.Fatalf("CreateJobSource with unknown folder error = %v, want ErrInvalidReference", err)
+	}
+	folder, err := CreateFolder(ctx, pool, "ops")
+	if err != nil {
+		t.Fatalf("CreateFolder: %v", err)
+	}
+	created, err := CreateJobSource(ctx, pool, JobSource{FolderID: folder.ID, Repo: "acme/ops", Branch: "main", Path: "jobs/a.yaml"})
+	if err != nil {
+		t.Fatalf("CreateJobSource: %v", err)
+	}
+	if err := MoveJobSource(ctx, pool, created.ID, 9999); !errors.Is(err, ErrInvalidReference) {
+		t.Fatalf("MoveJobSource to unknown folder error = %v, want ErrInvalidReference", err)
+	}
+}

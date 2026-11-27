@@ -194,6 +194,19 @@ type Service struct {
 	// wait for the schema). It receives the service context and must bound
 	// itself with its own timeout.
 	Prepare func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) error
+	// Extend runs after Prepare and returns what the service adds to the
+	// shared health server: extra routes and background loops.
+	Extend func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) (Extension, error)
+}
+
+// Extension is what a service adds to the health server.
+type Extension struct {
+	// Handlers maps a ServeMux pattern (for example "/api/v1/") to its handler.
+	// The health handler keeps every path not claimed here.
+	Handlers map[string]http.Handler
+	// Background functions run in their own goroutines until the context they
+	// receive is cancelled; Run waits for them before it closes the pool.
+	Background []func(ctx context.Context)
 }
 
 // Run executes the shared start-up sequence and serves until ctx is cancelled.
@@ -242,11 +255,50 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 	}
 	defer client.Close()
 
-	server := newHTTPServer(svc.Addr, health.Handler(
+	var ext Extension
+	if svc.Extend != nil {
+		ext, err = svc.Extend(ctx, log, pool)
+		if err != nil {
+			log.Error("start-up failed", "error", err.Error())
+			return ExitFailure
+		}
+	}
+
+	healthHandler := health.Handler(
 		[]health.Check{PostgresCheck(pool, svc.Common.DatabaseURL), ValkeyCheck(client)},
 		health.WithLogger(log),
-	))
-	if err := Serve(ctx, log, svc.Common.ShutdownTimeout, server); err != nil {
+	)
+	handler := http.Handler(healthHandler)
+	if len(ext.Handlers) > 0 {
+		mux := http.NewServeMux()
+		mux.Handle("/", healthHandler)
+		for pattern, extra := range ext.Handlers {
+			mux.Handle(pattern, extra)
+		}
+		handler = mux
+	}
+
+	background, stopBackground := context.WithCancel(ctx)
+	var running sync.WaitGroup
+	for _, fn := range ext.Background {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			fn(background)
+		}()
+	}
+	server := newHTTPServer(svc.Addr, handler)
+	// Requests must not see the shutdown signal: Serve drains them first. Their
+	// context is cancelled once Serve has returned (drained, or timed out and
+	// closed), so none is still running when the pool closes.
+	requests, cancelRequests := context.WithCancel(context.WithoutCancel(ctx))
+	server.BaseContext = func(net.Listener) context.Context { return requests }
+	err = Serve(ctx, log, svc.Common.ShutdownTimeout, server)
+	cancelRequests()
+	// Stop the loops and wait for them while the pool is still open.
+	stopBackground()
+	running.Wait()
+	if err != nil {
 		log.Error("serve failed", "error", err.Error())
 		return ExitFailure
 	}

@@ -7,8 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -25,7 +23,7 @@ const (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := app.SignalContext(context.Background())
 	code := run(ctx, os.Args, os.Getenv, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
@@ -61,13 +59,13 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 		Name:   serviceName,
 		Common: cfg.Common,
 		Addr:   cfg.HTTPAddr,
-		Fields: []any{"migrate_on_start", cfg.MigrateOnStart},
+		Fields: []any{"migrate_on_start", cfg.MigrateOnStart, "migrate_timeout", cfg.MigrateTimeout.String()},
 		Prepare: func(ctx context.Context, log *slog.Logger, _ *pgxpool.Pool) error {
 			if !cfg.MigrateOnStart {
 				return nil
 			}
 			log.Info("applying migrations")
-			migrateCtx, cancel := context.WithTimeout(ctx, cfg.StartupTimeout)
+			migrateCtx, cancel := context.WithTimeout(ctx, cfg.MigrateTimeout)
 			defer cancel()
 			return db.Migrate(migrateCtx, cfg.DatabaseURL)
 		},

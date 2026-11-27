@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { DataTable } from './DataTable'
@@ -55,5 +57,16 @@ describe('DataTable', () => {
     render(<DataTable label="Runs" columns={columns} rows={[]} rowKey={(r: Row) => r.id} empty={<p>No runs yet</p>} />)
     expect(screen.getByText('No runs yet')).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
+})
+
+// jsdom does no layout, so this guards the cause of the sideways page scroll found at 380px: the visually hidden
+// header text is position:absolute and escaped the scroll box. Checked in Chrome at 360px and 380px on /cli and
+// /admin/groups (document scrollWidth equals clientWidth).
+describe('DataTable scroll box', () => {
+  it('is a positioning context so absolutely positioned header text stays inside it', () => {
+    const rules = readFileSync(resolve(__dirname, 'DataTable.css'), 'utf8')
+    const scrollRule = /\.ui-table-scroll\s*\{([^}]*)\}/.exec(rules)?.[1] ?? ''
+    expect(scrollRule).toMatch(/position:\s*relative/)
   })
 })

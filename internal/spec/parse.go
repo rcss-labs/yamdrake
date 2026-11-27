@@ -91,7 +91,11 @@ func ParseJob(file string, data []byte) (job Job, problems Problems) {
 	job.Title = p.text(p.require(fields, root, "title"), "title")
 
 	environment := p.fields(p.require(fields, root, "environment"), "environment", "labels")
-	job.Labels = p.labels(p.require(environment, fields["environment"], "labels"), "environment.labels")
+	labelsNode := p.require(environment, fields["environment"], "labels")
+	job.Labels = p.labels(labelsNode, "environment.labels")
+	if labelsNode != nil {
+		job.LabelsLine = labelsNode.Line
+	}
 
 	job.Groups = p.groups(p.require(fields, root, "groups"))
 
@@ -543,7 +547,11 @@ func (p *parser) approval(n *yaml.Node) *Approval {
 	fields := p.fields(n, "approval", "when", "expires")
 	approval := &Approval{Expires: 24 * time.Hour}
 	when := p.fields(p.require(fields, n, "when"), "approval.when", "labels")
-	approval.Labels = p.labels(p.require(when, fields["when"], "labels"), "approval.when.labels")
+	labelsNode := p.require(when, fields["when"], "labels")
+	approval.Labels = p.labels(labelsNode, "approval.when.labels")
+	if labelsNode != nil {
+		approval.Line = labelsNode.Line
+	}
 	if node := fields["expires"]; node != nil {
 		if expires := p.duration(node, "approval.expires"); expires > 0 {
 			approval.Expires = expires
@@ -574,10 +582,10 @@ func (p *parser) step(n *yaml.Node) Step {
 // need reads a needs item: a bare step name or a {step, scope} mapping.
 func (p *parser) need(n *yaml.Node) Need {
 	if n.Kind == yaml.ScalarNode {
-		return Need{Step: p.name(n, "needs step"), Scope: "step"}
+		return Need{Step: p.name(n, "needs step"), Scope: "step", Line: n.Line}
 	}
 	fields := p.fields(n, "needs item", "step", "scope")
-	need := Need{Scope: "step"}
+	need := Need{Scope: "step", Line: n.Line}
 	need.Step = p.name(p.require(fields, n, "step"), "needs step")
 	if node := fields["scope"]; node != nil {
 		if scope := p.oneOf(node, "needs scope", []string{"step", "service"}); scope != "" {

@@ -145,7 +145,7 @@ func TestParseValidFixtures(t *testing.T) {
 			if len(job.Steps[i].Needs) == 0 && len(want) == 0 {
 				continue
 			}
-			if !reflect.DeepEqual(job.Steps[i].Needs, want) {
+			if !reflect.DeepEqual(withoutNeedLines(job.Steps[i].Needs), want) {
 				t.Errorf("step %s needs = %+v, want %+v", job.Steps[i].Name, job.Steps[i].Needs, want)
 			}
 		}
@@ -194,7 +194,7 @@ steps:
 		if job.Approval == nil || job.Approval.Expires != 24*time.Hour {
 			t.Errorf("approval = %+v, want expires 24h", job.Approval)
 		}
-		if got := job.Steps[1].Needs; len(got) != 1 || got[0] != (Need{Step: "config-backends", Scope: "step"}) {
+		if got := job.Steps[1].Needs; len(got) != 1 || withoutNeedLines(got)[0] != (Need{Step: "config-backends", Scope: "step"}) {
 			t.Errorf("needs = %+v, want one step-scoped need", got)
 		}
 		if job.Steps[0].Timeout != 0 || job.Steps[0].MaxParallel != 0 {
@@ -456,4 +456,13 @@ func TestModelJSONRoundTrip(t *testing.T) {
 	if !strings.Contains(string(encoded), `"max_parallel":2`) {
 		t.Errorf("step JSON lacks snake_case max_parallel: %s", encoded)
 	}
+}
+
+// withoutNeedLines clears Need.Line so tests can compare the logical content.
+func withoutNeedLines(needs []Need) []Need {
+	out := append([]Need(nil), needs...)
+	for i := range out {
+		out[i].Line = 0
+	}
+	return out
 }

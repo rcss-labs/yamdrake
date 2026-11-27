@@ -60,6 +60,9 @@ export interface LoginRequest {
 }
 
 // ---- Problems and definitions (internal/spec) -------------------------------
+// Slices in spec structs are built by appending to nil, so the server sends null when empty:
+// every list of a parsed definition or service below is `T[] | null`. Lists in the API's own
+// response structs (inventory, jobs, folders, problems) are never null.
 
 export interface Problem {
   file: string
@@ -116,8 +119,9 @@ export interface Toml {
 export interface ServiceEnvironment {
   ecs_service: string
   ecr_repository: string
-  env_files: EnvFile[]
-  tomls: Toml[]
+  /** The Go server sends null, not [], when the file has none. */
+  env_files: EnvFile[] | null
+  tomls: Toml[] | null
   line: number
 }
 
@@ -150,19 +154,20 @@ export interface JobStep {
   max_parallel: number
   /** Nanoseconds (Go time.Duration); 0 means not set. */
   timeout: number
-  needs: JobNeed[]
+  /** null when the step needs nothing (the Go server leaves the list nil). */
+  needs: JobNeed[] | null
   line: number
 }
 
 export interface JobGroup {
   id: string
   label: string
-  services: string[]
+  services: string[] | null
   line: number
 }
 
 export interface JobApproval {
-  labels: string[]
+  labels: string[] | null
   /** Nanoseconds (Go time.Duration). */
   expires: number
   line: number
@@ -173,12 +178,12 @@ export interface JobDefinition {
   file: string
   id: string
   title: string
-  labels: string[]
+  labels: string[] | null
   labels_line: number
-  groups: JobGroup[]
+  groups: JobGroup[] | null
   approval: JobApproval | null
   slack_channel: string
-  steps: JobStep[]
+  steps: JobStep[] | null
 }
 
 // ---- Folders and jobs -------------------------------------------------------

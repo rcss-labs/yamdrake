@@ -105,7 +105,8 @@ describe('SessionProvider', () => {
     const { location } = renderApp(<CreateFolderForm />, { route: '/jobs/7', me: jobManagerMe })
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Create folder' }))
-    // Sign the mock server out first: the request the person's click makes finds the session gone.
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Folder created'))
+    // The session ends now: the request the next click makes is answered with 401.
     failNext('POST', '/api/v1/folders', 401, 'unauthorized', 'Sign in again')
     await user.click(await screen.findByRole('button', { name: 'Create folder' }))
 

@@ -665,6 +665,11 @@ export const handlers: HttpHandler[] = [
   // Identity provider group mappings
   route('GET', '/api/v1/admin/idp-mappings', manageAccess, () => json({ mappings: state.mappings })),
 
+  route('GET', '/api/v1/admin/idp-mappings/:idpGroup', manageAccess, ({ params }) => {
+    const mapping = state.mappings.find((candidate) => candidate.idp_group === decodeURIComponent(params.idpGroup))
+    return mapping ? json(mapping) : notFound('mapping')
+  }),
+
   route('PUT', '/api/v1/admin/idp-mappings/:idpGroup', manageAccess, ({ params, body }) => {
     const idpGroup = decodeURIComponent(params.idpGroup)
     const groupId = whole(fields(body).group_id)

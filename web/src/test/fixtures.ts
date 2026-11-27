@@ -126,7 +126,7 @@ function serviceFixture(name: string, environments: string[]): Service {
                 line: 12 + index,
               },
             ]
-          : [],
+          : null,
       tomls:
         name === 'billing'
           ? [
@@ -137,7 +137,7 @@ function serviceFixture(name: string, environments: string[]): Service {
                 line: 20 + index,
               },
             ]
-          : [],
+          : null,
       line: 10 + index,
     }
   })
@@ -162,7 +162,7 @@ export const foldersFixture: Folder[] = [
   { id: 3, name: 'Releases' },
 ]
 
-export function buildJobDefinition(id: string, title: string, groups: JobDefinition['groups'], approvalLabels: string[]): JobDefinition {
+export function buildJobDefinition(id: string, title: string, groups: NonNullable<JobDefinition['groups']>, approvalLabels: string[]): JobDefinition {
   return {
     file: `jobs/${id}.yaml`,
     id,
@@ -173,7 +173,7 @@ export function buildJobDefinition(id: string, title: string, groups: JobDefinit
     approval: approvalLabels.length > 0 ? { labels: approvalLabels, expires: 4 * 3600 * 1e9, line: 9 } : null,
     slack_channel: '#deployments',
     steps: [
-      { name: 'copy-config', use: 'copy-config', group: groups[0]?.id ?? '', max_parallel: 4, timeout: 0, needs: [], line: 14 },
+      { name: 'copy-config', use: 'copy-config', group: groups[0]?.id ?? '', max_parallel: 4, timeout: 0, needs: null, line: 14 },
       {
         name: 'deploy',
         use: 'deploy-ecs',
@@ -335,6 +335,19 @@ export const usersFixture: AdminUser[] = [
     created_at: t('2026-10-05T10:00:00Z'),
   },
 ]
+
+// Everyone the Me presets stand for is also a row here, so the Users screen can show them.
+const presetUsers: AdminUser[] = [viewerMe, jobManagerMe, accessManagerMe, connectionsManagerMe, auditorMe].map((me) => ({
+  id: me.id,
+  email: me.email,
+  name: me.name,
+  source: 'saml',
+  disabled: false,
+  groups: [],
+  last_sign_in_at: null,
+  created_at: t('2026-10-06T10:00:00Z'),
+}))
+usersFixture.push(...presetUsers)
 
 export const grantsFixture: AdminGrant[] = [
   { id: 1, group_id: 2, action: 'run', label: 'dev', environment: '', folder_id: 0 },

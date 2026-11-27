@@ -1,7 +1,4 @@
 .sign-in {
-  /* The mockup's white surface and hover ink are not in tokens.css; kept local until the kit adds them. */
-  --sign-in-surface: #fff;
-  --sign-in-ink-hover: #2b3038;
   min-height: 100vh;
   display: flex;
   align-items: center;
@@ -16,7 +13,7 @@
   flex-direction: column;
   gap: 20px;
   padding: 32px;
-  background: var(--sign-in-surface);
+  background: Canvas;
   border: 1px solid var(--line);
   border-radius: 12px;
 }
@@ -75,7 +72,7 @@
   padding: 0 10px;
   border: 1px solid var(--line2);
   border-radius: 8px;
-  background: var(--sign-in-surface);
+  background: Canvas;
   font-size: 14px;
   font-weight: 400;
   color: var(--ink);
@@ -98,7 +95,7 @@
   padding: 0 14px;
   border: 1px solid var(--line2);
   border-radius: 8px;
-  background: var(--sign-in-surface);
+  background: Canvas;
   color: var(--ink);
   font-weight: 500;
   text-decoration: none;
@@ -122,10 +119,10 @@
   height: 40px;
   background: var(--ink);
   border-color: var(--ink);
-  color: var(--sign-in-surface);
+  color: Canvas;
 }
 
 .sign-in-primary:hover {
-  background: var(--sign-in-ink-hover);
-  color: var(--sign-in-surface);
+  background: color-mix(in srgb, var(--ink) 60%, var(--ink2));
+  color: Canvas;
 }

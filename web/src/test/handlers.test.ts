@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { api } from '../api/client'
 import type { ApiError } from '../api/error'
-import type { Me } from '../api/types'
+import type { JobDetail, Me, Service } from '../api/types'
 import {
   accessManagerMe,
   adminMe,
@@ -59,6 +59,7 @@ const routes: Route[] = [
   { method: 'POST', path: '/api/v1/admin/groups', body: { name: 'Ops' }, allowed: accessManagerMe, success: 201 },
   { method: 'PATCH', path: '/api/v1/admin/groups/2', body: { admin: false }, allowed: accessManagerMe, success: 200 },
   { method: 'GET', path: '/api/v1/admin/idp-mappings', allowed: accessManagerMe, success: 200 },
+  { method: 'GET', path: '/api/v1/admin/idp-mappings/eng-qa', allowed: accessManagerMe, success: 200 },
   { method: 'PUT', path: '/api/v1/admin/idp-mappings/eng-ops', body: { group_id: 2 }, allowed: accessManagerMe, success: 200 },
   { method: 'DELETE', path: '/api/v1/admin/idp-mappings/eng-qa', allowed: accessManagerMe, success: 204 },
   { method: 'GET', path: '/api/v1/admin/grants', allowed: accessManagerMe, success: 200 },
@@ -122,6 +123,28 @@ describe('the mock API', () => {
     const last = await api<{ entries: { id: number }[]; next_before: number | null }>('GET', '/api/v1/admin/audit?limit=10&before=2')
     expect(last.entries.map((entry) => entry.id)).toEqual([1])
     expect(last.next_before).toBeNull()
+  })
+
+  it('sends null for the lists the Go server leaves nil (needs, env_files, tomls)', async () => {
+    const service = await api<Service>('GET', '/api/v1/inventory/services/billing')
+    expect(service.environments['hetzner-01']?.env_files).toBeNull()
+    const backend = await api<Service>('GET', '/api/v1/inventory/services/backend-api')
+    expect(backend.environments['hetzner-01']?.tomls).toBeNull()
+    const job = await api<JobDetail>('GET', '/api/v1/jobs/1')
+    expect(job.definition?.steps?.[0]?.needs).toBeNull()
+  })
+
+  it('answers the single IdP mapping and 404 for an unknown one', async () => {
+    await expect(api('GET', '/api/v1/admin/idp-mappings/eng-qa')).resolves.toEqual({ idp_group: 'eng-qa', group_id: 2 })
+    await expect(api('GET', '/api/v1/admin/idp-mappings/nope')).rejects.toMatchObject({ status: 404 })
+  })
+
+  it('lists every signed-in preset person as a user', async () => {
+    signInAs(accessManagerMe)
+    const { users } = await api<{ users: { email: string }[] }>('GET', '/api/v1/admin/users')
+    for (const person of [viewerMe, jobManagerMe, accessManagerMe, connectionsManagerMe, auditorMe]) {
+      expect(users.map((user) => user.email)).toContain(person.email)
+    }
   })
 
   it('has one job with problems that is still runnable and one that cannot run', () => {

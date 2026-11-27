@@ -47,9 +47,13 @@ dev-up: ## Start local PostgreSQL and Valkey and wait until healthy
 dev-down: ## Stop local services and delete their volumes
 	docker compose down -v
 
+# Defaults point at the dev stack; CI and others may set these in the environment.
+YUMDRAKE_TEST_DATABASE_URL ?= postgres://yumdrake:yumdrake@localhost:5432/yumdrake?sslmode=disable
+YUMDRAKE_TEST_VALKEY_ADDR ?= localhost:6379
+
 test-integration: ## Run integration tests against the local services (see dev-up)
-	YUMDRAKE_TEST_DATABASE_URL='postgres://yumdrake:yumdrake@localhost:5432/yumdrake?sslmode=disable' \
-	YUMDRAKE_TEST_VALKEY_ADDR='localhost:6379' \
+	YUMDRAKE_TEST_DATABASE_URL='$(YUMDRAKE_TEST_DATABASE_URL)' \
+	YUMDRAKE_TEST_VALKEY_ADDR='$(YUMDRAKE_TEST_VALKEY_ADDR)' \
 	go test -race -tags integration ./...
 
 images: ## Build the yumdrake-orchestrator and yumdrake-runner images (tag :dev)

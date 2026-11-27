@@ -127,6 +127,10 @@ type InventoryStatus struct {
 	CheckedAt      *time.Time
 	Problems       []byte
 	ProblemsCommit string
+	// SyncError is the last failure to reach GitHub (empty when the last
+	// contact succeeded). SaveInventoryStatus never touches it.
+	SyncError   string
+	SyncErrorAt *time.Time
 }
 
 // SaveInventoryStatus overwrites the single status row.
@@ -144,10 +148,27 @@ func SaveInventoryStatus(ctx context.Context, db DBTX, st InventoryStatus) error
 // first poll).
 func GetInventoryStatus(ctx context.Context, db DBTX) (InventoryStatus, error) {
 	var st InventoryStatus
-	err := db.QueryRow(ctx, "SELECT checked_at, problems, problems_commit FROM inventory_status WHERE id = 1").
-		Scan(&st.CheckedAt, &st.Problems, &st.ProblemsCommit)
+	err := db.QueryRow(ctx, "SELECT checked_at, problems, problems_commit, COALESCE(sync_error, ''), sync_error_at FROM inventory_status WHERE id = 1").
+		Scan(&st.CheckedAt, &st.Problems, &st.ProblemsCommit, &st.SyncError, &st.SyncErrorAt)
 	if err != nil {
 		return InventoryStatus{}, fmt.Errorf("get inventory status: %w", err)
 	}
 	return st, nil
+}
+
+// SetInventorySyncError records a failure to reach GitHub; the snapshot,
+// problems and check time are untouched.
+func SetInventorySyncError(ctx context.Context, db DBTX, message string, at time.Time) error {
+	if _, err := db.Exec(ctx, "UPDATE inventory_status SET sync_error = $1, sync_error_at = $2 WHERE id = 1", message, at); err != nil {
+		return fmt.Errorf("set inventory sync error: %w", err)
+	}
+	return nil
+}
+
+// ClearInventorySyncError removes the recorded failure.
+func ClearInventorySyncError(ctx context.Context, db DBTX) error {
+	if _, err := db.Exec(ctx, "UPDATE inventory_status SET sync_error = NULL, sync_error_at = NULL WHERE id = 1 AND sync_error IS NOT NULL"); err != nil {
+		return fmt.Errorf("clear inventory sync error: %w", err)
+	}
+	return nil
 }

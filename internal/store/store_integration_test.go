@@ -346,3 +346,65 @@ func TestInventorySourceAndStatus(t *testing.T) {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
 }
+
+func TestSyncErrorsAreRecordedAndClearedWithoutTouchingDefinitions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := newPool(t)
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	later := at.Add(time.Minute)
+
+	folder, err := CreateFolder(ctx, pool, "ops")
+	if err != nil {
+		t.Fatalf("CreateFolder: %v", err)
+	}
+	js, err := CreateJobSource(ctx, pool, JobSource{FolderID: folder.ID, Repo: "acme/jobs", Branch: "main", Path: "a.yaml"})
+	if err != nil {
+		t.Fatalf("CreateJobSource: %v", err)
+	}
+	if err := SaveJobGood(ctx, pool, js.ID, []byte(`{"id":"a"}`), "a", "A", "c1", at); err != nil {
+		t.Fatalf("SaveJobGood: %v", err)
+	}
+	if err := SaveInventoryStatus(ctx, pool, InventoryStatus{CheckedAt: &at}); err != nil {
+		t.Fatalf("SaveInventoryStatus: %v", err)
+	}
+
+	if err := SetJobSyncError(ctx, pool, js.ID, "boom", later); err != nil {
+		t.Fatalf("SetJobSyncError: %v", err)
+	}
+	if err := SetInventorySyncError(ctx, pool, "inventory boom", later); err != nil {
+		t.Fatalf("SetInventorySyncError: %v", err)
+	}
+	got, err := GetJobSource(ctx, pool, js.ID)
+	if err != nil || got.SyncError != "boom" || got.SyncErrorAt == nil || !got.SyncErrorAt.Equal(later) ||
+		got.LastGoodCommit != "c1" || got.CheckedAt == nil || !got.CheckedAt.Equal(at) {
+		t.Fatalf("job after set = %+v, %v", got, err)
+	}
+	st, err := GetInventoryStatus(ctx, pool)
+	if err != nil || st.SyncError != "inventory boom" || st.SyncErrorAt == nil || !st.SyncErrorAt.Equal(later) ||
+		st.CheckedAt == nil || !st.CheckedAt.Equal(at) {
+		t.Fatalf("status after set = %+v, %v", st, err)
+	}
+
+	// Saving a status or a poll result leaves the error alone; clearing removes it.
+	if err := TouchJobChecked(ctx, pool, js.ID, later); err != nil {
+		t.Fatalf("TouchJobChecked: %v", err)
+	}
+	if got, _ = GetJobSource(ctx, pool, js.ID); got.SyncError != "boom" {
+		t.Fatalf("TouchJobChecked cleared the error: %+v", got)
+	}
+	if err := ClearJobSyncError(ctx, pool, js.ID); err != nil {
+		t.Fatalf("ClearJobSyncError: %v", err)
+	}
+	if err := ClearInventorySyncError(ctx, pool); err != nil {
+		t.Fatalf("ClearInventorySyncError: %v", err)
+	}
+	got, _ = GetJobSource(ctx, pool, js.ID)
+	st, _ = GetInventoryStatus(ctx, pool)
+	if got.SyncError != "" || got.SyncErrorAt != nil || st.SyncError != "" || st.SyncErrorAt != nil {
+		t.Fatalf("not cleared: %+v %+v", got, st)
+	}
+	if err := SetJobSyncError(ctx, pool, 9999, "x", later); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetJobSyncError on missing job = %v, want ErrNotFound", err)
+	}
+}

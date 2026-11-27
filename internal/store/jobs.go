@@ -18,15 +18,21 @@ type JobSource struct {
 	Problems            []byte // JSON of spec.Problems for the newest commit, nil when clean
 	ProblemsCommit      string
 	CheckedAt, SyncedAt *time.Time
+	// SyncError is the last failure to reach GitHub for this source (empty
+	// when the last contact succeeded) and SyncErrorAt when it happened.
+	SyncError   string
+	SyncErrorAt *time.Time
 }
 
 const jobSourceColumns = `id, folder_id, repo, branch, path, job_id, title, last_good, last_good_commit,
-	runnable, problems, problems_commit, checked_at, synced_at`
+	runnable, problems, problems_commit, checked_at, synced_at,
+	COALESCE(sync_error, ''), sync_error_at`
 
 func scanJobSource(row interface{ Scan(...any) error }) (JobSource, error) {
 	var s JobSource
 	err := row.Scan(&s.ID, &s.FolderID, &s.Repo, &s.Branch, &s.Path, &s.JobID, &s.Title, &s.LastGood,
-		&s.LastGoodCommit, &s.Runnable, &s.Problems, &s.ProblemsCommit, &s.CheckedAt, &s.SyncedAt)
+		&s.LastGoodCommit, &s.Runnable, &s.Problems, &s.ProblemsCommit, &s.CheckedAt, &s.SyncedAt,
+		&s.SyncError, &s.SyncErrorAt)
 	return s, err
 }
 
@@ -125,6 +131,41 @@ func TouchJobChecked(ctx context.Context, db DBTX, id int64, at time.Time) error
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("touch job checked: %w", ErrNotFound)
+	}
+	return nil
+}
+
+// SetJobRunnable changes only the runnable flag; checked_at, problems and the
+// stored definition stay as they are.
+func SetJobRunnable(ctx context.Context, db DBTX, id int64, runnable bool) error {
+	tag, err := db.Exec(ctx, "UPDATE job_sources SET runnable = $2 WHERE id = $1", id, runnable)
+	if err != nil {
+		return fmt.Errorf("set job runnable: %w", mapError(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("set job runnable: %w", ErrNotFound)
+	}
+	return nil
+}
+
+// SetJobSyncError records a failure to reach GitHub; definitions are untouched.
+func SetJobSyncError(ctx context.Context, db DBTX, id int64, message string, at time.Time) error {
+	tag, err := db.Exec(ctx, "UPDATE job_sources SET sync_error = $2, sync_error_at = $3 WHERE id = $1", id, message, at)
+	if err != nil {
+		return fmt.Errorf("set job sync error: %w", mapError(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("set job sync error: %w", ErrNotFound)
+	}
+	return nil
+}
+
+// ClearJobSyncError removes the recorded failure; a source without one is not an error.
+func ClearJobSyncError(ctx context.Context, db DBTX, id int64) error {
+	_, err := db.Exec(ctx,
+		"UPDATE job_sources SET sync_error = NULL, sync_error_at = NULL WHERE id = $1 AND sync_error IS NOT NULL", id)
+	if err != nil {
+		return fmt.Errorf("clear job sync error: %w", err)
 	}
 	return nil
 }

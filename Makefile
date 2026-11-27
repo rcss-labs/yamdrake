@@ -10,7 +10,7 @@ BINARY_PACKAGES := orchestrator runner
 # Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
 export VERSION COMMIT
 
-.PHONY: help build lint test dev-up dev-down test-integration images smoke
+.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -56,6 +56,9 @@ export YUMDRAKE_TEST_DATABASE_URL YUMDRAKE_TEST_VALKEY_ADDR
 
 test-integration: ## Run integration tests against the local services (see dev-up)
 	go test -race -tags integration ./...
+
+test-e2e: ## Run the end-to-end tests (in-process orchestrator, fake GitHub) against the local services
+	go test -race -tags e2e -timeout 3m ./test/e2e/...
 
 images: ## Build the yumdrake-orchestrator and yumdrake-runner images (tag :dev)
 	@for svc in orchestrator runner; do \

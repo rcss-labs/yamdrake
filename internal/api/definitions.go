@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -110,6 +111,7 @@ func (s *server) getService(w http.ResponseWriter, r *http.Request) {
 		notFound(w, "service")
 		return
 	}
+	withEmptyLists(reflect.ValueOf(&service))
 	writeJSON(w, http.StatusOK, service)
 }
 
@@ -300,7 +302,11 @@ func (s *server) detail(ctx context.Context, id int64) (jobDetail, error) {
 	if problems == nil {
 		problems = spec.Problems{}
 	}
-	return jobDetail{jobSummary: summary, Definition: job.LastGood, Problems: problems, ProblemsCommit: job.ProblemsCommit}, nil
+	definition, err := emptyLists[spec.Job](job.LastGood)
+	if err != nil {
+		return jobDetail{}, fmt.Errorf("job source %d: %w", id, err)
+	}
+	return jobDetail{jobSummary: summary, Definition: definition, Problems: problems, ProblemsCommit: job.ProblemsCommit}, nil
 }
 
 // respondDetail writes the job source id, or 404 when it does not exist.

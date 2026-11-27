@@ -3,11 +3,13 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"time"
 
+	"github.com/rcss-labs/yamdrake/internal/github"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -164,6 +166,12 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 		prefix = dir + "/"
 	}
 	files, err := source.ListFiles(ctx, src.Repo, commit, dir)
+	if errors.Is(err, github.ErrNotFound) && dir != "" {
+		// The commit was just read from the branch head, so a missing
+		// directory is a wrong path: reported below as a missing
+		// environments.yaml, not as a source failure.
+		files, err = nil, nil
+	}
 	if err != nil {
 		return spec.Inventory{}, nil, fail("list inventory files", err, "commit", commit)
 	}

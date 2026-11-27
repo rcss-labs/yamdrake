@@ -41,6 +41,8 @@ type fakeSource struct {
 	heads     map[string]string // "repo@branch" -> commit
 	err       error
 	headCalls int
+	// listErr, when set, is returned by ListFiles only.
+	listErr error
 	// onRead, when set, runs at the start of every ReadFile without the lock
 	// held, so a test can park a read until it chooses to release it.
 	onRead func(repo, path string)
@@ -93,6 +95,9 @@ func (f *fakeSource) HeadCommit(_ context.Context, repo, branch string) (string,
 func (f *fakeSource) ListFiles(_ context.Context, repo, commit, dir string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -966,5 +971,19 @@ func TestRateLimitEndsTheRoundWithoutMoreGitHubCalls(t *testing.T) {
 	}
 	if calls := h.src.headCallCount() - before; calls != 1 {
 		t.Fatalf("GitHub head lookups = %d, want 1: the round must stop at the rate limit", calls)
+	}
+}
+
+func TestMissingInventoryDirectoryIsAProblemNotASourceError(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.configureInventory()
+	h.pushInventory("c1")
+	h.src.listErr = fmt.Errorf("github: GET /repos/acme/inventory/git/trees/c1:inv: %w", github.ErrNotFound)
+	if err := h.engine.SyncInventory(context.Background()); err != nil {
+		t.Fatalf("SyncInventory: %v, want a problem rather than a source error", err)
+	}
+	if st := h.status(); st.ProblemsCommit != "c1" || !strings.Contains(problemsText(t, st.Problems), "environments.yaml") {
+		t.Fatalf("unexpected status: %+v", st)
 	}
 }

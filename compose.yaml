@@ -1,0 +1,25 @@
+# Local development services. Do not set a top-level `name:` so that separate
+# worktrees stay separate Compose projects.
+services:
+  postgres:
+    image: postgres:17.12-alpine
+    environment:
+      POSTGRES_DB: yumdrake
+      POSTGRES_USER: yumdrake
+      POSTGRES_PASSWORD: yumdrake
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yumdrake -d yumdrake"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  valkey:
+    image: valkey/valkey:8.1.12
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

@@ -38,14 +38,13 @@ lint: ## Check gofmt, go vet and golangci-lint
 test: ## Run unit tests with the race detector
 	go test -race ./...
 
-dev-up: ## Start local dependencies (stub until Task 3)
-	@echo "make dev-up: not implemented yet (Task 3)" >&2
-	@exit 1
+dev-up: ## Start local PostgreSQL and Valkey and wait until healthy
+	docker compose up -d --wait postgres valkey
 
-dev-down: ## Stop local dependencies (stub until Task 3)
-	@echo "make dev-down: not implemented yet (Task 3)" >&2
-	@exit 1
+dev-down: ## Stop local services and delete their volumes
+	docker compose down -v
 
-test-integration: ## Run integration tests (stub until Task 3)
-	@echo "make test-integration: not implemented yet (Task 3)" >&2
-	@exit 1
+test-integration: ## Run integration tests against the local services (see dev-up)
+	YUMDRAKE_TEST_DATABASE_URL='postgres://yumdrake:yumdrake@localhost:5432/yumdrake?sslmode=disable' \
+	YUMDRAKE_TEST_VALKEY_ADDR='localhost:6379' \
+	go test -race -tags integration ./...

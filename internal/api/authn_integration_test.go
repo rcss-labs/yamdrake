@@ -341,8 +341,7 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 			t.Errorf("route %q has action %q; the brief says %q (listed: %v)", route.pattern, route.action, want, ok)
 		}
 	}
-	// A route registered outside routes() would have no entry above; at least
-	// an unlisted path must not be served, even to an admin.
+	// An unlisted path is not served, even to an admin.
 	h.expect(h.send(sent{method: "GET", path: "/api/v1/not-in-the-table", bearer: h.adminToken}), http.StatusNotFound, "not_found")
 	plain := h.newUser("routeplain")
 	plainToken, _ := h.newToken(plain.ID)
@@ -375,5 +374,28 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		if rec := h.send(sent{method: method, path: path, bearer: token}); rec.Code == http.StatusForbidden {
 			t.Errorf("%s with %s granted still got 403", name, route.action)
 		}
+	}
+}
+
+// A pattern registered next to the table, without a permission decision, must
+// never reach its handler.
+func TestRouteOutsideTheTableIsNeverServed(t *testing.T) {
+	h := newHarness(t)
+	reached := false
+	deps := h.deps
+	deps.Now = time.Now
+	s := &server{Deps: deps}
+	handler := s.authenticate(s.authenticatedMux(func(mux *http.ServeMux) {
+		mux.HandleFunc("GET /api/v1/sneaky", func(w http.ResponseWriter, _ *http.Request) {
+			reached = true
+			w.WriteHeader(http.StatusOK)
+		})
+	}))
+	req := httptest.NewRequest("GET", "/api/v1/sneaky", nil)
+	req.Header.Set("Authorization", "Bearer "+h.adminToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if reached || rec.Code != http.StatusNotFound {
+		t.Fatalf("a route outside the table: reached=%v, %s; want it refused with 404", reached, failure(rec))
 	}
 }

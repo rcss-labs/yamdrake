@@ -900,7 +900,7 @@ func (v *hookValkey) DoMulti(ctx context.Context, cmds ...valkey.Completed) []va
 }
 
 func keyPrefix(prefix string) func([]string) bool {
-	return func(c []string) bool { return len(c) > 1 && strings.HasPrefix(c[1], prefix) && c[0] == "SET" }
+	return func(c []string) bool { return len(c) > 1 && strings.Contains(c[1], prefix) && c[0] == "SET" }
 }
 
 func TestUnsignedResponseWithSignedAssertionIsAccepted(t *testing.T) {
@@ -1081,5 +1081,34 @@ func TestValkeyFailingAtTheRequestIDCheckIsA503(t *testing.T) {
 	rec := h.postACS(flow, true)
 	if rec.Code != http.StatusServiceUnavailable || sessionCookie(rec) != nil || h.userCount() != users || h.auditCount("user.provision") != 0 {
 		t.Fatalf("status %d %s: want 503 and nothing created", rec.Code, failure(rec))
+	}
+}
+
+// Runs that share one Valkey are told apart by Deps.KeyPrefix: a replay recorded
+// under one prefix is invisible under another.
+func TestSAMLReplayKeysUseTheKeyPrefix(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	idp.signIn(uniqueEmail(t, "olga"), "Olga", "eng-devops")
+	flow := idp.begin()
+	base := h.deps
+	handlerFor := func(prefix string) http.Handler {
+		d := base
+		d.KeyPrefix = prefix + uniqueEmail(t, "p") + ":"
+		d.Sessions = session.NewManager(d.Valkey, time.Now, session.WithKeyPrefix(d.KeyPrefix))
+		return New(d)
+	}
+	a, b := handlerFor("a"), handlerFor("b")
+	post := func(handler http.Handler) int {
+		h.handler = handler
+		return h.postACS(flow, true).Code
+	}
+	if code := post(a); code != http.StatusSeeOther {
+		t.Fatalf("first post under prefix a: %d, want 303", code)
+	}
+	if code := post(b); code != http.StatusSeeOther {
+		t.Errorf("same response under prefix b: %d, want 303 (it must not see a's replay keys)", code)
+	}
+	if code := post(a); code != http.StatusBadRequest {
+		t.Errorf("same response under prefix a again: %d, want 400", code)
 	}
 }

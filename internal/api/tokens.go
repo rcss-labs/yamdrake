@@ -172,9 +172,9 @@ func deviceHash(deviceCode string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func deviceKey(hash string) string     { return "device:" + hash }
-func deviceUserKey(code string) string { return "device-user:" + code }
-func devicePollKey(hash string) string { return "device-poll:" + hash }
+func (s *server) deviceKey(hash string) string     { return s.KeyPrefix + "device:" + hash }
+func (s *server) deviceUserKey(code string) string { return s.KeyPrefix + "device-user:" + code }
+func (s *server) devicePollKey(hash string) string { return s.KeyPrefix + "device-poll:" + hash }
 
 func validDeviceCode(code string) bool {
 	if len(code) != deviceCodeLength {
@@ -229,7 +229,7 @@ func (s *server) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)
 	defer cancel()
 	b := s.Valkey.B()
-	if err := s.Valkey.Do(ctx, b.Set().Key(deviceKey(hash)).Value("pending").Ex(deviceTTL).Build()).Error(); err != nil {
+	if err := s.Valkey.Do(ctx, b.Set().Key(s.deviceKey(hash)).Value("pending").Ex(deviceTTL).Build()).Error(); err != nil {
 		s.valkeyFailed(w, "store device sign-in", err)
 		return
 	}
@@ -240,7 +240,7 @@ func (s *server) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, r, err)
 			return
 		}
-		err = s.Valkey.Do(ctx, b.Set().Key(deviceUserKey(userCode)).Value(hash).Nx().Ex(deviceTTL).Build()).Error()
+		err = s.Valkey.Do(ctx, b.Set().Key(s.deviceUserKey(userCode)).Value(hash).Nx().Ex(deviceTTL).Build()).Error()
 		if isNil(err) {
 			continue
 		}
@@ -282,7 +282,7 @@ func (s *server) confirmDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	b := s.Valkey.B()
 	// GETDEL: the first confirmation consumes the user code, so it cannot be
 	// confirmed again (by someone else) afterwards.
-	hash, err := s.Valkey.Do(ctx, b.Getdel().Key(deviceUserKey(userCode)).Build()).ToString()
+	hash, err := s.Valkey.Do(ctx, b.Getdel().Key(s.deviceUserKey(userCode)).Build()).ToString()
 	if isNil(err) {
 		notFound(w, "device code")
 		return
@@ -292,7 +292,7 @@ func (s *server) confirmDeviceLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// XX KEEPTTL: only a still-pending sign-in changes, with its remaining time.
-	err = s.Valkey.Do(ctx, b.Set().Key(deviceKey(hash)).Value(confirmedPrefix+idString(principal.UserID)).Xx().Keepttl().Build()).Error()
+	err = s.Valkey.Do(ctx, b.Set().Key(s.deviceKey(hash)).Value(confirmedPrefix+idString(principal.UserID)).Xx().Keepttl().Build()).Error()
 	if isNil(err) {
 		notFound(w, "device code")
 		return
@@ -304,7 +304,7 @@ func (s *server) confirmDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	if err := s.recordAudit(r.Context(), s.Pool, r, audit.Event{
 		Action: "cli_login.confirm", TargetType: "user", TargetID: idString(principal.UserID)}); err != nil {
 		// Do not leave an approval nobody can see in the log.
-		_ = s.Valkey.Do(ctx, b.Del().Key(deviceKey(hash)).Build()).Error()
+		_ = s.Valkey.Do(ctx, b.Del().Key(s.deviceKey(hash)).Build()).Error()
 		s.internalError(w, r, err)
 		return
 	}
@@ -345,7 +345,7 @@ func (s *server) pollDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)
 	defer cancel()
 	b := s.Valkey.B()
-	err := s.Valkey.Do(ctx, b.Set().Key(devicePollKey(hash)).Value("1").Nx().Px(s.DevicePollInterval).Build()).Error()
+	err := s.Valkey.Do(ctx, b.Set().Key(s.devicePollKey(hash)).Value("1").Nx().Px(s.DevicePollInterval).Build()).Error()
 	if isNil(err) {
 		w.Header().Set("Retry-After", strconv.FormatInt(s.pollSeconds(), 10))
 		writeError(w, http.StatusTooManyRequests, codeTooMany, "polling too fast; wait for the interval")
@@ -355,7 +355,7 @@ func (s *server) pollDeviceLogin(w http.ResponseWriter, r *http.Request) {
 		s.valkeyFailed(w, "rate-limit device poll", err)
 		return
 	}
-	state, err := readDeviceState(ctx, s.Valkey, deviceKey(hash))
+	state, err := readDeviceState(ctx, s.Valkey, s.deviceKey(hash))
 	if isNil(err) {
 		writeError(w, http.StatusBadRequest, "expired_token", "the device code is unknown or has expired")
 		return

@@ -304,7 +304,7 @@ func (c *valkeyReplayCache) Consume(assertionID string, expiresAt time.Time) err
 	// of the allowed skew is still remembered.
 	ttl := max(time.Until(expiresAt), 0) + time.Minute
 	b := c.s.Valkey.B()
-	err := c.s.Valkey.Do(c.ctx, b.Set().Key("saml-assertion:"+hex.EncodeToString(sum[:])).Value("1").Nx().Px(ttl).Build()).Error()
+	err := c.s.Valkey.Do(c.ctx, b.Set().Key(c.s.KeyPrefix+"saml-assertion:"+hex.EncodeToString(sum[:])).Value("1").Nx().Px(ttl).Build()).Error()
 	switch {
 	case err == nil:
 		return nil
@@ -468,7 +468,7 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	// One sign-in request is answered once: a second, different valid response
 	// to the same request is refused. Done after full validation, before any write.
 	sum := sha256.Sum256([]byte(requestID))
-	requestKey := "saml-request:" + hex.EncodeToString(sum[:])
+	requestKey := s.KeyPrefix + "saml-request:" + hex.EncodeToString(sum[:])
 	switch err := s.Valkey.Do(ctx, s.Valkey.B().Set().Key(requestKey).Value("1").Nx().Px(samlRelayTTL+time.Minute).Build()).Error(); {
 	case isNil(err):
 		s.samlReject(w, r, "request_reused", nil)

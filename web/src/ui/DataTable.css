@@ -14,7 +14,7 @@
   padding: 10px 16px;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--bg) 55%, Canvas);
 }
 .ui-table td {
   padding: 10px 16px;
@@ -26,5 +26,15 @@
   border-bottom: 0;
 }
 .ui-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--bg) 55%, Canvas);
+}
+
+.ui-table tbody tr.ui-row-selected td,
+.ui-table tbody tr.ui-row-selected:hover td {
+  background: var(--run-b);
+}
+.ui-table tbody tr.ui-row-group td,
+.ui-table tbody tr.ui-row-group:hover td {
   background: var(--bg);
+  padding: 8px 16px;
 }

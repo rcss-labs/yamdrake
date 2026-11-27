@@ -18,9 +18,12 @@ export interface DataTableProps<Row> extends Omit<ComponentPropsWithoutRef<'div'
   // Shown instead of the table when there are no rows.
   empty: ReactNode
   minWidth?: number | string
+  // "group" renders the row as one heading cell spanning every column (using the
+  // first column's render); "selected" highlights it.
+  rowKind?: (row: Row) => 'group' | 'selected' | undefined
 }
 
-export function DataTable<Row>({ columns, rows, rowKey, label, empty, minWidth, className, ...rest }: DataTableProps<Row>) {
+export function DataTable<Row>({ columns, rows, rowKey, label, empty, minWidth, rowKind, className, ...rest }: DataTableProps<Row>) {
   return (
     <div className={cx('ui-table-scroll', className)} {...rest}>
       {rows.length === 0 ? (
@@ -37,15 +40,26 @@ export function DataTable<Row>({ columns, rows, rowKey, label, empty, minWidth, 
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
-              <tr key={rowKey(row)}>
-                {columns.map((column) => (
-                  <td key={column.key} className={column.className}>
-                    {column.render(row)}
-                  </td>
-                ))}
-              </tr>
-            ))}
+            {rows.map((row) => {
+              const kind = rowKind?.(row)
+              const first = columns[0]
+              if (kind === 'group' && first) {
+                return (
+                  <tr key={rowKey(row)} className="ui-row-group">
+                    <td colSpan={columns.length}>{first.render(row)}</td>
+                  </tr>
+                )
+              }
+              return (
+                <tr key={rowKey(row)} className={kind === 'selected' ? 'ui-row-selected' : undefined}>
+                  {columns.map((column) => (
+                    <td key={column.key} className={column.className}>
+                      {column.render(row)}
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       )}

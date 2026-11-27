@@ -12,7 +12,7 @@ export interface PageHeaderProps extends Omit<ComponentPropsWithoutRef<'header'>
 
 export function PageHeader({ title, lead, actions, crumbs, className, ...rest }: PageHeaderProps) {
   return (
-    <>
+    <div className="ui-ph-wrap">
       {crumbs && (
         <nav className="ui-crumbs" aria-label="Breadcrumb">
           {crumbs}
@@ -25,6 +25,6 @@ export function PageHeader({ title, lead, actions, crumbs, className, ...rest }:
         </div>
         {actions && <div className="ui-actions">{actions}</div>}
       </header>
-    </>
+    </div>
   )
 }

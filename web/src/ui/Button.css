@@ -19,7 +19,7 @@
   color: Canvas;
 }
 .ui-btn-primary:hover {
-  background: var(--ink2);
+  background: color-mix(in srgb, var(--ink) 60%, var(--ink2));
 }
 .ui-btn-danger {
   color: var(--bad-t);

@@ -1,7 +1,6 @@
 .ui-input,
 .ui-select {
   height: 36px;
-  width: 100%;
   border: 1px solid var(--line2);
   border-radius: 8px;
   padding: 0 10px;

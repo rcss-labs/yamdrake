@@ -72,6 +72,11 @@ describe('StatusPill', () => {
     expect(new Set(shapes).size).toBe(4)
   })
 
+  it('shows a partly succeeded run as a failure shape and tone', () => {
+    const { shape, tone } = shapeOf('partially_succeeded')
+    expect([shape, tone]).toEqual(['diamond', 'bad'])
+  })
+
   it('maps the brief shapes', () => {
     expect(shapeOf('succeeded').shape).toBe('filled-circle')
     expect(shapeOf('unknown').shape).toBe('diamond')

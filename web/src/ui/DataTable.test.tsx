@@ -31,6 +31,26 @@ describe('DataTable', () => {
     expect(screen.queryByText('No runs')).not.toBeInTheDocument()
   })
 
+  it('renders a group row as one cell spanning every column, and marks a selected row', () => {
+    render(
+      <DataTable
+        label="Jobs"
+        columns={columns}
+        rows={[
+          { id: 'g1', name: 'Payments' },
+          { id: 'r1', name: 'deploy-orders' },
+        ]}
+        rowKey={(r) => r.id}
+        rowKind={(r) => (r.id === 'g1' ? 'group' : 'selected')}
+        empty={null}
+      />,
+    )
+    const groupCell = screen.getByRole('cell', { name: 'g1' })
+    expect(groupCell).toHaveAttribute('colspan', '2')
+    expect(groupCell.closest('tr')).toHaveClass('ui-row-group')
+    expect(screen.getByRole('row', { name: /deploy-orders/ })).toHaveClass('ui-row-selected')
+  })
+
   it('shows the empty node when there are no rows', () => {
     render(<DataTable label="Runs" columns={columns} rows={[]} rowKey={(r: Row) => r.id} empty={<p>No runs yet</p>} />)
     expect(screen.getByText('No runs yet')).toBeInTheDocument()

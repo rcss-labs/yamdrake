@@ -71,7 +71,7 @@ const appearance: Record<StatusKey, { shape: StatusShape; tone: StatusTone }> = 
   cancelling: { shape: 'ring', tone: 'wait' },
   needs_reconciliation: { shape: 'diamond', tone: 'wait' },
   succeeded: { shape: 'filled-circle', tone: 'ok' },
-  partially_succeeded: { shape: 'filled-circle', tone: 'wait' },
+  partially_succeeded: { shape: 'diamond', tone: 'bad' },
   failed: { shape: 'diamond', tone: 'bad' },
   unknown: { shape: 'diamond', tone: 'wait' },
   cancelled: { shape: 'square', tone: 'neutral' },

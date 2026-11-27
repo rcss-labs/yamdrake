@@ -29,4 +29,13 @@ describe('ServiceStrip', () => {
     expect(cells[1]).toHaveAttribute('data-gap', 'true')
     expect(cells[0]).not.toHaveAttribute('data-gap')
   })
+
+  it('colours every status through its tone, including leg-only statuses', () => {
+    const statuses = ['claimed', 'queued', 'unknown', 'cancelled'] as const
+    const { container } = render(
+      <ServiceStrip label="Services" cells={statuses.map((status) => ({ status, title: status }))} />,
+    )
+    const tones = [...container.querySelectorAll('[title]')].map((cell) => cell.getAttribute('data-tone'))
+    expect(tones).toEqual(['run', 'neutral', 'wait', 'neutral'])
+  })
 })

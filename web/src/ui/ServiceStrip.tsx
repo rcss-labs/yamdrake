@@ -1,6 +1,6 @@
 import type { ComponentPropsWithoutRef } from 'react'
 import { cx } from './classnames'
-import type { StatusKey } from './status'
+import { statusTone, type StatusKey } from './status'
 import './ServiceStrip.css'
 
 export interface ServiceCell {
@@ -25,6 +25,7 @@ export function ServiceStrip({ cells, size = 'sm', label, className, ...rest }: 
           key={index}
           className="ui-strip-cell"
           data-status={cell.status}
+          data-tone={statusTone(cell.status)}
           data-gap={cell.gapBefore ? 'true' : undefined}
           title={cell.title}
         />

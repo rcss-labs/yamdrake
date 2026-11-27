@@ -87,9 +87,15 @@ func (c *Client) exchangeInstallationToken(ctx context.Context) (string, time.Ti
 		return "", time.Time{}, err
 	}
 	path := fmt.Sprintf("/app/installations/%d/access_tokens", c.creds.InstallationID)
-	body, _, err := c.send(ctx, http.MethodPost, path, "Bearer "+jwt, "")
+	body, status, err := c.send(ctx, http.MethodPost, path, "Bearer "+jwt, "")
 	if err != nil {
-		return "", time.Time{}, err
+		var rl *RateLimitError
+		if errors.As(err, &rl) || !errors.Is(err, ErrNotFound) {
+			return "", time.Time{}, err
+		}
+		// Deliberately not wrapping err: a 404 here means a bad installation
+		// id, not a missing repository or branch.
+		return "", time.Time{}, fmt.Errorf("github: installation token exchange failed: status %d", status)
 	}
 	var resp struct {
 		Token     string    `json:"token"`

@@ -422,3 +422,38 @@ func TestAppExchangeFailureDoesNotLeakKey(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestInstallationExchangeFailureIsNotErrNotFound(t *testing.T) {
+	key := newTestKey(t)
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	c, err := New(srv.URL, srv.Client(), Credentials{Method: "app", AppID: 1, InstallationID: 2, PrivateKeyPEM: keyPEM(key)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := c.BranchExists(context.Background(), "o/r", "main")
+	if err == nil || ok || errors.Is(err, ErrNotFound) {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if _, err := c.HeadCommit(context.Background(), "o/r", "main"); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("HeadCommit err=%v", err)
+	}
+}
+
+func TestETagCacheStaysBoundedAcrossCommits(t *testing.T) {
+	c := newTokenClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+r.URL.Path+`"`)
+		_, _ = fmt.Fprint(w, `{"sha":"x","tree":[{"path":"a","type":"blob"}]}`)
+	}))
+	for i := 0; i < 50; i++ {
+		if _, err := c.ListFiles(context.Background(), "o/r", fmt.Sprintf("commit%d", i), "d"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.etagMu.Lock()
+	n := len(c.etags)
+	c.etagMu.Unlock()
+	if n > 1 {
+		t.Errorf("cache entries = %d, want 1 for one repo", n)
+	}
+}

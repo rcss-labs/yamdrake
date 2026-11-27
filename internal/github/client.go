@@ -38,6 +38,7 @@ type Credentials struct {
 }
 
 type etagEntry struct {
+	path string // exact request path this entry answers
 	etag string
 	body []byte
 }
@@ -55,7 +56,7 @@ type Client struct {
 	appTokenExpiry time.Time
 
 	etagMu sync.Mutex
-	etags  map[string]etagEntry
+	etags  map[string]etagEntry // one entry per family, so size is bounded
 }
 
 // New validates the credentials and base URL. A nil httpClient gets a default
@@ -122,7 +123,7 @@ func (c *Client) HeadCommit(ctx context.Context, repo, branch string) (string, e
 	if err != nil {
 		return "", err
 	}
-	body, err := c.get(ctx, rp+"/commits/"+escapeSegments(branch), true)
+	body, err := c.get(ctx, rp+"/commits/"+escapeSegments(branch), rp+"/commits")
 	if err != nil {
 		return "", err
 	}
@@ -141,7 +142,7 @@ func (c *Client) BranchExists(ctx context.Context, repo, branch string) (bool, e
 	if err != nil {
 		return false, err
 	}
-	_, err = c.get(ctx, rp+"/branches/"+escapeSegments(branch), false)
+	_, err = c.get(ctx, rp+"/branches/"+escapeSegments(branch), "")
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
@@ -155,7 +156,7 @@ func (c *Client) ListFiles(ctx context.Context, repo, commit, dir string) ([]str
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.get(ctx, rp+"/git/trees/"+url.PathEscape(commit)+"?recursive=1", true)
+	body, err := c.get(ctx, rp+"/git/trees/"+url.PathEscape(commit)+"?recursive=1", rp+"/git/trees")
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +192,7 @@ func (c *Client) ReadFile(ctx context.Context, repo, commit, path string) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.get(ctx, rp+"/contents/"+escapeSegments(strings.TrimLeft(path, "/"))+"?ref="+url.QueryEscape(commit), false)
+	body, err := c.get(ctx, rp+"/contents/"+escapeSegments(strings.TrimLeft(path, "/"))+"?ref="+url.QueryEscape(commit), "")
 	if err != nil {
 		return nil, err
 	}
@@ -214,24 +215,23 @@ func (c *Client) ReadFile(ctx context.Context, repo, commit, path string) ([]byt
 	return data, nil
 }
 
-// get performs an authenticated GET, optionally using the per-URL ETag cache.
-func (c *Client) get(ctx context.Context, path string, useETag bool) ([]byte, error) {
+// get performs an authenticated GET. A non-empty etagFamily enables the ETag
+// cache; the cache keeps only the latest entry per family (for example one
+// tree per repository), which bounds memory as new commits arrive. A repeat
+// request for the same path still gets conditional-request reuse.
+func (c *Client) get(ctx context.Context, path, etagFamily string) ([]byte, error) {
 	auth, err := c.authorization(ctx)
 	if err != nil {
 		return nil, err
 	}
-	etagKey := ""
-	if useETag {
-		etagKey = path
-	}
-	body, _, err := c.send(ctx, http.MethodGet, path, auth, etagKey)
+	body, _, err := c.send(ctx, http.MethodGet, path, auth, etagFamily)
 	return body, err
 }
 
 // send performs one request. Errors carry the method, path and status only,
 // never headers or response bodies, so credentials cannot leak.
-// A non-empty etagKey enables conditional requests against the cache.
-func (c *Client) send(ctx context.Context, method, path, auth, etagKey string) ([]byte, int, error) {
+// A non-empty etagFamily enables conditional requests against the cache.
+func (c *Client) send(ctx context.Context, method, path, auth, etagFamily string) ([]byte, int, error) {
 	label := "github: " + method + " " + strings.SplitN(path, "?", 2)[0]
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
 	if err != nil {
@@ -243,10 +243,11 @@ func (c *Client) send(ctx context.Context, method, path, auth, etagKey string) (
 
 	var cached etagEntry
 	var haveCached bool
-	if etagKey != "" {
+	if etagFamily != "" {
 		c.etagMu.Lock()
-		cached, haveCached = c.etags[etagKey]
+		cached, haveCached = c.etags[etagFamily]
 		c.etagMu.Unlock()
+		haveCached = haveCached && cached.path == path
 		if haveCached {
 			req.Header.Set("If-None-Match", cached.etag)
 		}
@@ -270,9 +271,9 @@ func (c *Client) send(ctx context.Context, method, path, auth, etagKey string) (
 	case resp.StatusCode == http.StatusNotModified && haveCached:
 		return cached.body, resp.StatusCode, nil
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		if etag := resp.Header.Get("ETag"); etagKey != "" && resp.StatusCode == http.StatusOK && etag != "" {
+		if etag := resp.Header.Get("ETag"); etagFamily != "" && resp.StatusCode == http.StatusOK && etag != "" {
 			c.etagMu.Lock()
-			c.etags[etagKey] = etagEntry{etag: etag, body: body}
+			c.etags[etagFamily] = etagEntry{path: path, etag: etag, body: body}
 			c.etagMu.Unlock()
 		}
 		return body, resp.StatusCode, nil

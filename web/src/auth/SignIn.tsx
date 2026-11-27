@@ -1,8 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { ApiError, api } from '../api/client'
 import type { AuthMethods, Me } from '../api/types'
+import { safeNext } from './next'
 import { startSession } from './sessionCache'
 import './sign-in.css'
 
@@ -42,6 +44,9 @@ function useSsoEnabled(): boolean {
 export function SignIn() {
   const queryClient = useQueryClient()
   const ssoEnabled = useSsoEnabled()
+  const [params] = useSearchParams()
+  // The server returns the person to this same-site path after the identity provider answers.
+  const ssoStartHref = `/api/v1/auth/saml/start?next=${encodeURIComponent(safeNext(params.get('next')))}`
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [message, setMessage] = useState('')
@@ -80,7 +85,7 @@ export function SignIn() {
           <p className="sign-in-sub">Deployment jobs for DevOps, QA and developers</p>
         </div>
         {ssoEnabled && (
-          <a className="sign-in-button sign-in-primary" href="/api/v1/auth/saml/start">
+          <a className="sign-in-button sign-in-primary" href={ssoStartHref}>
             Sign in with company SSO
           </a>
         )}

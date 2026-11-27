@@ -131,7 +131,19 @@ describe('SignIn', () => {
   it('offers company SSO when the server says SAML is enabled', async () => {
     renderSignIn()
     const link = await screen.findByRole('link', { name: 'Sign in with company SSO' })
-    expect(link).toHaveAttribute('href', '/api/v1/auth/saml/start')
+    expect(link).toHaveAttribute('href', '/api/v1/auth/saml/start?next=%2F')
+  })
+
+  it('carries the page the person was heading to through company SSO', async () => {
+    renderSignIn('/sign-in?next=%2Fcli%2Fconfirm%3Fcode%3DABCD-1234')
+    const link = await screen.findByRole('link', { name: 'Sign in with company SSO' })
+    expect(link).toHaveAttribute('href', '/api/v1/auth/saml/start?next=%2Fcli%2Fconfirm%3Fcode%3DABCD-1234')
+  })
+
+  it('does not pass an outside address through company SSO', async () => {
+    renderSignIn(`/sign-in?next=${encodeURIComponent('//evil.example/x')}`)
+    const link = await screen.findByRole('link', { name: 'Sign in with company SSO' })
+    expect(link).toHaveAttribute('href', '/api/v1/auth/saml/start?next=%2F')
   })
 
   it('hides the SSO link when the methods route answers 404', async () => {

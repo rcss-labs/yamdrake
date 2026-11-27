@@ -16,6 +16,9 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrDuplicate is returned when a uniqueness rule is violated.
 	ErrDuplicate = errors.New("already exists")
+	// ErrInvalidReference is returned when a row refers to one that does not
+	// exist (for example a job source in an unknown folder).
+	ErrInvalidReference = errors.New("referenced row does not exist")
 )
 
 // DBTX is satisfied by *pgxpool.Pool and pgx.Tx. Begin starts a transaction on
@@ -27,9 +30,13 @@ type DBTX interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
-const uniqueViolation = "23505"
+const (
+	uniqueViolation     = "23505"
+	foreignKeyViolation = "23503"
+)
 
-// mapError converts PostgreSQL unique violations to ErrDuplicate and missing
+// mapError converts PostgreSQL unique violations to ErrDuplicate, foreign key
+// violations to ErrInvalidReference and missing
 // rows to ErrNotFound; other errors pass through unchanged.
 func mapError(err error) error {
 	if err == nil {
@@ -39,8 +46,13 @@ func mapError(err error) error {
 		return ErrNotFound
 	}
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
-		return ErrDuplicate
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case uniqueViolation:
+			return ErrDuplicate
+		case foreignKeyViolation:
+			return ErrInvalidReference
+		}
 	}
 	return err
 }

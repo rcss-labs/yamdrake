@@ -89,22 +89,28 @@ func GetInventorySource(ctx context.Context, db DBTX) (InventorySource, bool, er
 
 // Snapshot is one validated inventory at a commit.
 type Snapshot struct {
-	ID          int64
-	Commit      string
-	Inventory   []byte // JSON of spec.Inventory
+	ID        int64
+	Commit    string
+	Inventory []byte // JSON of spec.Inventory
+	// Sources maps each file of the commit (relative to the inventory path) to
+	// its text. Empty for snapshots stored before the text was kept.
+	Sources     map[string]string
 	ActivatedAt time.Time
 }
 
-const snapshotColumns = "id, commit_sha, inventory, activated_at"
+const snapshotColumns = "id, commit_sha, inventory, activated_at, sources"
 
 func scanSnapshot(row interface{ Scan(...any) error }) (Snapshot, error) {
 	var s Snapshot
-	err := row.Scan(&s.ID, &s.Commit, &s.Inventory, &s.ActivatedAt)
+	err := row.Scan(&s.ID, &s.Commit, &s.Inventory, &s.ActivatedAt, &s.Sources)
+	if s.Sources == nil {
+		s.Sources = map[string]string{}
+	}
 	return s, err
 }
 
-// ActivateSnapshot makes the snapshot for commit the single active one and
-// keeps older snapshots. It is a no-op returning the existing row when commit
+// ActivateSnapshot makes the snapshot for commit the single active one, with
+// the file texts it was built from, and keeps older snapshots. It is a no-op returning the existing row when commit
 // is already active.
 //
 // Concurrency: it opens its own transaction via db.Begin (a savepoint inside
@@ -113,7 +119,7 @@ func scanSnapshot(row interface{ Scan(...any) error }) (Snapshot, error) {
 // inventory_status row with SELECT ... FOR UPDATE. Concurrent activations
 // queue on that lock, so the deactivate-then-insert pair never interleaves and
 // the partial unique index is never hit.
-func ActivateSnapshot(ctx context.Context, db DBTX, commit string, inventory []byte, at time.Time) (Snapshot, error) {
+func ActivateSnapshot(ctx context.Context, db DBTX, commit string, inventory []byte, sources map[string]string, at time.Time) (Snapshot, error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("activate snapshot: begin: %w", err)
@@ -137,9 +143,12 @@ func ActivateSnapshot(ctx context.Context, db DBTX, commit string, inventory []b
 	if _, err := tx.Exec(ctx, "UPDATE inventory_snapshots SET active = false WHERE active"); err != nil {
 		return Snapshot{}, fmt.Errorf("activate snapshot: deactivate: %w", err)
 	}
+	if sources == nil {
+		sources = map[string]string{}
+	}
 	created, err := scanSnapshot(tx.QueryRow(ctx,
-		`INSERT INTO inventory_snapshots (commit_sha, inventory, active, activated_at)
-		 VALUES ($1, $2, true, $3) RETURNING `+snapshotColumns, commit, inventory, dbTime(at)))
+		`INSERT INTO inventory_snapshots (commit_sha, inventory, active, activated_at, sources)
+		 VALUES ($1, $2, true, $3, $4) RETURNING `+snapshotColumns, commit, inventory, dbTime(at), sources))
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("activate snapshot: insert: %w", mapError(err))
 	}

@@ -322,6 +322,7 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		"GET /api/v1/inventory":                        auth.View,
 		"GET /api/v1/inventory/services/{name}":        auth.View,
 		"POST /api/v1/inventory/sync":                  auth.ManageConnections,
+		"GET /api/v1/admin/inventory-source":           auth.ManageConnections,
 		"PUT /api/v1/admin/inventory-source":           auth.ManageConnections,
 		"GET /api/v1/admin/github-connections":         auth.ManageConnections,
 		"POST /api/v1/admin/github-connections":        auth.ManageConnections,

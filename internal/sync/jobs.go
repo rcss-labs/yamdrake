@@ -133,7 +133,7 @@ func (e *Engine) syncJob(ctx context.Context, jobSourceID int64) error {
 		return fmt.Errorf("begin job save: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	err = store.SaveJobGood(ctx, tx, job.ID, definition, parsed.ID, parsed.Title, head, at)
+	err = store.SaveJobGood(ctx, tx, job.ID, definition, string(data), parsed.ID, parsed.Title, head, at)
 	if err == nil {
 		err = store.SaveJobProblems(ctx, tx, job.ID, nil, head, true, at)
 	}

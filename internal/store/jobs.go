@@ -14,6 +14,7 @@ type JobSource struct {
 	JobID, Title        string // empty until first good read
 	LastGood            []byte // JSON of spec.Job, nil until first good read
 	LastGoodCommit      string
+	LastGoodSource      string // raw YAML text of the last good commit, "" when not stored
 	Runnable            bool
 	Problems            []byte // JSON of spec.Problems for the newest commit, nil when clean
 	ProblemsCommit      string
@@ -24,14 +25,14 @@ type JobSource struct {
 	SyncErrorAt *time.Time
 }
 
-const jobSourceColumns = `id, folder_id, repo, branch, path, job_id, title, last_good, last_good_commit,
+const jobSourceColumns = `id, folder_id, repo, branch, path, job_id, title, last_good, last_good_commit, last_good_source,
 	runnable, problems, problems_commit, checked_at, synced_at,
 	COALESCE(sync_error, ''), sync_error_at`
 
 func scanJobSource(row interface{ Scan(...any) error }) (JobSource, error) {
 	var s JobSource
 	err := row.Scan(&s.ID, &s.FolderID, &s.Repo, &s.Branch, &s.Path, &s.JobID, &s.Title, &s.LastGood,
-		&s.LastGoodCommit, &s.Runnable, &s.Problems, &s.ProblemsCommit, &s.CheckedAt, &s.SyncedAt,
+		&s.LastGoodCommit, &s.LastGoodSource, &s.Runnable, &s.Problems, &s.ProblemsCommit, &s.CheckedAt, &s.SyncedAt,
 		&s.SyncError, &s.SyncErrorAt)
 	return s, err
 }
@@ -89,16 +90,17 @@ func MoveJobSource(ctx context.Context, db DBTX, id, folderID int64) error {
 	return nil
 }
 
-// SaveJobGood stores the last good definition and sets synced_at and
+// SaveJobGood stores the last good definition with the YAML text it was parsed
+// from (same write, so they always match) and sets synced_at and
 // checked_at to at. It does not touch runnable or problems: a valid read calls
 // SaveJobProblems(..., nil, commit, true, at) in the same transaction. It
 // returns ErrDuplicate when jobID belongs to another source and ErrNotFound
 // when the source does not exist.
-func SaveJobGood(ctx context.Context, db DBTX, id int64, job []byte, jobID, title, commit string, at time.Time) error {
+func SaveJobGood(ctx context.Context, db DBTX, id int64, job []byte, source, jobID, title, commit string, at time.Time) error {
 	tag, err := db.Exec(ctx,
 		`UPDATE job_sources SET last_good = $2, job_id = $3, title = $4, last_good_commit = $5,
-		        synced_at = $6, checked_at = $6
-		 WHERE id = $1`, id, job, jobID, title, commit, dbTime(at))
+		        last_good_source = $7, synced_at = $6, checked_at = $6
+		 WHERE id = $1`, id, job, jobID, title, commit, dbTime(at), source)
 	if err != nil {
 		return fmt.Errorf("save job good: %w", mapError(err))
 	}

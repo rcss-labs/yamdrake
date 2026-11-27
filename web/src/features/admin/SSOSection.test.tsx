@@ -66,7 +66,10 @@ describe('the single sign-on section', () => {
     const user = userEvent.setup()
     await openSso()
     await user.click(screen.getByRole('button', { name: 'Test' }))
-    expect(await screen.findByRole('status')).toHaveTextContent('The metadata is valid and has a signing certificate')
+    const result = await screen.findByRole('status')
+    expect(result).toHaveTextContent('Test passed')
+    expect(result).toHaveTextContent('The metadata is valid and has a signing certificate')
+    expect(result).not.toHaveTextContent(/[✓✕]/)
     expect(requests.some((r) => r.method === 'POST' && r.path === '/api/v1/admin/sso/test')).toBe(true)
   })
 
@@ -75,7 +78,10 @@ describe('the single sign-on section', () => {
     mockState().sso.idp_metadata_xml = 'garbage'
     await openSso()
     await user.click(screen.getByRole('button', { name: 'Test' }))
-    expect(await screen.findByRole('status')).toHaveTextContent('Test failed: The metadata could not be read')
+    const result = await screen.findByRole('status')
+    expect(result).toHaveTextContent('Test failed')
+    expect(result).toHaveTextContent('The metadata could not be read')
+    expect(result).not.toHaveTextContent(/[✓✕]/)
   })
 
   it('shows a test request error in place', async () => {

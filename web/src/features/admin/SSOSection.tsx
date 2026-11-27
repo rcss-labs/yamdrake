@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { errorMessage } from '../../api/client'
 import type { SsoSettings, SsoTestResult } from '../../api/types'
-import { Button, Card, ErrorState, Field, Loading, Note, TextInput } from '../../ui'
+import { Button, Card, ErrorState, Field, Loading, Note, StatusPill, TextInput } from '../../ui'
 import { useSaveSso, useSsoSettings, useTestSso } from './ssoQueries'
 import './sso.css'
 
@@ -123,8 +123,7 @@ function SsoForm({ settings }: { settings: SsoSettings }) {
           <span className="sso-feedback">Tests the saved metadata.</span>
           {result && (
             <span role="status" className="sso-result" data-ok={result.ok}>
-              {result.ok ? '✓ ' : '✕ Test failed: '}
-              {result.message}
+              <StatusPill status={result.ok ? 'succeeded' : 'failed'} label={result.ok ? 'Test passed' : 'Test failed'} /> {result.message}
             </span>
           )}
           {test.error && <Note tone="error">{errorMessage(test.error)}</Note>}

@@ -11,8 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -99,21 +97,10 @@ func PostgresCheck(pool *pgxpool.Pool, databaseURL string) health.Check {
 func postgresCheck(ping func(context.Context) error, databaseURL string) health.Check {
 	return health.Check{Name: "postgres", Fn: func(ctx context.Context) error {
 		if err := ping(ctx); err != nil {
-			return errors.New("postgres ping failed: " + scrubSecrets(err.Error(), databaseURL))
+			return errors.New("postgres ping failed: " + config.Scrub(err.Error(), databaseURL))
 		}
 		return nil
 	}}
-}
-
-// scrubSecrets removes the raw database URL and its password from text.
-func scrubSecrets(text, databaseURL string) string {
-	text = strings.ReplaceAll(text, databaseURL, config.RedactURL(databaseURL))
-	if parsed, err := url.Parse(databaseURL); err == nil && parsed.User != nil {
-		if password, ok := parsed.User.Password(); ok && password != "" {
-			text = strings.ReplaceAll(text, password, "REDACTED")
-		}
-	}
-	return text
 }
 
 // ValkeyCheck is the readiness check for the Valkey client.

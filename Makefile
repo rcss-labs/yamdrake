@@ -7,6 +7,9 @@ COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -X $(MODULE)/internal/version.Commit=$(COMMIT)
 BINARY_PACKAGES := orchestrator runner
 
+# Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
+export VERSION COMMIT
+
 .PHONY: help build lint test dev-up dev-down test-integration images smoke
 
 help: ## List available targets

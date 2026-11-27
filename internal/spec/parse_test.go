@@ -145,7 +145,7 @@ func TestParseValidFixtures(t *testing.T) {
 			if len(job.Steps[i].Needs) == 0 && len(want) == 0 {
 				continue
 			}
-			if !reflect.DeepEqual(job.Steps[i].Needs, want) {
+			if !reflect.DeepEqual(withoutNeedLines(job.Steps[i].Needs), want) {
 				t.Errorf("step %s needs = %+v, want %+v", job.Steps[i].Name, job.Steps[i].Needs, want)
 			}
 		}
@@ -194,7 +194,7 @@ steps:
 		if job.Approval == nil || job.Approval.Expires != 24*time.Hour {
 			t.Errorf("approval = %+v, want expires 24h", job.Approval)
 		}
-		if got := job.Steps[1].Needs; len(got) != 1 || got[0] != (Need{Step: "config-backends", Scope: "step"}) {
+		if got := job.Steps[1].Needs; len(got) != 1 || withoutNeedLines(got)[0] != (Need{Step: "config-backends", Scope: "step"}) {
 			t.Errorf("needs = %+v, want one step-scoped need", got)
 		}
 		if job.Steps[0].Timeout != 0 || job.Steps[0].MaxParallel != 0 {
@@ -455,5 +455,34 @@ func TestModelJSONRoundTrip(t *testing.T) {
 	encoded, _ = json.Marshal(job.Steps[1])
 	if !strings.Contains(string(encoded), `"max_parallel":2`) {
 		t.Errorf("step JSON lacks snake_case max_parallel: %s", encoded)
+	}
+}
+
+// withoutNeedLines clears Need.Line so tests can compare the logical content.
+func withoutNeedLines(needs []Need) []Need {
+	out := append([]Need(nil), needs...)
+	for i := range out {
+		out[i].Line = 0
+	}
+	return out
+}
+
+func TestParseJobRecordsLinesOfNeedsAndLabels(t *testing.T) {
+	job, problems := ParseJob("job.yaml", readFixture(t, "valid/jobs/deploy-backend.yaml"))
+	if len(problems) > 0 {
+		t.Fatalf("unexpected problems: %v", problems)
+	}
+	if job.LabelsLine != 7 {
+		t.Errorf("LabelsLine = %d, want 7", job.LabelsLine)
+	}
+	if job.Approval == nil || job.Approval.Line != 19 {
+		t.Errorf("Approval = %+v, want Line 19", job.Approval)
+	}
+	if got := job.Steps[1].Needs[0].Line; got != 34 { // scalar need
+		t.Errorf("scalar need line = %d, want 34", got)
+	}
+	needs := job.Steps[3].Needs // mapping needs, with and without scope
+	if needs[0].Line != 42 || needs[1].Line != 44 {
+		t.Errorf("mapping need lines = %d, %d, want 42, 44", needs[0].Line, needs[1].Line)
 	}
 }

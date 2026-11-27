@@ -140,16 +140,30 @@ func fixture(t *testing.T, rel string) []byte {
 	return data
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessMaxConns(t, 0) }
+
+// newHarnessMaxConns limits the pool size when maxConns > 0.
+func newHarnessMaxConns(t *testing.T, maxConns int32) *harness {
 	t.Helper()
 	ctx := context.Background()
 	url := testdb.New(t)
 	if err := db.Migrate(ctx, url); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	pool, err := db.Open(ctx, url)
+	var pool *pgxpool.Pool
+	var err error
+	if maxConns > 0 {
+		cfg, perr := pgxpool.ParseConfig(url)
+		if perr != nil {
+			t.Fatalf("ParseConfig: %v", perr)
+		}
+		cfg.MaxConns = maxConns
+		pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	} else {
+		pool, err = db.Open(ctx, url)
+	}
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("open pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
 	h := &harness{t: t, pool: pool, src: newFakeSource(), clock: time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)}
@@ -771,5 +785,53 @@ func TestActivationAndConcurrentJobSyncKeepJobNotRunnable(t *testing.T) {
 	got := h.job(id)
 	if got.Runnable || !strings.Contains(problemsText(t, got.Problems), "orders") {
 		t.Fatalf("job must be not runnable with a reason naming orders: %+v", got)
+	}
+}
+
+// Callers waiting for the lock must not hold pool connections the lock holder
+// needs: with a tiny pool, waiters used to starve the holder for good.
+func TestWaitingSyncCallsDoNotStarveTheLockHolder(t *testing.T) {
+	t.Parallel()
+	h := newHarnessMaxConns(t, 2)
+	id := h.firstSync()
+	h.pushJob(jobPath, "j2", fixture(t, "jobs/deploy-backend.yaml"))
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once gosync.Once
+	h.src.onRead = func(repo, _ string) {
+		if repo != jobsRepo {
+			return
+		}
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+
+	// Registered after the pool's own cleanup, so it runs first and unblocks
+	// everything if the test fails with callers still stuck.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+
+	done := make(chan error, 4)
+	go func() { done <- h.engine.SyncJob(ctx, id) }()
+	<-entered
+	for range 3 {
+		go func() { done <- h.engine.SyncAll(ctx) }()
+	}
+	time.Sleep(300 * time.Millisecond) // let the waiters queue up
+	close(release)
+
+	timeout := time.After(5 * time.Second)
+	for range 4 {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("sync call failed: %v", err)
+			}
+		case <-timeout:
+			t.Fatal("sync calls did not finish: waiters starved the lock holder of pool connections")
+		}
 	}
 }

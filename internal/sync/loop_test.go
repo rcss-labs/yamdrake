@@ -30,3 +30,14 @@ func TestNextWait(t *testing.T) {
 		}
 	}
 }
+
+func TestTruncateMessageKeepsValidUTF8(t *testing.T) {
+	t.Parallel()
+	message := "aé" // 'é' is two bytes; cutting at 2 splits it
+	if got := truncateMessage(message, 2); got != "a" {
+		t.Fatalf("truncateMessage = %q, want %q", got, "a")
+	}
+	if got := truncateMessage(message, 3); got != message {
+		t.Fatalf("truncateMessage = %q, want unchanged", got)
+	}
+}

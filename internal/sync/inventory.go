@@ -35,6 +35,8 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 		})
 		return e.sourceError(what, err, append(attrs, "repo", src.Repo)...)
 	}
+	// SourceFor errors are stored and shown to users as they are: the
+	// implementation must return credential-free errors.
 	source, err := e.sourceForRepo(ctx, src.Repo)
 	if err != nil {
 		return fail("inventory source", err)

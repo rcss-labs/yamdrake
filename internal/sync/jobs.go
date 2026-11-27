@@ -40,11 +40,15 @@ type Engine struct {
 	sources SourceFor
 	log     *slog.Logger
 	now     func() time.Time
+	// local serialises callers inside this process (a 1-slot semaphore) before
+	// any of them takes a pool connection, so at most one connection per
+	// process waits on or holds the advisory lock; see withLock.
+	local chan struct{}
 }
 
 // NewEngine builds an engine. now supplies every stored timestamp.
 func NewEngine(pool *pgxpool.Pool, sources SourceFor, log *slog.Logger, now func() time.Time) *Engine {
-	return &Engine{pool: pool, sources: sources, log: log, now: now}
+	return &Engine{pool: pool, sources: sources, log: log, now: now, local: make(chan struct{}, 1)}
 }
 
 const noInventoryMessage = "no active inventory yet"
@@ -85,6 +89,8 @@ func (e *Engine) syncJob(ctx context.Context, jobSourceID int64) error {
 		})
 		return e.sourceError(what, err, append(attrs, "job_source_id", job.ID, "repo", job.Repo)...)
 	}
+	// SourceFor errors are stored and shown to users as they are: the
+	// implementation must return credential-free errors.
 	source, err := e.sourceForRepo(ctx, job.Repo)
 	if err != nil {
 		return fail("job source", err)
@@ -217,16 +223,22 @@ func (e *Engine) recordSyncError(ctx context.Context, what string, err error, sa
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return
 	}
-	message := "source error: " + what + ": " + err.Error()
-	if len(message) > maxSyncErrorLength {
-		message = message[:maxSyncErrorLength]
-	}
+	message := truncateMessage("source error: "+what+": "+err.Error(), maxSyncErrorLength)
 	if serr := save(message, e.now()); serr != nil {
 		e.log.Warn("could not record sync error", "error", serr.Error())
 	}
 }
 
 const maxSyncErrorLength = 500
+
+// truncateMessage cuts message to at most max bytes without leaving a partial
+// UTF-8 character, which PostgreSQL would reject.
+func truncateMessage(message string, max int) string {
+	if len(message) <= max {
+		return message
+	}
+	return strings.ToValidUTF8(message[:max], "")
+}
 
 // sourceError logs a failure to reach the source at warn level and returns it
 // wrapped. Nothing is stored for it.

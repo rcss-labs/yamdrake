@@ -79,7 +79,19 @@ func nextWait(roundErr error, interval time.Duration) time.Duration {
 // after the activation that re-validated it. The wait uses pg_advisory_lock on
 // a dedicated connection, so a cancelled ctx ends it; on any failure to unlock
 // the connection is closed, which drops the session lock.
+//
+// In-process callers queue on e.local first, before taking any pool
+// connection. Otherwise each waiter would sit in pg_advisory_lock holding a
+// connection, and enough of them leave the lock holder unable to get the
+// connection it needs for its own queries (pool exhaustion deadlock). So at
+// most one connection per process waits on or holds the lock.
 func (e *Engine) withLock(ctx context.Context, fn func(context.Context) error) error {
+	select {
+	case e.local <- struct{}{}:
+		defer func() { <-e.local }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	conn, err := e.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire lock connection: %w", err)
@@ -111,6 +123,13 @@ func (e *Engine) unlock(ctx context.Context, conn *pgxpool.Conn) {
 // holder has it (Run's rounds skip rather than queue). ran is false when
 // skipped.
 func (e *Engine) runRound(ctx context.Context) (ran bool, err error) {
+	select {
+	case e.local <- struct{}{}:
+		defer func() { <-e.local }()
+	default:
+		e.log.Debug("sync round skipped: a sync is already running in this process")
+		return false, nil
+	}
 	conn, err := e.pool.Acquire(ctx)
 	if err != nil {
 		return false, fmt.Errorf("acquire lock connection: %w", err)

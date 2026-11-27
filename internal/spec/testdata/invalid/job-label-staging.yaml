@@ -1,0 +1,14 @@
+apiVersion: yumdrake/v1
+kind: Job
+job: deploy-backend
+title: "Backend"
+environment:
+  labels: [dev, staging]
+groups:
+  backends:
+    label: Backend services
+    services: [backend-api]
+steps:
+  - name: config-backends
+    group: backends
+    use: copy-config

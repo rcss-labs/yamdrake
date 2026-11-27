@@ -1,0 +1,44 @@
+apiVersion: yumdrake/v1
+kind: Job
+job: deploy-backend
+title: "Backend and microservices"
+
+environment:
+  labels: [dev, preprod, prod]
+
+groups:
+  backends:
+    label: Backend services
+    services: [backend-api]
+  microservices:
+    label: Microservices
+    services: [orders]
+
+approval:
+  when:
+    labels: [prod]
+  expires: 24h
+
+notify:
+  slack: "#deployments"
+
+steps:
+  - name: config-backends
+    use: copy-config
+    group: backends
+  - name: roll-backends
+    use: ecs-deploy
+    group: backends
+    max_parallel: 2
+    timeout: 15m
+    needs: [config-backends]
+  - name: config-microservices
+    use: copy-config
+    group: microservices
+  - name: roll-microservices
+    use: ecs-deploy
+    group: microservices
+    needs:
+      - step: config-microservices
+        scope: service
+      - step: config-backends

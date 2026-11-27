@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -15,12 +16,16 @@ func envFrom(values map[string]string) func(string) string {
 const (
 	validDatabaseURL = "postgres://u@db:5432/yumdrake"
 	validValkeyAddr  = "valkey:6379"
+	// base64 of 32 bytes of 0x2a; a test value only.
+	validSecretKey = "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=" //nolint:gosec // test value
 )
 
 func requiredEnv() map[string]string {
 	return map[string]string{
 		"YUMDRAKE_DATABASE_URL": validDatabaseURL,
 		"YUMDRAKE_VALKEY_ADDR":  validValkeyAddr,
+
+		"YUMDRAKE_LOCAL_SECRET_KEY": validSecretKey,
 	}
 }
 
@@ -68,6 +73,7 @@ func TestLoadOrchestratorOverrides(t *testing.T) {
 	env := map[string]string{
 		"YUMDRAKE_DATABASE_URL":     "postgresql://user@db.example:5433/other?sslmode=require",
 		"YUMDRAKE_VALKEY_ADDR":      "cache.example:6380",
+		"YUMDRAKE_LOCAL_SECRET_KEY": validSecretKey,
 		"YUMDRAKE_LOG_LEVEL":        "debug",
 		"YUMDRAKE_SHUTDOWN_TIMEOUT": "5s",
 		"YUMDRAKE_STARTUP_TIMEOUT":  "2m",
@@ -117,6 +123,7 @@ func TestLoadRunnerOverrides(t *testing.T) {
 func TestLoadReportsEveryProblemAtOnce(t *testing.T) {
 	env := map[string]string{
 		"YUMDRAKE_VALKEY_ADDR":      validValkeyAddr,
+		"YUMDRAKE_LOCAL_SECRET_KEY": validSecretKey,
 		"YUMDRAKE_LOG_LEVEL":        "loud",
 		"YUMDRAKE_SHUTDOWN_TIMEOUT": "-1s",
 	}
@@ -256,6 +263,123 @@ func TestValidateHostPort(t *testing.T) {
 	for _, bad := range []string{"", "nope", "host:0", "host:70000", "host:abc"} {
 		if err := ValidateHostPort(bad); err == nil {
 			t.Errorf("ValidateHostPort(%q) = nil, want an error", bad)
+		}
+	}
+}
+
+func TestSecretAndSyncDefaults(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil {
+		t.Fatalf("LoadOrchestrator() error = %v", err)
+	}
+	if cfg.SecretsMode != "local" {
+		t.Errorf("SecretsMode = %q, want local", cfg.SecretsMode)
+	}
+	if got := cfg.LocalSecretKey.Reveal(); got != strings.Repeat("*", 32) {
+		t.Errorf("LocalSecretKey did not decode to the 32 key bytes")
+	}
+	if cfg.BootstrapToken != "" {
+		t.Error("BootstrapToken is not empty by default")
+	}
+	if cfg.SyncInterval != 60*time.Second {
+		t.Errorf("SyncInterval = %v, want 60s", cfg.SyncInterval)
+	}
+	if cfg.GitHubAPIURL != "https://api.github.com" {
+		t.Errorf("GitHubAPIURL = %q", cfg.GitHubAPIURL)
+	}
+	runner, err := LoadRunner(envFrom(requiredEnv()))
+	if err != nil {
+		t.Fatalf("LoadRunner() error = %v", err)
+	}
+	if runner.SecretsMode != "local" || runner.LocalSecretKey.Reveal() != strings.Repeat("*", 32) {
+		t.Error("runner does not load the secrets settings")
+	}
+}
+
+func TestSecretAndSyncRules(t *testing.T) {
+	longToken := strings.Repeat("t", 32)
+	tests := []struct {
+		name    string
+		set     map[string]string
+		wantVar string // empty means valid
+	}{
+		{"key missing", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": ""}, "YUMDRAKE_LOCAL_SECRET_KEY"},
+		{"key not base64", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": "not base64 !!"}, "YUMDRAKE_LOCAL_SECRET_KEY"},
+		{"key wrong length", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": "c2hvcnQ="}, "YUMDRAKE_LOCAL_SECRET_KEY"}, //nolint:gosec // test value
+		{"mode not local", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms"}, "YUMDRAKE_SECRETS_MODE"},
+		{"short token", map[string]string{"YUMDRAKE_BOOTSTRAP_TOKEN": "0123456789"}, "YUMDRAKE_BOOTSTRAP_TOKEN"},
+		{"token ok", map[string]string{"YUMDRAKE_BOOTSTRAP_TOKEN": longToken}, ""},
+		{"interval too short", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "9s"}, "YUMDRAKE_SYNC_INTERVAL"},
+		{"interval minimum", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "10s"}, ""},
+		{"interval not duration", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "soon"}, "YUMDRAKE_SYNC_INTERVAL"},
+		{"github url ftp", map[string]string{"YUMDRAKE_GITHUB_API_URL": "ftp://example.com"}, "YUMDRAKE_GITHUB_API_URL"},
+		{"github url no host", map[string]string{"YUMDRAKE_GITHUB_API_URL": "http://"}, "YUMDRAKE_GITHUB_API_URL"},
+		{"github url http", map[string]string{"YUMDRAKE_GITHUB_API_URL": "http://127.0.0.1:9999"}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := requiredEnv()
+			for k, v := range tc.set {
+				env[k] = v
+			}
+			_, err := LoadOrchestrator(envFrom(env))
+			if tc.wantVar == "" {
+				if err != nil {
+					t.Fatalf("error = %v, want none", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantVar) {
+				t.Fatalf("error = %v, want it to name %s", err, tc.wantVar)
+			}
+		})
+	}
+}
+
+func TestRunnerRejectsBadSecretKey(t *testing.T) {
+	env := requiredEnv()
+	env["YUMDRAKE_LOCAL_SECRET_KEY"] = "c2hvcnQ="
+	if _, err := LoadRunner(envFrom(env)); err == nil {
+		t.Fatal("LoadRunner() accepted a 5-byte key")
+	}
+}
+
+func TestSecretsNeverAppearInErrorsOrFormatting(t *testing.T) {
+	badKey := "c2VjcmV0LWtleS12YWx1ZS10b28tc2hvcnQ="
+	shortToken := "tok-short-9"
+	env := requiredEnv()
+	env["YUMDRAKE_LOCAL_SECRET_KEY"] = badKey
+	env["YUMDRAKE_BOOTSTRAP_TOKEN"] = shortToken
+	env["YUMDRAKE_SYNC_INTERVAL"] = "bad"
+	_, err := LoadOrchestrator(envFrom(env))
+	if err == nil {
+		t.Fatal("expected errors")
+	}
+	for _, secret := range []string{badKey, shortToken, "secret-key-value"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error text contains a secret value: %q", err.Error())
+		}
+	}
+
+	env = requiredEnv()
+	env["YUMDRAKE_BOOTSTRAP_TOKEN"] = "bootstrap-token-with-32-characters!"
+	cfg, err := LoadOrchestrator(envFrom(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	logger.Info("config", "config", cfg, "key", cfg.LocalSecretKey, "token", cfg.BootstrapToken)
+	rendered := []string{
+		buf.String(),
+		fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg),
+		fmt.Sprint(cfg.LocalSecretKey), fmt.Sprint(cfg.BootstrapToken),
+	}
+	for _, text := range rendered {
+		for _, secret := range []string{validSecretKey, strings.Repeat("*", 32), "bootstrap-token-with-32-characters!"} {
+			if strings.Contains(text, secret) {
+				t.Errorf("formatted output leaks a secret: %q", text)
+			}
 		}
 	}
 }

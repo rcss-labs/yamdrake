@@ -135,11 +135,15 @@ func waitStatus(t *testing.T, addr, path string, want int, within time.Duration)
 	return ""
 }
 
+// Development only: base64 of a fixed, public 32-byte key. Never use outside tests.
+const devSecretKey = "ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE="
+
 func baseEnv(t *testing.T, databaseURL, httpAddr string) map[string]string {
 	t.Helper()
 	return map[string]string{
 		"YUMDRAKE_DATABASE_URL":     databaseURL,
 		"YUMDRAKE_VALKEY_ADDR":      valkeyAddr(t),
+		"YUMDRAKE_LOCAL_SECRET_KEY": devSecretKey,
 		"YUMDRAKE_HTTP_ADDR":        httpAddr,
 		"YUMDRAKE_SHUTDOWN_TIMEOUT": "5s",
 		"YUMDRAKE_STARTUP_TIMEOUT":  "20s",
@@ -242,10 +246,11 @@ func TestRunStaysLiveButNotReadyWhenValkeyIsDown(t *testing.T) {
 func TestRunExits1WhenDatabaseNeverAppears(t *testing.T) {
 	const password = "pw-never-log-me"
 	env := map[string]string{
-		"YUMDRAKE_DATABASE_URL":    "postgres://yumdrake:" + password + "@127.0.0.1:1/yumdrake?sslmode=disable",
-		"YUMDRAKE_VALKEY_ADDR":     "127.0.0.1:1",
-		"YUMDRAKE_HTTP_ADDR":       freeAddr(t),
-		"YUMDRAKE_STARTUP_TIMEOUT": "2s",
+		"YUMDRAKE_DATABASE_URL":     "postgres://yumdrake:" + password + "@127.0.0.1:1/yumdrake?sslmode=disable",
+		"YUMDRAKE_VALKEY_ADDR":      "127.0.0.1:1",
+		"YUMDRAKE_HTTP_ADDR":        freeAddr(t),
+		"YUMDRAKE_STARTUP_TIMEOUT":  "2s",
+		"YUMDRAKE_LOCAL_SECRET_KEY": devSecretKey,
 	}
 	var stdout, stderr syncBuffer
 	done := make(chan int, 1)

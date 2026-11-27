@@ -22,6 +22,8 @@ type Common struct {
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	StartupTimeout  time.Duration
+
+	SecretSettings
 }
 
 // Orchestrator holds the settings of the orchestrator service.
@@ -31,6 +33,8 @@ type Orchestrator struct {
 	MigrateOnStart bool
 	// MigrateTimeout bounds the schema migration, separately from StartupTimeout.
 	MigrateTimeout time.Duration
+
+	SyncSettings
 }
 
 // Runner holds the settings of the runner service.
@@ -74,6 +78,7 @@ func (l *loader) loadCommon() Common {
 	c.LogLevel = l.logLevel("YUMDRAKE_LOG_LEVEL", "info")
 	c.ShutdownTimeout = l.duration("YUMDRAKE_SHUTDOWN_TIMEOUT", "20s")
 	c.StartupTimeout = l.duration("YUMDRAKE_STARTUP_TIMEOUT", "60s")
+	c.SecretSettings = l.loadSecretSettings()
 	return c
 }
 
@@ -94,6 +99,8 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	default:
 		l.fail("YUMDRAKE_MIGRATE_ON_START", `must be "true" or "false"`)
 	}
+
+	cfg.SyncSettings = l.loadSyncSettings()
 
 	if err := l.err(); err != nil {
 		return Orchestrator{}, err

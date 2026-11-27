@@ -37,6 +37,8 @@ services:
     environment:
       YUMDRAKE_DATABASE_URL: postgres://yumdrake:yumdrake@postgres:5432/yumdrake?sslmode=disable
       YUMDRAKE_VALKEY_ADDR: valkey:6379
+      # Development only: a fixed, public key. Real deployments must set their own secret.
+      YUMDRAKE_LOCAL_SECRET_KEY: ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=
     ports:
       - "127.0.0.1:${YUMDRAKE_ORCHESTRATOR_PORT:-8080}:8080"
     depends_on:
@@ -56,6 +58,8 @@ services:
     environment:
       YUMDRAKE_DATABASE_URL: postgres://yumdrake:yumdrake@postgres:5432/yumdrake?sslmode=disable
       YUMDRAKE_VALKEY_ADDR: valkey:6379
+      # Development only: a fixed, public key. Real deployments must set their own secret.
+      YUMDRAKE_LOCAL_SECRET_KEY: ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=
     depends_on:
       postgres:
         condition: service_healthy

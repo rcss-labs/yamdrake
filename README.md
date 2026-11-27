@@ -34,6 +34,7 @@ Point both services at the local services:
 ```sh
 export YUMDRAKE_DATABASE_URL='postgres://yumdrake:yumdrake@localhost:5432/yumdrake?sslmode=disable'
 export YUMDRAKE_VALKEY_ADDR=localhost:6379
+export YUMDRAKE_LOCAL_SECRET_KEY="$(openssl rand -base64 32)"   # required; keep it the same between runs
 
 bin/yumdrake-orchestrator   # serves on :8080; applies migrations on start
 bin/yumdrake-runner         # health endpoint on 127.0.0.1:8081; waits for the schema
@@ -87,6 +88,11 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_MIGRATE_ON_START` | orchestrator | `true` | Must be `true` or `false`. |
 | `YUMDRAKE_HEALTH_ADDR` | runner | `127.0.0.1:8081` | `host:port`, with a port from 1 to 65535. Also read by `healthcheck`. |
 | `YUMDRAKE_RUNNER_ID` | runner | the host name | Identifies the runner in its logs. If unset and the host name cannot be determined, startup fails. |
+| `YUMDRAKE_SECRETS_MODE` | orchestrator, runner | `local` | Only `local` is supported in this release; any other value is a config error. |
+| `YUMDRAKE_LOCAL_SECRET_KEY` | orchestrator, runner | none (required when the mode is `local`) | Base64 of exactly 32 bytes (for example `openssl rand -base64 32`). Encrypts stored GitHub credentials. For development and tests only; never printed. |
+| `YUMDRAKE_BOOTSTRAP_TOKEN` | orchestrator | empty | If set, at least 32 characters. Never printed. |
+| `YUMDRAKE_SYNC_INTERVAL` | orchestrator | `60s` | Go duration of at least `10s`. |
+| `YUMDRAKE_GITHUB_API_URL` | orchestrator | `https://api.github.com` | An `http://` or `https://` URL. Overridden in tests. |
 | `YUMDRAKE_TEST_DATABASE_URL` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_DATABASE_URL`. Set by `make test-integration` and CI. |
 | `YUMDRAKE_TEST_VALKEY_ADDR` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_VALKEY_ADDR`. Set by `make test-integration` and CI. |
 

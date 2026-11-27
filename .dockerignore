@@ -6,3 +6,5 @@ docs
 .github
 web/node_modules
 web/dist
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep

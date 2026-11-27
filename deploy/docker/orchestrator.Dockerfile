@@ -1,3 +1,11 @@
+# Web stage: builds the React application from the lockfile.
+FROM node:24.22.3-alpine3.24 AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 # Build stage: official Go image pinned to an exact patch release.
 FROM golang:1.26.11 AS build
 ARG VERSION=dev
@@ -9,6 +17,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+# Embedded by internal/webui; replaces whatever the context held.
+COPY --from=web /web/dist/ ./internal/webui/dist/
 RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags "-X github.com/rcss-labs/yamdrake/internal/version.Version=${VERSION} -X github.com/rcss-labs/yamdrake/internal/version.Commit=${COMMIT}" \
     -o /out/yumdrake-orchestrator ./cmd/orchestrator

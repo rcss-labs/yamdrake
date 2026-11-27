@@ -15,7 +15,7 @@ export VERSION COMMIT
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
-build: ## Build yumdrake-orchestrator, yumdrake-runner and the yumdrake CLI into bin/
+build: web-build ## Build yumdrake-orchestrator, yumdrake-runner and the yumdrake CLI into bin/ (with the web application embedded)
 	@mkdir -p bin
 	go build -ldflags "$(LDFLAGS)" -o bin/yumdrake ./cmd/yumdrake
 	@for pkg in $(BINARY_PACKAGES); do \
@@ -79,5 +79,7 @@ web-lint: ## Lint and type-check the web application
 web-test: ## Run the web application's unit tests once
 	npm --prefix web run test
 
-web-build: ## Build the web application for production into web/dist
+web-build: ## Build the web application and copy it into internal/webui/dist for embedding
 	npm --prefix web run build
+	find internal/webui/dist -mindepth 1 ! -name .gitkeep -delete
+	cp -R web/dist/. internal/webui/dist/

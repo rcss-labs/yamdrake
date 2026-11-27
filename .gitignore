@@ -2,3 +2,7 @@
 .superpowers/
 /bin/
 /coverage.out
+
+# Built web application, embedded by internal/webui (make web-build)
+/internal/webui/dist/*
+!/internal/webui/dist/.gitkeep

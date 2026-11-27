@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { Inventory, Service, ServiceEnvironment } from '../../api/types'
-import { Card, ErrorState, Loading, SearchBox, Segmented } from '../../ui'
+import { Card, CodeBlock, ErrorState, Loading, SearchBox, Segmented } from '../../ui'
 import { useInventoryService } from './queries'
 
 function EnvironmentBlock({ name, block }: { name: string; block: ServiceEnvironment }) {
@@ -105,6 +105,7 @@ function ServiceDetail({ name, inventory, environment }: { name: string; invento
         const block = service.environments[env]
         return block ? <EnvironmentBlock key={env} name={env} block={block} /> : null
       })}
+      {service.source !== '' && <CodeBlock label={service.file}>{service.source}</CodeBlock>}
     </div>
   )
 }

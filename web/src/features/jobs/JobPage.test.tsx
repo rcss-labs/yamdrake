@@ -136,16 +136,18 @@ describe('the job page', () => {
     expect(screen.getByText('new-job')).toBeInTheDocument()
   })
 
-  it('shows no file block when the response carries no source', async () => {
+  it('shows no file block when no text is stored for the job', async () => {
+    mockState().jobs[0]!.source = ''
     renderJob('/jobs/1')
     await definitionPanel()
     expect(screen.queryByRole('region', { name: 'Job file' })).not.toBeInTheDocument()
   })
 
-  it('shows the raw YAML when the response carries it', async () => {
-    ;(mockState().jobs[0] as unknown as Record<string, unknown>).source = 'id: deploy-backend\n'
+  it('shows the raw YAML of the last good version', async () => {
     renderJob('/jobs/1')
-    expect(await screen.findByRole('region', { name: 'Job file' })).toHaveTextContent('id: deploy-backend')
+    const file = await screen.findByRole('region', { name: 'Job file' })
+    expect(file).toHaveTextContent('job: deploy-backend')
+    expect(file).toHaveTextContent('labels: [prod]')
   })
 
   it('re-reads from GitHub and refreshes the job', async () => {

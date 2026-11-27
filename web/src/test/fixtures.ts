@@ -147,7 +147,21 @@ function serviceFixture(name: string, environments: string[]): Service {
     versions: { pattern: '^\\d+\\.\\d+\\.\\d+$', sort: 'semver', limit: 20 },
     environments: perEnvironment,
     line: 2,
+    source: serviceYaml(name),
   }
+}
+
+function serviceYaml(name: string): string {
+  return [
+    'apiVersion: yumdrake/v1',
+    'kind: Service',
+    `name: ${name}`,
+    'versions:',
+    "  pattern: '^\\d+\\.\\d+\\.\\d+$'",
+    '  sort: semver',
+    '  limit: 20',
+    '',
+  ].join('\n')
 }
 
 export const servicesFixture: Service[] = inventoryFixture.services.map((summary) =>
@@ -206,9 +220,37 @@ const portalDefinition = buildJobDefinition(
   [],
 )
 
+/** A job file as it would sit in git, written from the definition so the two agree. */
+function jobYaml(definition: JobDefinition): string {
+  const groups = (definition.groups ?? []).flatMap((group) => [
+    `  ${group.id}:`,
+    `    label: ${group.label}`,
+    `    services: [${(group.services ?? []).join(', ')}]`,
+  ])
+  const approval = definition.approval ? ['approval:', '  when:', `    labels: [${(definition.approval.labels ?? []).join(', ')}]`] : []
+  return [
+    'apiVersion: yumdrake/v1',
+    'kind: Job',
+    `job: ${definition.id}`,
+    `title: "${definition.title}"`,
+    '',
+    'environment:',
+    `  labels: [${(definition.labels ?? []).join(', ')}]`,
+    '',
+    'groups:',
+    ...groups,
+    '',
+    ...approval,
+    '',
+  ].join('\n')
+}
+
 const recent = t('2026-11-27T09:00:00Z')
 
-export const jobsFixture: JobDetail[] = [
+/** A job as the mock keeps it; the list counts (services, approval labels) are derived from the definition when it is served. */
+export type StoredJob = Omit<JobDetail, 'services' | 'approval_labels'>
+
+export const jobsFixture: StoredJob[] = [
   {
     id: 1,
     job_id: 'deploy-backend',
@@ -226,6 +268,7 @@ export const jobsFixture: JobDetail[] = [
     sync_error: '',
     sync_error_at: null,
     definition: backendDefinition,
+    source: jobYaml(backendDefinition),
     problems: [],
     problems_commit: '',
   },
@@ -246,6 +289,7 @@ export const jobsFixture: JobDetail[] = [
     sync_error: '',
     sync_error_at: null,
     definition: billingDefinition,
+    source: jobYaml(billingDefinition),
     problems: [],
     problems_commit: '',
   },
@@ -267,6 +311,7 @@ export const jobsFixture: JobDetail[] = [
     sync_error: '',
     sync_error_at: null,
     definition: portalDefinition,
+    source: jobYaml(portalDefinition),
     problems: [
       { file: 'deploy/yumdrake.yaml', line: 17, message: 'step "deploy" needs "copy-configs", which does not exist' },
       { file: 'deploy/yumdrake.yaml', line: 23, message: 'group "portal-web" is not defined' },
@@ -291,6 +336,7 @@ export const jobsFixture: JobDetail[] = [
     sync_error: 'repository example-org/platform was not found or the connection has no access to it',
     sync_error_at: recent,
     definition: null,
+    source: '',
     problems: [],
     problems_commit: '',
   },
@@ -472,7 +518,7 @@ export interface MockState {
   inventorySource: { repo: string; branch: string; path: string }
   services: Service[]
   folders: Folder[]
-  jobs: JobDetail[]
+  jobs: StoredJob[]
   users: AdminUser[]
   groups: AdminGroup[]
   grants: AdminGrant[]

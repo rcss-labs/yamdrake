@@ -22,18 +22,11 @@ function stepFacts(step: JobStep): string[] {
   ]
 }
 
-// The raw file is not part of the API types yet; show it only when the response carries a string.
-function rawSource(job: JobDetail): string | null {
-  const { source } = job as JobDetail & { source?: unknown }
-  return typeof source === 'string' && source !== '' ? source : null
-}
-
 export function DefinitionTab({ job, routeId, canSync }: DefinitionTabProps) {
   const sync = useSyncJob(routeId)
   const definition = job.definition
   const groups = definition?.groups ?? []
   const steps = definition?.steps ?? []
-  const source = rawSource(job)
   const groupLabel = (id: string) => groups.find((group) => group.id === id)?.label ?? id
 
   return (
@@ -135,7 +128,7 @@ export function DefinitionTab({ job, routeId, canSync }: DefinitionTabProps) {
         </div>
       )}
 
-      {source && <CodeBlock label="Job file">{source}</CodeBlock>}
+      {job.source !== '' && <CodeBlock label="Job file">{job.source}</CodeBlock>}
     </div>
   )
 }

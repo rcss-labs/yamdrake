@@ -48,7 +48,7 @@ describe('JobsPage', () => {
     renderJobs()
     await screen.findByRole('link', { name: 'Portal services' })
     const backend = within(jobRowOf('Backend and microservices'))
-    expect(backend.getByText('backend-api')).toBeInTheDocument()
+    expect(backend.getByText('1 service')).toBeInTheDocument()
     expect(backend.getByText('prod')).toBeInTheDocument()
     expect(backend.getByText('Runnable')).toBeInTheDocument()
     expect(backend.getByText('No runs yet')).toBeInTheDocument()
@@ -57,27 +57,30 @@ describe('JobsPage', () => {
     expect(portal.getByText('None')).toBeInTheDocument()
     expect(portal.getByText('Has problems (2)')).toBeInTheDocument()
     const billing = within(jobRowOf('Billing service only'))
-    expect(billing.getByText('billing')).toBeInTheDocument()
+    expect(billing.getByText('1 service')).toBeInTheDocument()
   })
 
-  it('says a job that was never read cannot run and shows where it lives', async () => {
+  it('says a job that was never read cannot run, deploys no services and needs no approval', async () => {
     renderJobs()
     const link = await screen.findByRole('link', { name: 'release/yumdrake.yaml' })
     const row = within(link.closest('tr') as HTMLElement)
     expect(row.getByText('Has problems')).toBeInTheDocument()
-    expect(row.getAllByText('Not available')).toHaveLength(2)
+    expect(row.getByText('0 services')).toBeInTheDocument()
+    expect(row.getByText('None')).toBeInTheDocument()
+    expect(row.queryByText('Not available')).not.toBeInTheDocument()
   })
 
-  it('says "Not available" when the list does not carry services or approval', async () => {
+  it('shows None for approval when the server sends no labels', async () => {
     server.use(
       http.get('/api/v1/jobs', () =>
-        HttpResponse.json({ jobs: mockState().jobs.map((job) => Object.fromEntries(Object.entries(job).filter(([key]) => !['definition', 'problems', 'problems_commit'].includes(key)))) }),
+        HttpResponse.json({
+          jobs: mockState().jobs.map((job) => ({ ...job, services: 1, approval_labels: null })),
+        }),
       ),
     )
     renderJobs()
     const row = within(await screen.findByRole('link', { name: 'Backend and microservices' }).then((a) => a.closest('tr') as HTMLElement))
-    expect(row.getAllByText('Not available')).toHaveLength(2)
-    expect(row.queryByText('None')).not.toBeInTheDocument()
+    expect(row.getByText('None')).toBeInTheDocument()
   })
 
   it('narrows by title and by id when searching', async () => {

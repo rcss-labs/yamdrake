@@ -11,12 +11,14 @@ import type {
   GithubConnection,
   GithubConnectionsResponse,
   Inventory,
+  InventorySource,
   InventorySourceRequest,
   JobsResponse,
 } from '../../api/types'
 
 const awsKey = ['admin', 'aws-accounts']
 const githubKey = ['admin', 'github-connections']
+const inventorySourceKey = ['admin', 'inventory-source']
 
 export function useAwsAccounts() {
   return useApiGet<AwsAccountsResponse>(awsKey, '/api/v1/admin/aws-accounts')
@@ -48,10 +50,15 @@ export function useInventory() {
   return useApiGet<Inventory>(['inventory'], '/api/v1/inventory')
 }
 
+/** The stored inventory source; empty strings when none is stored. */
+export function useInventorySource() {
+  return useApiGet<InventorySource>(inventorySourceKey, '/api/v1/admin/inventory-source')
+}
+
 /** Replaces the inventory source and reads it again; the answer is the new inventory state. */
 export function useSaveInventorySource() {
   return useApiMutation<Inventory, InventorySourceRequest>('PUT', '/api/v1/admin/inventory-source', {
-    invalidate: [['inventory']],
+    invalidate: [['inventory'], inventorySourceKey],
   })
 }
 

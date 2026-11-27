@@ -20,24 +20,11 @@ const ALL_FOLDERS = 'all'
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
 
-function NotAvailable() {
-  return <span className="jobs-quiet">Not available</span>
-}
-
 function Deploys({ job }: { job: JobSummary }) {
-  if (!job.services) {
-    return <NotAvailable />
-  }
-  if (job.services.length === 1) {
-    return <span className="mono">{job.services[0]}</span>
-  }
-  return <>{plural(job.services.length, 'service', 'services')}</>
+  return <>{plural(job.services, 'service', 'services')}</>
 }
 
 function Approval({ job }: { job: JobSummary }) {
-  if (!job.approval_labels) {
-    return <NotAvailable />
-  }
   if (job.approval_labels.length === 0) {
     return <>None</>
   }

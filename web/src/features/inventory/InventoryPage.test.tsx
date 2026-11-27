@@ -11,6 +11,7 @@ import {
   inventoryFixture,
   requests,
   server,
+  servicesFixture,
   viewerMe,
 } from '../../test/server'
 import { InventoryPage } from './InventoryPage'
@@ -199,13 +200,30 @@ describe('the services tab', () => {
     expect(await screen.findByRole('heading', { name: 'backend-api' })).toBeInTheDocument()
     expect(screen.getByText('^\\d+\\.\\d+\\.\\d+$')).toBeInTheDocument()
     const blocks = screen.getAllByRole('region')
-    expect(blocks).toHaveLength(5)
+    expect(blocks).toHaveLength(6) // five environments and the service's file
     const prod = screen.getByRole('region', { name: 'prod-01' })
     expect(within(prod).getByText('backend-api-prod-01')).toBeInTheDocument()
     expect(within(prod).getByText('333333333333.dkr.ecr.eu-central-1.amazonaws.com/backend-api')).toBeInTheDocument()
     expect(within(prod).getByText('backend-api.env')).toBeInTheDocument()
     expect(within(prod).getByText('example-org/env-config-repo/prod-01/backend-api/backend-api.env')).toBeInTheDocument()
     expect(within(prod).getByText('s3://prod-01-config/env/backend-api/backend-api.env')).toBeInTheDocument()
+  })
+
+  it("shows the service's file under its name", async () => {
+    showInventory('/inventory?tab=services&service=backend-api')
+    const file = await screen.findByRole('region', { name: 'services/backend-api.yaml' })
+    expect(file).toHaveTextContent('name: backend-api')
+  })
+
+  it('shows no file block when no text is stored for the service', async () => {
+    server.use(
+      http.get('/api/v1/inventory/services/backend-api', () =>
+        HttpResponse.json({ ...servicesFixture.find((service) => service.name === 'backend-api'), source: '' }),
+      ),
+    )
+    showInventory('/inventory?tab=services&service=backend-api')
+    await screen.findByRole('heading', { name: 'backend-api' })
+    expect(screen.queryByRole('region', { name: 'services/backend-api.yaml' })).not.toBeInTheDocument()
   })
 
   it('shows a loading state while a chosen service loads', async () => {
@@ -237,11 +255,11 @@ describe('the services tab', () => {
     ])
     await userEvent.click(within(narrow).getByRole('button', { name: 'prod-01' }))
     expect(location().search).toContain('env=prod-01')
-    expect(screen.getAllByRole('region')).toHaveLength(1)
+    expect(screen.getAllByRole('region')).toHaveLength(2) // the environment and the service's file
     expect(screen.getByRole('region', { name: 'prod-01' })).toBeInTheDocument()
     await userEvent.click(within(narrow).getByRole('button', { name: 'All' }))
     expect(location().search).not.toContain('env=')
-    expect(screen.getAllByRole('region')).toHaveLength(4)
+    expect(screen.getAllByRole('region')).toHaveLength(5) // four environments and the service's file
   })
 
   it('shows an error with a retry when the service cannot be loaded', async () => {

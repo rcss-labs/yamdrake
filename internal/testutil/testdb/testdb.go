@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration || e2e
 
 // Package testdb creates throwaway PostgreSQL databases for integration tests.
 package testdb

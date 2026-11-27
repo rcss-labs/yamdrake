@@ -62,6 +62,15 @@ make smoke              # builds the images and starts the Compose "app" profile
 
 `make smoke` needs Docker. It removes its containers and volumes on exit. See `scripts/smoke.sh -h` for its exit codes.
 
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Clean shutdown. |
+| `1` | Start-up or serve failure. |
+| `2` | Configuration or usage error. |
+| `130` | A second SIGINT or SIGTERM arrived during graceful shutdown and forced an immediate exit. |
+
 ## Environment variables
 
 Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL is only printed with its password replaced by `REDACTED`.

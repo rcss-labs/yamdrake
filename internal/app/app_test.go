@@ -233,7 +233,7 @@ func TestShutdownContextFirstSignalCancelsSecondForcesExit(t *testing.T) {
 	signals <- os.Interrupt
 	select {
 	case code := <-exitCodes:
-		if code == 0 || code != ExitForced {
+		if code != ExitForced {
 			t.Errorf("exit code = %d, want %d", code, ExitForced)
 		}
 	case <-time.After(2 * time.Second):

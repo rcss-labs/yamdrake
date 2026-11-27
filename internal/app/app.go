@@ -32,8 +32,9 @@ const (
 	ExitOK      = 0
 	ExitFailure = 1
 	ExitUsage   = 2
-	// ExitForced is returned when a second shutdown signal cuts a graceful
-	// shutdown short (128 + SIGINT, the shell convention).
+	// ExitForced is the exit code when a second shutdown signal cuts a
+	// graceful shutdown short (128 + SIGINT, the shell convention). The
+	// published codes are therefore 0, 1, 2 and 130.
 	ExitForced = 130
 )
 
@@ -57,7 +58,13 @@ func ShutdownContext(parent context.Context, signals <-chan os.Signal, exit func
 		}
 		select {
 		case <-signals:
-			exit(ExitForced)
+			// select picks randomly when stop and a signal are both ready;
+			// stop wins because a stopped service is no longer shutting down.
+			select {
+			case <-stopped:
+			default:
+				exit(ExitForced)
+			}
 		case <-stopped:
 		}
 	}()

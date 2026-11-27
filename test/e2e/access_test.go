@@ -246,6 +246,10 @@ func TestAccessEndToEnd(t *testing.T) {
 		switch got.status {
 		case http.StatusOK:
 			got.decode(t, "device token", &collected)
+			if collected.Token == "" {
+				// Still pending: wait out the interval before asking again.
+				time.Sleep(time.Duration(max(started.Interval, 1)) * time.Second)
+			}
 		case http.StatusTooManyRequests:
 			// Polling faster than the interval: wait it out and ask again.
 			time.Sleep(time.Duration(max(started.Interval, 1)) * time.Second)
@@ -289,13 +293,40 @@ func TestAccessEndToEnd(t *testing.T) {
 	if !containsInOrder(actions, wantInOrder) {
 		t.Errorf("audit actions = %v, want them to contain %v in this order", actions, wantInOrder)
 	}
+	// Positive control: the searched JSON is not empty and holds a known
+	// non-secret value, so a clean search means something.
+	if joined := bytes.Join(pages, nil); !bytes.Contains(joined, []byte(memberEmail)) {
+		t.Fatal("the audit JSON does not contain the member's email; the secret search would prove nothing")
+	}
+	// Who did what: the admin made the changes, the member confirmed the CLI sign-in and got the token.
+	wantActor := func(action, actor string, which int) {
+		t.Helper()
+		seen := 0
+		for _, entry := range entries {
+			if entry.Action != action {
+				continue
+			}
+			seen++
+			if seen == which {
+				if entry.Actor != actor {
+					t.Errorf("audit %s #%d actor = %q, want %q", action, which, entry.Actor, actor)
+				}
+				return
+			}
+		}
+		t.Errorf("no audit %s #%d", action, which)
+	}
+	wantActor("cli_login.confirm", memberEmail, 1)
+	wantActor("token.create", memberEmail, 1)
+	wantActor("user.update", accessAdminEmail, 2) // the disabling update (the first added the member to QA)
 	for _, page := range pages {
 		for name, secret := range map[string]string{
 			"the admin password":  accessAdminPassword,
 			"the member password": memberPassword,
 			"the token":           collected.Token,
 			"the device code":     started.DeviceCode,
-			"the session cookie":  member.session,
+			"the member session":  member.session,
+			"the admin session":   admin.session,
 		} {
 			if secret != "" && bytes.Contains(page, []byte(secret)) {
 				t.Errorf("the audit log contains %s", name)

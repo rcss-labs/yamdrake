@@ -85,7 +85,7 @@ if ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' <<<"$readyz"; then
 fi
 
 echo "smoke: checking that /api/v1/me refuses a request without credentials"
-me_status="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${orchestrator_port}/api/v1/me" || true)"
+me_status="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://localhost:${orchestrator_port}/api/v1/me" || true)"
 if [ "$me_status" != "401" ]; then
 	echo "smoke: FAIL: /api/v1/me answered ${me_status:-no response} without credentials, want 401" >&2
 	exit 1

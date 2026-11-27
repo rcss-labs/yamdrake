@@ -60,7 +60,7 @@ func createAdmin(ctx context.Context, args []string, getenv func(string) string,
 		_, _ = fmt.Fprintln(stderr, err)
 		return app.ExitUsage
 	}
-	password, ok := readPassword(stdin)
+	password, ok := readPassword(stdin, stderr)
 	if !ok {
 		_, _ = io.WriteString(stderr, "create-admin: the password must be given on standard input\n\n"+createAdminUse)
 		return app.ExitUsage
@@ -151,13 +151,13 @@ func insertAdmin(ctx context.Context, tx pgx.Tx, email, name, passwordHash strin
 // line at all (a missing or empty input), so "nothing given" is a usage error
 // while an empty or short line is a rejected password. On a terminal it turns
 // echo off for the read.
-func readPassword(stdin io.Reader) (string, bool) {
+func readPassword(stdin io.Reader, stderr io.Writer) (string, bool) {
 	if stdin == nil {
 		return "", false
 	}
 	if file, ok := stdin.(*os.File); ok {
 		if info, err := file.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
-			restore := disableEcho(file)
+			restore := disableEcho(file, stderr)
 			defer restore()
 		}
 	}
@@ -170,7 +170,7 @@ func readPassword(stdin io.Reader) (string, bool) {
 
 // disableEcho turns terminal echo off with stty and returns the function that
 // turns it back on. Without stty it does nothing.
-func disableEcho(tty *os.File) func() {
+func disableEcho(tty *os.File, stderr io.Writer) func() {
 	off := exec.Command("stty", "-echo") //nolint:gosec // fixed command
 	off.Stdin = tty
 	if err := off.Run(); err != nil {
@@ -180,6 +180,6 @@ func disableEcho(tty *os.File) func() {
 		on := exec.Command("stty", "echo") //nolint:gosec // fixed command
 		on.Stdin = tty
 		_ = on.Run()
-		_, _ = fmt.Fprintln(os.Stderr)
+		_, _ = fmt.Fprintln(stderr)
 	}
 }

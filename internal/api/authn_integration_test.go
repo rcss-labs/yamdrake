@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -48,7 +50,9 @@ func (h *harness) send(r sent) *httptest.ResponseRecorder {
 	}
 	rec := httptest.NewRecorder()
 	h.handler.ServeHTTP(rec, req)
+	h.bodiesMu.Lock()
 	h.bodies = append(h.bodies, rec.Body.String())
+	h.bodiesMu.Unlock()
 	return rec
 }
 
@@ -288,5 +292,61 @@ func TestWriteIsUndoneWhenItsAuditEntryFails(t *testing.T) {
 	}
 	if _, ok, _ := store.GetInventorySource(context.Background(), h.pool); ok {
 		t.Error("inventory source is stored although its audit entry failed")
+	}
+}
+
+// A database failure while checking a token is the server's problem, not a bad credential.
+func TestTokenCheckDatabaseFailureIs503Not401(t *testing.T) {
+	h := newHarness(t)
+	broken, err := db.Open(context.Background(), h.dbURL)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	broken.Close()
+	h.rebuild(func(d *Deps) { d.Pool = broken })
+	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: h.adminToken}), http.StatusServiceUnavailable, "unavailable")
+}
+
+// Every registered route: without credentials 401; without the grant 403 (or
+// allowed, for view); with the grant never 403. A route added without a
+// decision, or wired to the wrong action, shows up here.
+func TestEveryRouteEnforcesItsAction(t *testing.T) {
+	h := newHarness(t)
+	h.withSyncer(stubSyncer{})
+	routes := (&server{}).routes()
+	if len(routes) < 15 {
+		t.Fatalf("only %d routes registered", len(routes))
+	}
+	plain := h.newUser("routeplain")
+	plainToken, _ := h.newToken(plain.ID)
+	granted := map[auth.Action]string{}
+	for _, route := range routes {
+		method, pattern, _ := strings.Cut(route.pattern, " ")
+		path := strings.NewReplacer("{name}", "x", "{id}", "1").Replace(pattern)
+		name := route.pattern
+
+		if rec := h.send(sent{method: method, path: path}); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s without credentials: %s, want 401", name, failure(rec))
+		}
+		rec := h.send(sent{method: method, path: path, bearer: plainToken})
+		if route.action == auth.View {
+			if rec.Code == http.StatusForbidden {
+				t.Errorf("%s needs only view but a plain user got 403", name)
+			}
+			continue
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s without a grant: %s, want 403", name, failure(rec))
+		}
+		token, ok := granted[route.action]
+		if !ok {
+			u := h.newUser("route" + string(route.action))
+			h.grant(u.ID, string(route.action))
+			token, _ = h.newToken(u.ID)
+			granted[route.action] = token
+		}
+		if rec := h.send(sent{method: method, path: path, bearer: token}); rec.Code == http.StatusForbidden {
+			t.Errorf("%s with %s granted still got 403", name, route.action)
+		}
 	}
 }

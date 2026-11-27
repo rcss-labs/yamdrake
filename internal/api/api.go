@@ -69,6 +69,11 @@ type Deps struct {
 	LockoutWindow time.Duration
 	// Now is the clock (default time.Now).
 	Now func() time.Time
+	// MaxConcurrentLogins bounds the password checks running at once (default
+	// 4): each uses 64 MiB, and sign-in is open to anyone. VerifyWait is how
+	// long a request waits for a slot before it is answered 503 (default 1s).
+	MaxConcurrentLogins int
+	VerifyWait          time.Duration
 }
 
 // valkeyTimeout bounds every Valkey call made for a request: against a dead
@@ -80,6 +85,8 @@ type server struct {
 	// dummyHash is verified when the account does not exist (or cannot sign in
 	// with a password), so every sign-in costs one argon2 verification.
 	dummyHash string
+	// verifySlots has one token per allowed concurrent password check.
+	verifySlots chan struct{}
 }
 
 // dummyPasswordHash is computed once per process, with the production parameters.
@@ -107,27 +114,18 @@ func New(deps Deps) http.Handler {
 	if err != nil {
 		panic("api.New: dummy password hash: " + err.Error())
 	}
-	s := &server{Deps: deps, dummyHash: dummy}
+	if deps.MaxConcurrentLogins <= 0 {
+		deps.MaxConcurrentLogins = defaultConcurrentLogins
+	}
+	if deps.VerifyWait <= 0 {
+		deps.VerifyWait = defaultVerifyWait
+	}
+	s := &server{Deps: deps, dummyHash: dummy, verifySlots: make(chan struct{}, deps.MaxConcurrentLogins)}
 
 	authenticated := http.NewServeMux()
-	route := func(pattern string, action auth.Action, handler http.HandlerFunc) {
-		authenticated.Handle(pattern, s.require(action, nil)(handler))
+	for _, route := range s.routes() {
+		authenticated.Handle(route.pattern, s.require(route.action, nil)(route.handler))
 	}
-	route("GET /api/v1/me", auth.View, s.me)
-	route("POST /api/v1/auth/logout", auth.View, s.logout)
-	route("GET /api/v1/inventory", auth.View, s.getInventory)
-	route("GET /api/v1/inventory/services/{name}", auth.View, s.getService)
-	route("POST /api/v1/inventory/sync", auth.ManageConnections, s.syncInventory)
-	route("PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource)
-	route("GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections)
-	route("POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection)
-	route("GET /api/v1/folders", auth.View, s.listFolders)
-	route("POST /api/v1/folders", auth.ManageJobs, s.createFolder)
-	route("GET /api/v1/jobs", auth.View, s.listJobs)
-	route("POST /api/v1/jobs", auth.ManageJobs, s.registerJob)
-	route("GET /api/v1/jobs/{id}", auth.View, s.getJob)
-	route("PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob)
-	route("POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob)
 	// Unknown paths: 401 without credentials, 404 with them.
 	authenticated.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, codeNotFound, "not found")
@@ -139,6 +137,34 @@ func New(deps Deps) http.Handler {
 	root.HandleFunc("POST /api/v1/auth/login", s.login)
 	root.Handle("/", s.authenticate(authenticated))
 	return root
+}
+
+// routeDef is a route of the authenticated part of the API with the action it
+// needs. Every route is listed here, so each has an explicit decision.
+type routeDef struct {
+	pattern string
+	action  auth.Action
+	handler http.HandlerFunc
+}
+
+func (s *server) routes() []routeDef {
+	return []routeDef{
+		{"GET /api/v1/me", auth.View, s.me},
+		{"POST /api/v1/auth/logout", auth.View, s.logout},
+		{"GET /api/v1/inventory", auth.View, s.getInventory},
+		{"GET /api/v1/inventory/services/{name}", auth.View, s.getService},
+		{"POST /api/v1/inventory/sync", auth.ManageConnections, s.syncInventory},
+		{"PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource},
+		{"GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections},
+		{"POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection},
+		{"GET /api/v1/folders", auth.View, s.listFolders},
+		{"POST /api/v1/folders", auth.ManageJobs, s.createFolder},
+		{"GET /api/v1/jobs", auth.View, s.listJobs},
+		{"POST /api/v1/jobs", auth.ManageJobs, s.registerJob},
+		{"GET /api/v1/jobs/{id}", auth.View, s.getJob},
+		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
+		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
+	}
 }
 
 type errorBody struct {

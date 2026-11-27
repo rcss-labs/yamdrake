@@ -1,8 +1,10 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { http, HttpResponse } from 'msw'
+import { describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
-import { adminMe, failNext, jobManagerMe, requests, viewerMe } from '../test/server'
+import { adminMe, failNext, jobManagerMe, requests, server, viewerMe } from '../test/server'
+import { ErrorBoundary } from './ErrorBoundary'
 import { renderApp } from '../test/render'
 
 async function mainNav() {
@@ -108,5 +110,32 @@ describe('the application shell', () => {
     renderApp(<App />, { route: '/admin/users', me: viewerMe })
     expect(await screen.findByText('You do not have access')).toBeInTheDocument()
     expect(requests.filter((request) => request.path.startsWith('/api/v1/admin/'))).toEqual([])
+  })
+})
+
+describe('lists the server sends as null', () => {
+  it('renders the app for a person whose grants are null', async () => {
+    server.use(http.get('/api/v1/me', () => HttpResponse.json({ ...viewerMe, grants: null })))
+    renderApp(<App />)
+    const nav = await mainNav()
+    expect(nav.getAllByRole('link')).toHaveLength(7)
+  })
+})
+
+describe('the error boundary', () => {
+  function Broken(): never {
+    throw new Error('boom')
+  }
+
+  it('shows a readable message with a reload button instead of a blank page', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    renderApp(
+      <ErrorBoundary>
+        <Broken />
+      </ErrorBoundary>,
+    )
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong')
+    expect(screen.getByRole('button', { name: 'Reload the page' })).toBeInTheDocument()
+    consoleError.mockRestore()
   })
 })

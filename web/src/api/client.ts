@@ -28,6 +28,45 @@ export function onUnauthorized(listener: UnauthorizedListener): () => void {
   }
 }
 
+// Every field the API documents as a list. Go sends null for a list nobody appended to, and the screens
+// map and search these lists, so a null here would blank the whole page. Other nulls (for example
+// last_used_at) are real values and stay.
+const LIST_FIELDS: ReadonlySet<string> = new Set([
+  'accounts',
+  'approval_labels',
+  'connections',
+  'entries',
+  'env_files',
+  'environments',
+  'folders',
+  'grants',
+  'group_ids',
+  'groups',
+  'jobs',
+  'labels',
+  'mappings',
+  'needs',
+  'problems',
+  'services',
+  'steps',
+  'tokens',
+  'tomls',
+  'users',
+])
+
+/** Replaces a null in any list field, at any depth, with []. Pure; returns new objects only where needed. */
+export function nullListsToEmpty(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(nullListsToEmpty)
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, inner]) => [key, inner === null && LIST_FIELDS.has(key) ? [] : nullListsToEmpty(inner)]),
+    )
+  }
+  return value
+}
+
 function isErrorBody(value: unknown): value is ErrorBody {
   if (typeof value !== 'object' || value === null || !('error' in value)) {
     return false
@@ -105,7 +144,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
     if (response.status === 204) {
       return undefined as T
     }
-    return (await response.json()) as T
+    return nullListsToEmpty(await response.json()) as T
   } catch (caught) {
     if (caught instanceof ApiError) {
       throw caught

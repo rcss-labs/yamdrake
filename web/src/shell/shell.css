@@ -123,3 +123,9 @@
     transition: none;
   }
 }
+
+.shell-crash {
+  max-width: 480px;
+  margin: 15vh auto 0;
+  padding: 0 16px;
+}

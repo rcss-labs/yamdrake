@@ -9,6 +9,26 @@ describe('api', () => {
     expect(folders.folders.map((folder) => folder.name)).toContain('Backend')
   })
 
+  it('turns a null list into an empty one, at any depth, and leaves other nulls alone', async () => {
+    server.use(
+      http.get('/api/v1/me', () =>
+        HttpResponse.json({
+          id: 1,
+          grants: null,
+          users: [{ groups: null, last_sign_in_at: null }],
+          environments: null,
+        }),
+      ),
+    )
+    const body = await api<{ grants: unknown; users: { groups: unknown; last_sign_in_at: unknown }[]; environments: unknown }>(
+      'GET',
+      '/api/v1/me',
+    )
+    expect(body.grants).toEqual([])
+    expect(body.environments).toEqual([])
+    expect(body.users[0]).toEqual({ groups: [], last_sign_in_at: null })
+  })
+
   it('sends a JSON body with a JSON content type', async () => {
     await api('POST', '/api/v1/folders', { name: 'Tools' })
     const sent = requests.find((request) => request.method === 'POST' && request.path === '/api/v1/folders')

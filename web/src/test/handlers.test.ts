@@ -125,12 +125,14 @@ describe('the mock API', () => {
     expect(last.next_before).toBeNull()
   })
 
-  it('sends null for the lists the Go server leaves nil (needs, env_files, tomls)', async () => {
-    const service = await api<Service>('GET', '/api/v1/inventory/services/billing')
+  it('sends null on the wire for the lists the Go server leaves nil (needs, env_files, tomls)', async () => {
+    // Raw fetch: api() turns these nulls into [], and this guards that the mock still exercises that.
+    const wire = async <T,>(path: string): Promise<T> => (await fetch(path)).json() as Promise<T>
+    const service = await wire<Service>('/api/v1/inventory/services/billing')
     expect(service.environments['hetzner-01']?.env_files).toBeNull()
-    const backend = await api<Service>('GET', '/api/v1/inventory/services/backend-api')
+    const backend = await wire<Service>('/api/v1/inventory/services/backend-api')
     expect(backend.environments['hetzner-01']?.tomls).toBeNull()
-    const job = await api<JobDetail>('GET', '/api/v1/jobs/1')
+    const job = await wire<JobDetail>('/api/v1/jobs/1')
     expect(job.definition?.steps?.[0]?.needs).toBeNull()
   })
 

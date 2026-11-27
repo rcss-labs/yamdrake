@@ -28,6 +28,24 @@ No full code, by the owner's rule.
 - Tests clean up every `floci-aws-*` container they caused and never touch containers they did not start.
 - Failure behaviour that Floci cannot produce (see the findings) is tested with stub clients behind the same interfaces.
 
+## What exists now, and how this plan is being run
+
+Use the real names in the code, not the ones this plan's text predicted. Earlier ledgers and manager reports are under `.superpowers/sdd/` in the main checkout.
+
+- `main` has Plans 1, 2, 3, the web foundation and a sign-in hardening change. Migrations 00001 to 00005 exist. **Plan 4 (the run engine) is being built in parallel on another branch and uses migration 00006. This plan's migration is 00007.** Do not hard-code the latest migration number in tests.
+- **Tasks 1 to 6 of this plan do not need Plan 4 and are executed now.** Tasks 7 to 10 need Plan 4's `runner.Executor`, `runner.Env` and engine, and wait until Plan 4 is merged into `main` and `main` is merged into this branch.
+- API rules: routes are registered in `server.routes()` and must be added to the expected map in `TestEveryRouteEnforcesItsAction` and, for list GETs, to `TestNoRouteReturnsNullForAList`. Every JSON list is `[]`, never `null`. Audited writes go through `auditedWrite`. Request bodies reject unknown fields and control characters.
+- The web application already has an AWS accounts screen built against this shape, which Task 2's routes must match exactly: `GET /api/v1/admin/aws-accounts` returns `{accounts:[{id, name, account_id, discovery, deploy, environments[], created_at}]}` where each credential view is `{method: "role"|"key", role_arn, external_id, access_key_id_last4}`; `POST` takes `{name, account_id, discovery, deploy}` with each credential `{method, role_arn?, external_id?, access_key_id?, secret_access_key?}`; `POST /{id}/test` returns `{ok, error_code, message}`. See `web/src/api/types.ts` and `web/src/test/handlers.ts`. If the Go side must differ, change the web types, mocks and tests in the same task.
+- Valkey keys must use `Deps.KeyPrefix`. Secrets go through `secrets.Cipher` with a purpose. `config.Scrub` and `config.Secret` keep secrets out of text.
+- `make build` needs `make web-install` once (the orchestrator embeds the web app).
+- Only global admins may change admin power; sign-in hardening rules are in spec section 9.
+
+### Task 0: two small fixes left by the sign-in hardening review
+
+- [ ] An admin can mint a token for a disabled service account (`internal/api/tokens.go`, the admin token route); it would start working when the account is re-enabled. Refuse with 422 `invalid` when the user is disabled. Test seen failing first.
+- [ ] A `manage_access` non-admin can remove an identity-provider mapping or a membership that points at a group holding more than their own grants, weakening other people. Apply the same "only what you hold" rule to removals in `putIDPMapping`, `deleteIDPMapping` and `updateUser` as is applied to additions. Tests seen failing first.
+- [ ] Run the suite and commit `fix: close two gaps left by the sign-in hardening review`.
+
 ## Review Focus
 
 1. The tag is moved to another image, the branch gets a new commit, or the S3 source object changes after the plan was made: the run still uses exactly what the plan recorded. (Tasks 7, 10)
@@ -46,7 +64,7 @@ No full code, by the owner's rule.
 | `internal/awsx/clients.go` | Build SDK clients for an account, region and endpoint |
 | `internal/awsx/discovery/creds.go` | Read-only credentials, for the orchestrator |
 | `internal/awsx/deploy/creds.go` | Deployment credentials, for the runner only |
-| `internal/db/migrations/00005_aws.sql`, `internal/store/aws.go` | Connected AWS accounts |
+| `internal/db/migrations/00007_aws.sql`, `internal/store/aws.go` | Connected AWS accounts |
 | `internal/secrets/kms.go` | KMS-backed cipher |
 | `internal/versions/versions.go` | Version lists from ECR, with the per-service rule and a cache |
 | `internal/artifacts/artifacts.go` | Encrypted copies of config files in S3 |
@@ -117,7 +135,7 @@ Behaviour:
 ### Task 2: Connected AWS accounts and the KMS cipher
 
 **Files:**
-- Create: `internal/db/migrations/00005_aws.sql`, `internal/store/aws.go`, `internal/secrets/kms.go`, `internal/api/aws.go`
+- Create: `internal/db/migrations/00007_aws.sql`, `internal/store/aws.go`, `internal/secrets/kms.go`, `internal/api/aws.go`
 - Modify: `internal/config/config.go` (`YUMDRAKE_SECRETS_MODE` may now be `kms`; `YUMDRAKE_KMS_KEY_ID` required in that mode), `cmd/*/main.go`
 - Test: `internal/store/aws_integration_test.go`, `internal/secrets/kms_floci_test.go`, `internal/api/aws_integration_test.go`
 

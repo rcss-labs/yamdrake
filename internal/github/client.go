@@ -150,13 +150,22 @@ func (c *Client) BranchExists(ctx context.Context, repo, branch string) (bool, e
 }
 
 // ListFiles returns the paths of files (not directories) under dir at commit,
-// recursively. An empty dir lists the whole repository.
+// recursively, as full repository paths. A non-empty dir fetches only that
+// sub-tree (GitHub's "commit:dir" tree reference), so a large repository does
+// not truncate the answer; an empty dir lists the whole repository, which GitHub
+// truncates for very large ones. A truncated answer is an error, never a
+// partial list. A dir that does not exist at commit is ErrNotFound.
 func (c *Client) ListFiles(ctx context.Context, repo, commit, dir string) ([]string, error) {
 	rp, err := repoPath(repo)
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.get(ctx, rp+"/git/trees/"+url.PathEscape(commit)+"?recursive=1", rp+"/git/trees")
+	dir = strings.Trim(dir, "/")
+	ref := commit
+	if dir != "" {
+		ref += ":" + dir
+	}
+	body, err := c.get(ctx, rp+"/git/trees/"+url.PathEscape(ref)+"?recursive=1", rp+"/git/trees")
 	if err != nil {
 		return nil, err
 	}
@@ -171,16 +180,16 @@ func (c *Client) ListFiles(ctx context.Context, repo, commit, dir string) ([]str
 		return nil, errors.New("github: tree response could not be decoded")
 	}
 	if resp.Truncated {
-		return nil, errors.New("github: repository tree is too large and was truncated by GitHub")
+		return nil, errors.New("github: directory tree is too large and was truncated by GitHub")
 	}
-	prefix := strings.Trim(dir, "/")
-	if prefix != "" {
-		prefix += "/"
+	prefix := ""
+	if dir != "" {
+		prefix = dir + "/"
 	}
 	files := []string{}
 	for _, e := range resp.Tree {
-		if e.Type == "blob" && strings.HasPrefix(e.Path, prefix) {
-			files = append(files, e.Path)
+		if e.Type == "blob" {
+			files = append(files, prefix+e.Path)
 		}
 	}
 	return files, nil

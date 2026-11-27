@@ -87,6 +87,9 @@ func TestListFilesRecursiveAndScoped(t *testing.T) {
 	if _, err := c.ListFiles(ctx, repo, "missing", ""); !errors.Is(err, github.ErrNotFound) {
 		t.Fatalf("unknown commit err = %v, want ErrNotFound", err)
 	}
+	if _, err := c.ListFiles(ctx, repo, "c1", "no-such-dir"); !errors.Is(err, github.ErrNotFound) {
+		t.Fatalf("unknown dir err = %v, want ErrNotFound", err)
+	}
 }
 
 func TestReadFileAtCommit(t *testing.T) {

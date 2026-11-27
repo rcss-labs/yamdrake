@@ -159,11 +159,12 @@ func (s *server) putInventorySource(w http.ResponseWriter, r *http.Request) {
 		invalid(w, problem)
 		return
 	}
-	if err := store.SetInventorySource(r.Context(), s.Pool, store.InventorySource{Repo: req.Repo, Branch: req.Branch, Path: req.Path}); err != nil {
-		s.internalError(w, r, err)
+	// Stored and synced under the sync lock, so a poll in flight cannot write a
+	// status for the old source after the change.
+	if s.syncFailed(w, r, s.Engine.SetInventorySource(r.Context(), store.InventorySource{Repo: req.Repo, Branch: req.Branch, Path: req.Path})) {
 		return
 	}
-	s.syncInventory(w, r)
+	s.getInventory(w, r)
 }
 
 type folderResponse struct {

@@ -26,11 +26,21 @@ func TestNextWait(t *testing.T) {
 		{"rate limit", rate, 5 * time.Minute},
 		{"rate limit inside a joined error", errors.Join(errors.New("x"), fmt.Errorf("job 3: %w", rate)), 5 * time.Minute},
 		{"rate limit without a delay", &github.RateLimitError{}, interval},
+		{"rate limit shorter than the interval", &github.RateLimitError{RetryAfter: time.Second}, interval},
+		{"rate limit far in the future is capped", &github.RateLimitError{RetryAfter: 3 * time.Hour}, maxRateLimitWait},
 	}
 	for _, c := range cases {
 		if got := nextWait(c.err, interval); got != c.want {
 			t.Errorf("%s: nextWait = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestNextWaitNeverShortensALongInterval(t *testing.T) {
+	t.Parallel()
+	interval := time.Hour
+	if got := nextWait(&github.RateLimitError{RetryAfter: 5 * time.Minute}, interval); got != interval {
+		t.Errorf("nextWait = %v, want the configured %v", got, interval)
 	}
 }
 

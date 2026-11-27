@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import type { ReactElement } from 'react'
-import { useEffect } from 'react'
+import { useLayoutEffect } from 'react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { SessionProvider } from '../auth/session'
 import type { Me } from '../api/types'
@@ -26,7 +26,7 @@ interface RenderedLocation {
 // Reports the router's current location to the test, outside the session provider so it is always present.
 function LocationProbe({ onChange }: { onChange: (location: RenderedLocation) => void }) {
   const { pathname, search, hash } = useLocation()
-  useEffect(() => {
+  useLayoutEffect(() => {
     onChange({ pathname, search, hash })
   }, [onChange, pathname, search, hash])
   return null

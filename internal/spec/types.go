@@ -100,6 +100,7 @@ type Service struct {
 type Need struct {
 	Step  string `json:"step"`
 	Scope string `json:"scope"`
+	Line  int    `json:"line"` // line of the needs item
 }
 
 type Step struct {
@@ -123,6 +124,7 @@ type Group struct {
 type Approval struct {
 	Labels  []string      `json:"labels"`
 	Expires time.Duration `json:"expires"`
+	Line    int           `json:"line"` // line of approval.when.labels
 }
 
 type Job struct {
@@ -130,6 +132,7 @@ type Job struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
 	Labels       []string  `json:"labels"`
+	LabelsLine   int       `json:"labels_line"` // line of environment.labels
 	Groups       []Group   `json:"groups"`
 	Approval     *Approval `json:"approval"`
 	SlackChannel string    `json:"slack_channel"`

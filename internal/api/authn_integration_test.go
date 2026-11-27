@@ -317,21 +317,39 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 	// Written from the task brief, independently of the code's own table: a
 	// route given the wrong action, or added or dropped, makes this differ.
 	expected := map[string]auth.Action{
-		"GET /api/v1/me":                        auth.View,
-		"POST /api/v1/auth/logout":              auth.View,
-		"GET /api/v1/inventory":                 auth.View,
-		"GET /api/v1/inventory/services/{name}": auth.View,
-		"POST /api/v1/inventory/sync":           auth.ManageConnections,
-		"PUT /api/v1/admin/inventory-source":    auth.ManageConnections,
-		"GET /api/v1/admin/github-connections":  auth.ManageConnections,
-		"POST /api/v1/admin/github-connections": auth.ManageConnections,
-		"GET /api/v1/folders":                   auth.View,
-		"POST /api/v1/folders":                  auth.ManageJobs,
-		"GET /api/v1/jobs":                      auth.View,
-		"POST /api/v1/jobs":                     auth.ManageJobs,
-		"GET /api/v1/jobs/{id}":                 auth.View,
-		"PATCH /api/v1/jobs/{id}":               auth.ManageJobs,
-		"POST /api/v1/jobs/{id}/sync":           auth.ManageJobs,
+		"GET /api/v1/me":                               auth.View,
+		"POST /api/v1/auth/logout":                     auth.View,
+		"GET /api/v1/inventory":                        auth.View,
+		"GET /api/v1/inventory/services/{name}":        auth.View,
+		"POST /api/v1/inventory/sync":                  auth.ManageConnections,
+		"PUT /api/v1/admin/inventory-source":           auth.ManageConnections,
+		"GET /api/v1/admin/github-connections":         auth.ManageConnections,
+		"POST /api/v1/admin/github-connections":        auth.ManageConnections,
+		"GET /api/v1/folders":                          auth.View,
+		"POST /api/v1/folders":                         auth.ManageJobs,
+		"GET /api/v1/jobs":                             auth.View,
+		"POST /api/v1/jobs":                            auth.ManageJobs,
+		"GET /api/v1/jobs/{id}":                        auth.View,
+		"PATCH /api/v1/jobs/{id}":                      auth.ManageJobs,
+		"POST /api/v1/jobs/{id}/sync":                  auth.ManageJobs,
+		"GET /api/v1/admin/users":                      auth.ManageAccess,
+		"POST /api/v1/admin/users":                     auth.ManageAccess,
+		"PATCH /api/v1/admin/users/{id}":               auth.ManageAccess,
+		"GET /api/v1/admin/groups":                     auth.ManageAccess,
+		"POST /api/v1/admin/groups":                    auth.ManageAccess,
+		"PATCH /api/v1/admin/groups/{id}":              auth.ManageAccess,
+		"GET /api/v1/admin/idp-mappings":               auth.ManageAccess,
+		"GET /api/v1/admin/idp-mappings/{idpGroup}":    auth.ManageAccess,
+		"PUT /api/v1/admin/idp-mappings/{idpGroup}":    auth.ManageAccess,
+		"DELETE /api/v1/admin/idp-mappings/{idpGroup}": auth.ManageAccess,
+		"GET /api/v1/admin/grants":                     auth.ManageAccess,
+		"POST /api/v1/admin/grants":                    auth.ManageAccess,
+		"DELETE /api/v1/admin/grants/{id}":             auth.ManageAccess,
+		"GET /api/v1/admin/audit":                      auth.ViewAudit,
+		"GET /api/v1/tokens":                           auth.View,
+		"POST /api/v1/tokens":                          auth.View,
+		"DELETE /api/v1/tokens/{id}":                   auth.View,
+		"POST /api/v1/cli/login/confirm":               auth.View,
 	}
 	if len(routes) != len(expected) {
 		t.Fatalf("routes() has %d routes, the expected table %d", len(routes), len(expected))
@@ -348,7 +366,7 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 	granted := map[auth.Action]string{}
 	for _, route := range routes {
 		method, pattern, _ := strings.Cut(route.pattern, " ")
-		path := strings.NewReplacer("{name}", "x", "{id}", "1").Replace(pattern)
+		path := strings.NewReplacer("{name}", "x", "{idpGroup}", "x", "{id}", "999999").Replace(pattern)
 		name := route.pattern
 
 		if rec := h.send(sent{method: method, path: path}); rec.Code != http.StatusUnauthorized {
@@ -356,7 +374,8 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		}
 		rec := h.send(sent{method: method, path: path, bearer: plainToken})
 		if route.action == auth.View {
-			if rec.Code == http.StatusForbidden {
+			// Confirming a device sign-in needs a session: a token gets 403 by design.
+			if rec.Code == http.StatusForbidden && route.pattern != "POST /api/v1/cli/login/confirm" {
 				t.Errorf("%s needs only view but a plain user got 403", name)
 			}
 			continue

@@ -69,6 +69,9 @@ type Deps struct {
 	LockoutWindow time.Duration
 	// Now is the clock (default time.Now).
 	Now func() time.Time
+	// DevicePollInterval is how often a CLI may poll a device sign-in (default
+	// 5 seconds). Tests shorten it.
+	DevicePollInterval time.Duration
 	// MaxConcurrentLogins bounds the password checks running at once (default
 	// 4): each uses 64 MiB, and sign-in is open to anyone. VerifyWait is how
 	// long a request waits for a slot before it is answered 503 (default 1s).
@@ -110,6 +113,9 @@ func New(deps Deps) http.Handler {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
+	if deps.DevicePollInterval <= 0 {
+		deps.DevicePollInterval = defaultDevicePollInterval
+	}
 	dummy, err := dummyPasswordHash()
 	if err != nil {
 		panic("api.New: dummy password hash: " + err.Error())
@@ -128,6 +134,11 @@ func New(deps Deps) http.Handler {
 	// Sign-in is the one route that is open to everyone; it carries no session
 	// cookie to check, so it has its own origin check (login CSRF).
 	root.HandleFunc("POST /api/v1/auth/login", s.login)
+	// The CLI's device sign-in starts and finishes without credentials (the
+	// CLI has none yet). Neither route reads a cookie, so neither can be used
+	// cross-site to act as a signed-in browser user; confirm is authenticated.
+	root.HandleFunc("POST /api/v1/cli/login", s.startDeviceLogin)
+	root.HandleFunc("POST /api/v1/cli/login/token", s.pollDeviceLogin)
 	root.Handle("/", s.authenticate(authenticated))
 	return root
 }
@@ -169,7 +180,7 @@ type routeDef struct {
 }
 
 func (s *server) routes() []routeDef {
-	return []routeDef{
+	return append([]routeDef{
 		{"GET /api/v1/me", auth.View, s.me},
 		{"POST /api/v1/auth/logout", auth.View, s.logout},
 		{"GET /api/v1/inventory", auth.View, s.getInventory},
@@ -185,7 +196,7 @@ func (s *server) routes() []routeDef {
 		{"GET /api/v1/jobs/{id}", auth.View, s.getJob},
 		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
 		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
-	}
+	}, s.accessRoutes()...)
 }
 
 type errorBody struct {

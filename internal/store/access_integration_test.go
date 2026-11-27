@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -403,5 +404,40 @@ func TestAuditIsNewestFirstWithKeysetPaging(t *testing.T) {
 	}
 	if _, err := ListAudit(ctx, pool, 0, 0); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("limit 0 = %v, want ErrInvalid", err)
+	}
+}
+
+func TestAuditIsAppendOnly(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := newPool(t)
+	if err := InsertAudit(ctx, pool, AuditEntry{At: nanosecondNow(), Actor: "system", Action: "keep.me"}); err != nil {
+		t.Fatalf("InsertAudit: %v", err)
+	}
+	for name, statement := range map[string]string{
+		"update":   "UPDATE audit_log SET action = 'changed'",
+		"delete":   "DELETE FROM audit_log",
+		"truncate": "TRUNCATE audit_log",
+	} {
+		if _, err := pool.Exec(ctx, statement); err == nil {
+			t.Errorf("%s on the audit table succeeded, want it refused", name)
+		}
+	}
+	entries, err := ListAudit(ctx, pool, 0, 10)
+	if err != nil || len(entries) != 1 || entries[0].Action != "keep.me" {
+		t.Fatalf("entries after attempted changes = %+v, %v", entries, err)
+	}
+}
+
+func TestInsertAuditInvalidJSONIsErrInvalidWithoutServerText(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := newPool(t)
+	err := InsertAudit(ctx, pool, AuditEntry{At: nanosecondNow(), Actor: "x", Action: "bad", Detail: []byte(`{"k": fragment-marker-42`)})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("error = %v, want ErrInvalid", err)
+	}
+	if strings.Contains(err.Error(), "fragment-marker-42") || strings.Contains(err.Error(), "SQLSTATE") {
+		t.Fatalf("error text carries server message: %q", err.Error())
 	}
 }

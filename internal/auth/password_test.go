@@ -14,7 +14,7 @@ func TestHashAndVerifyPassword(t *testing.T) {
 		t.Fatalf("HashPassword: %v", err)
 	}
 	if !strings.HasPrefix(hash, "$argon2id$v=19$m=65536,t=3,p=2$") {
-		t.Fatalf("hash has unexpected prefix: %.40s", hash)
+		t.Fatal("hash does not start with the argon2id parameter segment")
 	}
 	if ok, err := VerifyPassword(hash, password); err != nil || !ok {
 		t.Fatalf("VerifyPassword(right) = %v, %v; want true, nil", ok, err)

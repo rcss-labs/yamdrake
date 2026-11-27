@@ -74,10 +74,8 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if haveActive && len(active.Sources) == 0 {
-		if err := e.backfillSources(ctx, source, src, active, fail); err != nil {
-			return err
-		}
+	if haveActive && len(active.Sources) == 0 && e.firstBackfill("inventory:"+active.Commit) {
+		e.backfillSources(ctx, source, src, active)
 	}
 	// A nil CheckedAt means the source changed since the last check (the store
 	// resets the status then), so the same head must be read again.
@@ -150,22 +148,26 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 }
 
 // backfillSources gives a snapshot stored before the texts were kept its file
-// texts. They are read at the snapshot's own commit and used only when they
-// build the very inventory that is stored, so text and parsed form match.
-func (e *Engine) backfillSources(ctx context.Context, source Source, src store.InventorySource, active store.Snapshot,
-	fail func(what string, err error, attrs ...any) error) error {
-	inventory, sources, problems, err := e.readInventory(ctx, source, src, active.Commit, fail)
+// texts. It is best effort: any failure is logged and the sync goes on. The
+// texts are read at the snapshot's own commit and used only when they build
+// the very inventory that is stored, so text and parsed form match.
+func (e *Engine) backfillSources(ctx context.Context, source Source, src store.InventorySource, active store.Snapshot) {
+	// readInventory reports read failures through this callback; here they only
+	// end the attempt, nothing is recorded as a sync error.
+	skip := func(what string, err error, _ ...any) error { return fmt.Errorf("%s: %w", what, err) }
+	inventory, sources, problems, err := e.readInventory(ctx, source, src, active.Commit, skip)
 	if err != nil || len(problems) > 0 {
-		return err
+		e.log.Warn("skipped filling inventory file texts", "commit", active.Commit, "error", fmt.Sprint(err), "problems", len(problems))
+		return
 	}
 	encoded, err := json.Marshal(inventory)
-	if err != nil {
-		return fmt.Errorf("encode inventory: %w", err)
+	if err != nil || !sameJSON(active.Inventory, encoded) {
+		e.log.Warn("skipped filling inventory file texts: files differ from the stored inventory", "commit", active.Commit)
+		return
 	}
-	if !sameJSON(active.Inventory, encoded) {
-		return nil
+	if err := store.FillSnapshotSources(ctx, e.pool, active.Commit, sources); err != nil {
+		e.log.Warn("could not fill inventory file texts", "commit", active.Commit, "error", err.Error())
 	}
-	return store.FillSnapshotSources(ctx, e.pool, active.Commit, sources)
 }
 
 // sameJSON reports whether two JSON documents have the same content,

@@ -188,3 +188,42 @@ func TestBackfillUsesTheLastGoodCommit(t *testing.T) {
 		t.Errorf("job source = %q, want the text of the last good commit j1", job["source"])
 	}
 }
+
+// The backfill is best effort: an unreadable old commit must not fail the
+// sync or record a sync error, and the fill is attempted once per process.
+func TestBackfillFailureDoesNotBreakSync(t *testing.T) {
+	h := newHarness(t)
+	h.pushInventory("c1")
+	h.setInventorySource()
+	h.pushJob("j1")
+	id := int64(h.registerJob(h.createFolder("Backends"))["id"].(float64))
+	ctx := context.Background()
+	for _, stmt := range []string{"UPDATE job_sources SET last_good_source = ''", "UPDATE inventory_snapshots SET sources = '{}'"} {
+		if _, err := h.pool.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// GitHub no longer serves the old commits' files.
+	h.src.mu.Lock()
+	saved := h.src.files
+	h.src.files = map[string][]byte{}
+	h.src.mu.Unlock()
+
+	job := h.mustDo("POST", fmt.Sprintf("/api/v1/jobs/%d/sync", id), nil, http.StatusOK)
+	if job["source"] != "" || job["sync_error"] != "" {
+		t.Errorf("job = source %q, sync_error %q; want an empty source and no sync error", job["source"], job["sync_error"])
+	}
+	inv := h.mustDo("POST", "/api/v1/inventory/sync", nil, http.StatusOK)
+	if inv["sync_error"] != "" || inv["commit"] != "c1" {
+		t.Errorf("inventory sync_error %q commit %v; want none and c1 kept", inv["sync_error"], inv["commit"])
+	}
+
+	// The files come back, but the one attempt per process is used up.
+	h.src.mu.Lock()
+	h.src.files = saved
+	h.src.mu.Unlock()
+	job = h.mustDo("POST", fmt.Sprintf("/api/v1/jobs/%d/sync", id), nil, http.StatusOK)
+	if job["source"] != "" {
+		t.Errorf("job source = %q, want it not re-read in the same process", job["source"])
+	}
+}

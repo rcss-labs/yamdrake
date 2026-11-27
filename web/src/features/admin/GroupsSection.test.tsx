@@ -226,7 +226,7 @@ describe('the groups and permissions section', () => {
     failNext('GET', '/api/v1/admin/grants', 500, 'internal', 'The grants could not be read')
     const user = userEvent.setup()
     renderApp(<App />, { route: '/admin/groups', me: accessManagerMe })
-    expect(await screen.findByRole('status')).toBeInTheDocument()
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByRole('alert')).toHaveTextContent('The grants could not be read')
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('region', { name: 'QA' })).toBeInTheDocument()

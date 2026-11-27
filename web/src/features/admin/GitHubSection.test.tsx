@@ -44,7 +44,7 @@ describe('the GitHub section', () => {
     delayNext('GET', path, 50)
     failNext('GET', path, 500, 'internal', 'The database is down')
     renderApp(<App />, { route, me: connectionsManagerMe })
-    expect(await screen.findByRole('status')).toBeInTheDocument()
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByText('The database is down')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('table', { name: 'GitHub connections' })).toBeInTheDocument()

@@ -106,7 +106,7 @@ describe('the single sign-on section', () => {
   it('shows a loading state while the settings load', async () => {
     delayNext('GET', '/api/v1/admin/sso', 50)
     renderApp(<App />, { route: '/admin/sso', me: accessManagerMe })
-    expect(await screen.findByRole('status')).toBeInTheDocument()
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByRole('switch', { name: 'Single sign-on enabled' })).toBeInTheDocument()
   })
 

@@ -63,7 +63,7 @@ describe('the AWS accounts section', () => {
     delayNext('GET', accountsPath, 50)
     failNext('GET', accountsPath, 500, 'internal', 'The database is down')
     renderApp(<App />, { route, me: connectionsManagerMe })
-    expect(await screen.findByRole('status')).toBeInTheDocument()
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByText('The database is down')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('table', { name: 'AWS accounts' })).toBeInTheDocument()

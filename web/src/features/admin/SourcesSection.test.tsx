@@ -98,6 +98,7 @@ describe('the Git sources section', () => {
     delayNext('GET', '/api/v1/jobs', 50)
     failNext('GET', '/api/v1/jobs', 500, 'internal', 'The database is down')
     renderApp(<App />, { route, me: connectionsManagerMe })
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByText('The database is down')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('table', { name: 'Job sources' })).toBeInTheDocument()

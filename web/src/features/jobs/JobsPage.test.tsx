@@ -249,7 +249,7 @@ describe('JobsPage', () => {
   it('shows a loading state, then the jobs', async () => {
     delayNext('GET', '/api/v1/jobs', 100)
     renderJobs()
-    expect(await screen.findByRole('status')).toBeInTheDocument()
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByRole('link', { name: 'Portal services' })).toBeInTheDocument()
   })
 

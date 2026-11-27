@@ -52,7 +52,7 @@ describe('the CLI tokens page', () => {
   it('shows a loading state, then an error with retry', async () => {
     delayNext('GET', '/api/v1/tokens', 200)
     renderApp(<App />, { route: '/cli' })
-    expect(await screen.findByRole('status')).toBeInTheDocument()
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     await screen.findByRole('table', { name: 'Your CLI tokens' })
   })
 

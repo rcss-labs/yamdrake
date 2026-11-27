@@ -65,7 +65,7 @@ describe('the job page', () => {
     delayNext('GET', '/api/v1/jobs/1', 50)
     failNext('GET', '/api/v1/jobs/1', 500, 'internal', 'The database is down')
     renderJob('/jobs/1')
-    expect(screen.getByRole('status')).toBeInTheDocument()
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByText('The database is down')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Backend and microservices' })).toBeInTheDocument()

@@ -71,7 +71,7 @@ describe('the audit log section', () => {
   it('shows a loading state first', async () => {
     delayNext('GET', '/api/v1/admin/audit', 200)
     renderApp(<App />, { route: '/admin/audit', me: auditorMe })
-    expect(await screen.findByRole('status')).toHaveTextContent('Loading')
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByRole('table', { name: 'Audit log' })).toBeInTheDocument()
   })
 

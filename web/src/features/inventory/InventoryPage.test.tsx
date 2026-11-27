@@ -208,6 +208,13 @@ describe('the services tab', () => {
     expect(within(prod).getByText('s3://prod-01-config/env/backend-api/backend-api.env')).toBeInTheDocument()
   })
 
+  it('shows a loading state while a chosen service loads', async () => {
+    delayNext('GET', '/api/v1/inventory/services/backend-api', 100)
+    showInventory('/inventory?tab=services&service=backend-api')
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'backend-api' })).toBeInTheDocument()
+  })
+
   it('shows TOML files, and copes with a service that has no env files', async () => {
     showInventory('/inventory?tab=services&service=billing')
     const block = await screen.findByRole('region', { name: 'hetzner-01' })
@@ -249,7 +256,7 @@ describe('loading and failure', () => {
   it('shows a loading state, then the inventory', async () => {
     delayNext('GET', '/api/v1/inventory', 100)
     showInventory()
-    expect(screen.getByRole('status')).toBeInTheDocument()
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     await environmentsTable()
   })
 

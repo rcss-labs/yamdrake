@@ -65,7 +65,7 @@ describe('the users section', () => {
   it('shows a loading state, then the table', async () => {
     delayNext('GET', '/api/v1/admin/users', 50)
     renderApp(<App />, { route: '/admin/users', me: accessManagerMe })
-    expect(await screen.findByRole('status')).toBeInTheDocument()
+    expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByRole('table', { name: 'Users' })).toBeInTheDocument()
   })
 

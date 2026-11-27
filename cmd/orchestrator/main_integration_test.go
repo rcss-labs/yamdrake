@@ -5,9 +5,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -148,13 +150,14 @@ const devSecretKey = "ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE="
 func baseEnv(t *testing.T, databaseURL, httpAddr string) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"YUMDRAKE_DATABASE_URL":     databaseURL,
-		"YUMDRAKE_VALKEY_ADDR":      valkeyAddr(t),
-		"YUMDRAKE_LOCAL_SECRET_KEY": devSecretKey,
-		"YUMDRAKE_HTTP_ADDR":        httpAddr,
-		"YUMDRAKE_PUBLIC_URL":       publicURL,
-		"YUMDRAKE_SHUTDOWN_TIMEOUT": "5s",
-		"YUMDRAKE_STARTUP_TIMEOUT":  "20s",
+		"YUMDRAKE_DATABASE_URL":      databaseURL,
+		"YUMDRAKE_VALKEY_ADDR":       valkeyAddr(t),
+		"YUMDRAKE_LOCAL_SECRET_KEY":  devSecretKey,
+		"YUMDRAKE_HTTP_ADDR":         httpAddr,
+		"YUMDRAKE_PUBLIC_URL":        publicURL,
+		"YUMDRAKE_VALKEY_KEY_PREFIX": uniquePrefix(t),
+		"YUMDRAKE_SHUTDOWN_TIMEOUT":  "5s",
+		"YUMDRAKE_STARTUP_TIMEOUT":   "20s",
 	}
 }
 
@@ -637,4 +640,15 @@ func TestRunSurvivesValkeyDroppingMidRun(t *testing.T) {
 
 	proxy.restore()
 	waitStatus(t, addr, "/readyz", http.StatusOK, 15*time.Second)
+}
+
+// uniquePrefix keeps this test's sessions and sign-in counters apart from those
+// of other runs that share the Valkey (every test database numbers users from 1).
+func uniquePrefix(t *testing.T) string {
+	t.Helper()
+	raw := make([]byte, 8)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("random: %v", err)
+	}
+	return fmt.Sprintf("test-%x:", raw)
 }

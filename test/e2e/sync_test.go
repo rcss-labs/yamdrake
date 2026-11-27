@@ -252,9 +252,11 @@ func startOrchestrator(t *testing.T, githubURL string) client {
 		"YUMDRAKE_HTTP_ADDR":        addr,
 		"YUMDRAKE_LOCAL_SECRET_KEY": localSecretKey,
 		"YUMDRAKE_PUBLIC_URL":       "http://" + addr,
-		"YUMDRAKE_SYNC_INTERVAL":    syncInterval.String(),
-		"YUMDRAKE_GITHUB_API_URL":   githubURL,
-		"YUMDRAKE_LOG_LEVEL":        "warn",
+		// Runs sharing the Valkey must not sign each other out (users are numbered from 1 in every database).
+		"YUMDRAKE_VALKEY_KEY_PREFIX": fmt.Sprintf("e2e-%x:", time.Now().UnixNano()),
+		"YUMDRAKE_SYNC_INTERVAL":     syncInterval.String(),
+		"YUMDRAKE_GITHUB_API_URL":    githubURL,
+		"YUMDRAKE_LOG_LEVEL":         "warn",
 	}
 	cfg, err := config.LoadOrchestrator(func(k string) string { return env[k] })
 	if err != nil {

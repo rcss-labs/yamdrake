@@ -179,10 +179,17 @@ var formField = regexp.MustCompile(`name="(SAMLResponse|RelayState)" value="([^"
 
 // begin starts sign-in, lets the identity provider answer and returns the form
 // the browser would post.
-func (i *testIDP) begin() samlFlow {
+func (i *testIDP) begin() samlFlow { return i.beginNext("") }
+
+// beginNext is begin for a sign-in started with ?next=.
+func (i *testIDP) beginNext(next string) samlFlow {
 	i.t.Helper()
 	rec := httptest.NewRecorder()
-	i.h.handler.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/auth/saml/start", nil))
+	target := "/api/v1/auth/saml/start"
+	if next != "" {
+		target += "?next=" + url.QueryEscape(next)
+	}
+	i.h.handler.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
 	if rec.Code != http.StatusFound {
 		i.t.Fatalf("start: status %d %s, want 302", rec.Code, failure(rec))
 	}
@@ -727,7 +734,16 @@ func TestSSOSettingsValidation(t *testing.T) {
 		got["entity_id"] != publicURL+"/saml/metadata" {
 		t.Errorf("settings = %v, want enabled, memberOf and the defaults", got)
 	}
-	h.expect(h.send(sent{method: "POST", path: "/api/v1/admin/sso/test", bearer: h.adminToken}), http.StatusOK, "")
+	rec = h.send(sent{method: "POST", path: "/api/v1/admin/sso/test", bearer: h.adminToken})
+	h.expect(rec, http.StatusOK, "")
+	var testResult map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &testResult)
+	if testResult["ok"] != true || testResult["message"] == "" || testResult["message"] == nil {
+		t.Errorf("test result = %v, want {ok: true, message}", testResult)
+	}
+	if got["acs_url"] != publicURL+"/saml/acs" || got["metadata_url"] != publicURL+"/saml/metadata" {
+		t.Errorf("acs_url, metadata_url = %v, %v", got["acs_url"], got["metadata_url"])
+	}
 	if h.auditCount("sso.update") != 1 {
 		t.Errorf("audit actions = %v, want one sso.update", h.auditActions())
 	}
@@ -737,7 +753,13 @@ func TestSSOSettingsValidation(t *testing.T) {
 	bare := `<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.test/x"><IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"/></EntityDescriptor>`
 	h.expect(put(map[string]any{"enabled": true, "idp_metadata_xml": bare}), http.StatusBadRequest, "invalid")
 	h.expect(put(map[string]any{"enabled": false, "idp_metadata_xml": bare}), http.StatusOK, "")
-	h.expect(h.send(sent{method: "POST", path: "/api/v1/admin/sso/test", bearer: h.adminToken}), http.StatusBadRequest, "invalid")
+	rec = h.send(sent{method: "POST", path: "/api/v1/admin/sso/test", bearer: h.adminToken})
+	h.expect(rec, http.StatusOK, "")
+	testResult = nil
+	_ = json.Unmarshal(rec.Body.Bytes(), &testResult)
+	if testResult["ok"] != false || testResult["message"] == "" {
+		t.Errorf("test result for unusable metadata = %v, want {ok: false, message}", testResult)
+	}
 
 	// Only manage_access may read or change the settings.
 	plain := h.newUser("plain")
@@ -979,4 +1001,32 @@ func TestMetadataNeverDecryptsThePrivateKey(t *testing.T) {
 	h.expect(h.send(sent{method: "GET", path: "/saml/metadata"}), http.StatusOK, "") // creates the key pair
 	h.rebuild(func(d *Deps) { d.Cipher = noDecryptCipher{d.Cipher} })
 	h.expect(h.send(sent{method: "GET", path: "/saml/metadata"}), http.StatusOK, "")
+}
+
+func TestNextPathIsCarriedThroughSignIn(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	idp.signIn(uniqueEmail(t, "lena"), "Lena")
+	for next, want := range map[string]string{"/jobs/3": "/jobs/3", "/a?b=c": "/a?b=c", "//evil": "/", "https://evil.test": "/", "/%2F%2Fevil": "/"} {
+		rec := h.postACS(idp.beginNext(next), true)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != want {
+			t.Errorf("next %q: status %d, Location %q, want 303 to %q", next, rec.Code, rec.Header().Get("Location"), want)
+		}
+	}
+}
+
+func TestAuthMethodsNeedsNoSignIn(t *testing.T) {
+	h := newHarness(t)
+	check := func(wantSAML bool) {
+		t.Helper()
+		rec := h.send(sent{method: "GET", path: "/api/v1/auth/methods"})
+		h.expect(rec, http.StatusOK, "")
+		var got map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &got)
+		if got["password"] != true || got["saml"] != wantSAML || len(got) != 2 {
+			t.Errorf("methods = %v, want password true and saml %v", got, wantSAML)
+		}
+	}
+	check(false)
+	h.configureSSO(h.newIDP())
+	check(true)
 }

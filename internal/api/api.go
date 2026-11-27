@@ -145,6 +145,7 @@ func New(deps Deps) http.Handler {
 	// from the same-origin check (and only from that); it is protected by the
 	// signed response, the relay state cookie and the replay check instead.
 	// Mount this handler at "/saml/" as well as "/api/v1/".
+	root.HandleFunc("GET /api/v1/auth/methods", s.authMethods)
 	root.HandleFunc("GET /saml/metadata", s.samlMetadata)
 	root.HandleFunc("POST /saml/acs", s.samlACS)
 	root.HandleFunc("GET /api/v1/auth/saml/start", s.samlStart)

@@ -180,8 +180,8 @@ func randomHandle() (string, error) {
 // so an anonymous start request costs no memory. The nonce is also the
 // RelayState the identity provider echoes, so a response can only be consumed
 // by the browser that holds the cookie.
-func sealRelayState(key []byte, nonce, requestID string, expires time.Time) string {
-	payload := nonce + "." + requestID + "." + strconv.FormatInt(expires.Unix(), 10)
+func sealRelayState(key []byte, nonce, requestID, next string, expires time.Time) string {
+	payload := nonce + "." + requestID + "." + strconv.FormatInt(expires.Unix(), 10) + "." + base64.RawURLEncoding.EncodeToString([]byte(next))
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(payload))
 	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -189,33 +189,37 @@ func sealRelayState(key []byte, nonce, requestID string, expires time.Time) stri
 
 // openRelayState verifies a relay cookie (MAC in constant time, then expiry)
 // and returns its nonce and request id.
-func openRelayState(key []byte, value string, now time.Time) (nonce, requestID string, ok bool) {
+func openRelayState(key []byte, value string, now time.Time) (nonce, requestID, next string, ok bool) {
 	encodedPayload, encodedMAC, found := strings.Cut(value, ".")
 	if !found {
-		return "", "", false
+		return "", "", "", false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(encodedPayload)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	got, err := base64.RawURLEncoding.DecodeString(encodedMAC)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	mac := hmac.New(sha256.New, key)
 	mac.Write(payload)
 	if !hmac.Equal(got, mac.Sum(nil)) {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.Split(string(payload), ".")
-	if len(parts) != 3 {
-		return "", "", false
+	if len(parts) != 4 {
+		return "", "", "", false
 	}
 	expiry, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil || !now.Before(time.Unix(expiry, 0)) {
-		return "", "", false
+		return "", "", "", false
 	}
-	return parts[0], parts[1], true
+	nextBytes, err := base64.RawURLEncoding.DecodeString(parts[3])
+	if err != nil {
+		return "", "", "", false
+	}
+	return parts[0], parts[1], string(nextBytes), true
 }
 
 // samlStart sends the browser to the identity provider with a signed request.
@@ -254,8 +258,12 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	nextPath := r.URL.Query().Get("next")
+	if !safeNextPath(nextPath) {
+		nextPath = ""
+	}
 	handle := nonce // what the identity provider echoes as RelayState
-	cookieValue := sealRelayState(relayKey, nonce, authnRequest.ID, s.Now().Add(samlRelayTTL))
+	cookieValue := sealRelayState(relayKey, nonce, authnRequest.ID, nextPath, s.Now().Add(samlRelayTTL))
 	//nolint:gosec // SameSite=None is deliberate: the identity provider posts cross-site, see samlRelayCookie
 	http.SetCookie(w, &http.Cookie{
 		Name: samlRelayCookie, Value: cookieValue, Path: samlACSPath,
@@ -421,11 +429,11 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	}
 	cookie, err := r.Cookie(samlRelayCookie)
 	relayState := r.PostForm.Get("RelayState")
-	var requestID string
+	var requestID, next string
 	ok := false
 	if err == nil && relayState != "" {
 		var nonce string
-		nonce, requestID, ok = openRelayState(relayKey, cookie.Value, s.Now())
+		nonce, requestID, next, ok = openRelayState(relayKey, cookie.Value, s.Now())
 		ok = ok && subtle.ConstantTimeCompare([]byte(nonce), []byte(relayState)) == 1
 	}
 	if !ok {
@@ -490,7 +498,11 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name: samlRelayCookie, Path: samlACSPath, MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
 	})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	destination := "/"
+	if safeNextPath(next) { // the cookie is authenticated; checked again anyway
+		destination = next
+	}
+	http.Redirect(w, r, destination, http.StatusSeeOther) //nolint:gosec // destination is "/" or a path that passed safeNextPath
 }
 
 // samlRefuse is samlReject for a valid response of a person who may not sign in
@@ -637,8 +649,8 @@ type ssoSettingsView struct {
 	GroupsAttribute string `json:"groups_attribute"`
 	EmailAttribute  string `json:"email_attribute"`
 	NameAttribute   string `json:"name_attribute"`
-	MetadataURL     string `json:"sp_metadata_url"`
-	ACSURL          string `json:"sp_acs_url"`
+	MetadataURL     string `json:"metadata_url"`
+	ACSURL          string `json:"acs_url"`
 }
 
 func (s *server) ssoView(settings auth.SAMLSettings) ssoSettingsView {
@@ -668,6 +680,10 @@ type ssoRequest struct {
 	GroupsAttribute string `json:"groups_attribute"`
 	EmailAttribute  string `json:"email_attribute"`
 	NameAttribute   string `json:"name_attribute"`
+	// Read-only fields of the settings view; accepted and ignored so the view
+	// can be sent back as it was read.
+	MetadataURL string `json:"metadata_url"`
+	ACSURL      string `json:"acs_url"`
 }
 
 // checkIDPMetadata parses the metadata and, when strict, also requires what
@@ -771,7 +787,7 @@ func (s *server) testSSO(w http.ResponseWriter, r *http.Request) {
 	}
 	idp, problem := checkIDPMetadata(settings.IDPMetadataXML, true)
 	if problem != "" {
-		invalid(w, problem)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": problem})
 		return
 	}
 	probe := saml.ServiceProvider{IDPMetadata: idp}
@@ -779,5 +795,39 @@ func (s *server) testSSO(w http.ResponseWriter, r *http.Request) {
 	if location == "" {
 		location = probe.GetSSOBindingLocation(saml.HTTPPostBinding)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "idp_entity_id": idp.EntityID, "sso_url": location})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "identity provider " + idp.EntityID + " signs in at " + location})
+}
+
+// safeNextPath reports whether p is a same-site absolute path that is safe to
+// redirect to after sign-in: it starts with a single "/", has no backslash and
+// no control characters, and still satisfies that after URL-decoding (so
+// "/%2F%2Fevil" is refused).
+func safeNextPath(p string) bool {
+	plain := func(v string) bool {
+		if v == "" || v[0] != '/' || strings.HasPrefix(v, "//") || strings.ContainsRune(v, '\\') {
+			return false
+		}
+		for _, r := range v {
+			if r < 0x20 || r == 0x7f {
+				return false
+			}
+		}
+		return true
+	}
+	if !plain(p) {
+		return false
+	}
+	decoded, err := url.PathUnescape(p)
+	return err == nil && plain(decoded)
+}
+
+// authMethods tells the sign-in page which ways of signing in exist. Open to
+// everyone: it reveals only whether SSO is on.
+func (s *server) authMethods(w http.ResponseWriter, r *http.Request) {
+	settings, err := auth.LoadSAMLSettings(r.Context(), s.Pool)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"password": true, "saml": settings.Enabled && settings.IDPMetadataXML != ""})
 }

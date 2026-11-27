@@ -243,9 +243,17 @@ func TestRunExits1WhenDatabaseNeverAppears(t *testing.T) {
 		"YUMDRAKE_STARTUP_TIMEOUT": "2s",
 	}
 	var stdout, stderr syncBuffer
-	code := run(context.Background(), []string{"yumdrake-orchestrator"}, envFrom(env), &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("run() = %d, want 1", code)
+	done := make(chan int, 1)
+	go func() {
+		done <- run(context.Background(), []string{"yumdrake-orchestrator"}, envFrom(env), &stdout, &stderr)
+	}()
+	select {
+	case code := <-done:
+		if code != 1 {
+			t.Fatalf("run() = %d, want 1", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not give up within 10s of a 2s start-up timeout")
 	}
 	if strings.Contains(stdout.String(), password) || strings.Contains(stderr.String(), password) {
 		t.Errorf("password leaked: stdout=%q stderr=%q", stdout.String(), stderr.String())

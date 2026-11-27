@@ -160,6 +160,15 @@ func (l *loader) hostPort(variable, fallback string) string {
 	return value
 }
 
+// ValidateHostPort reports whether value is host:port with a numeric port in
+// 1-65535. An empty host is allowed.
+func ValidateHostPort(value string) error {
+	if reason := validateHostPort(value); reason != "" {
+		return errors.New(reason)
+	}
+	return nil
+}
+
 // validateHostPort returns a reason when value is not host:port with a numeric
 // port in 1-65535. An empty host is allowed.
 func validateHostPort(value string) string {

@@ -188,3 +188,16 @@ func TestLoadRunnerDefaultsHealthAddrToLoopback(t *testing.T) {
 		t.Errorf("HealthAddr = %q, want 127.0.0.1:8081 so the runner is not reachable from outside its task by default", cfg.HealthAddr)
 	}
 }
+
+func TestValidateHostPort(t *testing.T) {
+	for _, ok := range []string{":8080", "127.0.0.1:8081", "[::1]:9"} {
+		if err := ValidateHostPort(ok); err != nil {
+			t.Errorf("ValidateHostPort(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "nope", "host:0", "host:70000", "host:abc"} {
+		if err := ValidateHostPort(bad); err == nil {
+			t.Errorf("ValidateHostPort(%q) = nil, want an error", bad)
+		}
+	}
+}

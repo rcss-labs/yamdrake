@@ -65,6 +65,45 @@ func runnerEnv(t *testing.T, databaseURL, healthAddr, startupTimeout string) map
 	}
 }
 
+type running struct {
+	done   chan int
+	cancel context.CancelFunc
+	stdout *syncBuffer
+	once   sync.Once
+	code   int
+}
+
+// start runs the runner in a goroutine; cleanup cancels it and waits for run to return.
+func start(t *testing.T, env map[string]string) *running {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &running{done: make(chan int, 1), cancel: cancel, stdout: &syncBuffer{}}
+	go func() {
+		r.done <- run(ctx, []string{"yumdrake-runner"}, envFrom(env), r.stdout, &syncBuffer{})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		r.wait(t, 10*time.Second)
+	})
+	return r
+}
+
+// wait returns run's exit code (cached), failing the test if run does not return in time.
+func (r *running) wait(t *testing.T, within time.Duration) int {
+	t.Helper()
+	r.once.Do(func() {
+		select {
+		case r.code = <-r.done:
+		case <-time.After(within):
+			r.code = -1
+		}
+	})
+	if r.code == -1 {
+		t.Fatalf("run did not return within %v", within)
+	}
+	return r.code
+}
+
 func status(addr, path string) int {
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get("http://" + addr + path)
@@ -80,11 +119,8 @@ func TestRunnerWaitsForSchemaThenBecomesReady(t *testing.T) {
 	addr := freeAddr(t)
 	env := runnerEnv(t, dbURL, addr, "30s")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	var stdout, stderr syncBuffer
-	done := make(chan int, 1)
-	go func() { done <- run(ctx, []string{"yumdrake-runner"}, envFrom(env), &stdout, &stderr) }()
-	t.Cleanup(cancel)
+	r := start(t, env)
+	stdout := r.stdout
 
 	time.Sleep(time.Second)
 	if err := db.Migrate(context.Background(), dbURL); err != nil {
@@ -102,14 +138,29 @@ func TestRunnerWaitsForSchemaThenBecomesReady(t *testing.T) {
 		t.Errorf("starting line should carry runner_id: %s", stdout.String())
 	}
 
-	cancel()
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Errorf("run() = %d after cancel, want 0", code)
+	r.cancel()
+	if code := r.wait(t, 10*time.Second); code != 0 {
+		t.Errorf("run() = %d after cancel, want 0", code)
+	}
+}
+
+func TestRunnerExits0WhenSignalledDuringSchemaWait(t *testing.T) {
+	env := runnerEnv(t, testdb.New(t), freeAddr(t), "30s")
+	r := start(t, env)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(r.stdout.String(), "waiting for schema") {
+		if time.Now().After(deadline) {
+			t.Fatalf("runner never started waiting for the schema: %s", r.stdout.String())
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not return after cancel")
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.cancel()
+	if code := r.wait(t, 10*time.Second); code != 0 {
+		t.Errorf("run() = %d when signalled during start-up, want 0; stdout: %s", code, r.stdout.String())
+	}
+	if !strings.Contains(r.stdout.String(), "stopped during start-up") {
+		t.Errorf("expected a 'stopped during start-up' line: %s", r.stdout.String())
 	}
 }
 

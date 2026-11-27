@@ -11,7 +11,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strconv"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -88,17 +89,31 @@ func Serve(ctx context.Context, log *slog.Logger, shutdownTimeout time.Duration,
 	return errors.Join(errs...)
 }
 
-// PostgresCheck is the readiness check for the database pool. The returned
-// error carries only the error type, never the driver's message, because the
-// health handler logs check errors verbatim and driver messages may echo
-// connection details.
-func PostgresCheck(pool *pgxpool.Pool) health.Check {
+// PostgresCheck is the readiness check for the database pool. databaseURL is
+// the configured URL; it is used only to scrub the password from errors,
+// because the health handler logs check errors verbatim.
+func PostgresCheck(pool *pgxpool.Pool, databaseURL string) health.Check {
+	return postgresCheck(pool.Ping, databaseURL)
+}
+
+func postgresCheck(ping func(context.Context) error, databaseURL string) health.Check {
 	return health.Check{Name: "postgres", Fn: func(ctx context.Context) error {
-		if err := pool.Ping(ctx); err != nil {
-			return fmt.Errorf("postgres ping failed (%T)", err)
+		if err := ping(ctx); err != nil {
+			return errors.New("postgres ping failed: " + scrubSecrets(err.Error(), databaseURL))
 		}
 		return nil
 	}}
+}
+
+// scrubSecrets removes the raw database URL and its password from text.
+func scrubSecrets(text, databaseURL string) string {
+	text = strings.ReplaceAll(text, databaseURL, config.RedactURL(databaseURL))
+	if parsed, err := url.Parse(databaseURL); err == nil && parsed.User != nil {
+		if password, ok := parsed.User.Password(); ok && password != "" {
+			text = strings.ReplaceAll(text, password, "REDACTED")
+		}
+	}
+	return text
 }
 
 // ValkeyCheck is the readiness check for the Valkey client.
@@ -126,7 +141,12 @@ type Service struct {
 }
 
 // Run executes the shared start-up sequence and serves until ctx is cancelled.
-// It returns ExitOK on a clean shutdown and ExitFailure otherwise.
+// It returns ExitOK on a clean shutdown (including a signal during start-up)
+// and ExitFailure otherwise.
+//
+// The start-up timeout bounds each phase separately: waiting for the database
+// gets Common.StartupTimeout, and then Prepare may take up to another
+// Common.StartupTimeout, so the worst case before serving is twice the setting.
 func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 	log := logging.New(stdout, svc.Common.LogLevel, svc.Name)
 	log.Info("starting", append([]any{
@@ -140,6 +160,10 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 
 	pool, err := db.WaitOpen(startCtx, svc.Common.DatabaseURL, svc.Common.StartupTimeout, log)
 	if err != nil {
+		if ctx.Err() != nil {
+			log.Info("stopped during start-up")
+			return ExitOK
+		}
 		log.Error("database unavailable", "error", err.Error())
 		return ExitFailure
 	}
@@ -147,6 +171,10 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 
 	if svc.Prepare != nil {
 		if err := svc.Prepare(ctx, log, pool); err != nil {
+			if ctx.Err() != nil {
+				log.Info("stopped during start-up")
+				return ExitOK
+			}
 			log.Error("start-up failed", "error", err.Error())
 			return ExitFailure
 		}
@@ -162,7 +190,7 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 	server := &http.Server{
 		Addr: svc.Addr,
 		Handler: health.Handler(
-			[]health.Check{PostgresCheck(pool), ValkeyCheck(client)},
+			[]health.Check{PostgresCheck(pool, svc.Common.DatabaseURL), ValkeyCheck(client)},
 			health.WithLogger(log),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -183,15 +211,11 @@ func Healthcheck(ctx context.Context, getenv func(string) string, addrVar, defau
 	if addr == "" {
 		addr = defaultAddr
 	}
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "%s: must be host:port\n", addrVar)
+	if err := config.ValidateHostPort(addr); err != nil {
+		_, _ = fmt.Fprintf(stderr, "%s: %v\n", addrVar, err)
 		return ExitUsage
 	}
-	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		_, _ = fmt.Fprintf(stderr, "%s: port must be a number between 1 and 65535\n", addrVar)
-		return ExitUsage
-	}
+	host, port, _ := net.SplitHostPort(addr) // validated above
 	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
 		host = "127.0.0.1"
 	}

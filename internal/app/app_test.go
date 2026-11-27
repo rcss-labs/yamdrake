@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -11,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rcss-labs/yamdrake/internal/health"
 )
@@ -165,18 +164,18 @@ func TestServeErrorsWhenShutdownExceedsTimeout(t *testing.T) {
 }
 
 // TestPostgresCheckFailureNeverLeaksPassword covers the readiness path: the
-// health handler logs check errors verbatim, so the check must not carry the
-// password from the connection URL.
+// health handler logs check errors verbatim, so the check must scrub the
+// password from the driver's message. The fake ping returns an error whose text
+// contains the password and the full URL, so a plain %w would fail this test.
 func TestPostgresCheckFailureNeverLeaksPassword(t *testing.T) {
 	const password = "s3cr3t-pw-xyz"
-	pool, err := pgxpool.New(context.Background(), "postgres://u:"+password+"@127.0.0.1:1/d?connect_timeout=1")
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
+	databaseURL := "postgres://u:" + password + "@127.0.0.1:1/d"
+	ping := func(context.Context) error {
+		return errors.New("failed to connect to " + databaseURL + " with password=" + password + ": connection refused")
 	}
-	defer pool.Close()
 
 	var logs bytes.Buffer
-	handler := health.Handler([]health.Check{PostgresCheck(pool)},
+	handler := health.Handler([]health.Check{postgresCheck(ping, databaseURL)},
 		health.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -184,8 +183,8 @@ func TestPostgresCheckFailureNeverLeaksPassword(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("/readyz status = %d, want 503", rec.Code)
 	}
-	if !strings.Contains(logs.String(), "readiness check failed") {
-		t.Fatalf("expected a logged readiness failure, got %q", logs.String())
+	if !strings.Contains(logs.String(), "readiness check failed") || !strings.Contains(logs.String(), "connection refused") {
+		t.Fatalf("expected the failure and the driver reason to be logged, got %q", logs.String())
 	}
 	if strings.Contains(logs.String(), password) || strings.Contains(rec.Body.String(), password) {
 		t.Errorf("password leaked: logs=%q body=%q", logs.String(), rec.Body.String())

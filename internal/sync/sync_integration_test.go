@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rcss-labs/yamdrake/internal/db"
+	"github.com/rcss-labs/yamdrake/internal/github"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
@@ -945,5 +946,25 @@ func TestYmlServiceFileIsReportedNotIgnored(t *testing.T) {
 	text := problemsText(t, h.status().Problems)
 	if !strings.Contains(text, "services/payments.yml") || !strings.Contains(text, ".yaml extension") {
 		t.Fatalf("problems do not name the .yml file:\n%s", text)
+	}
+}
+
+func TestRateLimitEndsTheRoundWithoutMoreGitHubCalls(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.firstSync()
+	h.addJob(jobPath2)
+	h.addJob("jobs/third.yaml")
+	before := h.src.headCallCount()
+	limited := &github.RateLimitError{RetryAfter: time.Minute}
+	h.src.setErr(limited)
+
+	err := h.syncAll()
+	var got *github.RateLimitError
+	if !errors.As(err, &got) {
+		t.Fatalf("SyncAll error = %v, want the rate limit error", err)
+	}
+	if calls := h.src.headCallCount() - before; calls != 1 {
+		t.Fatalf("GitHub head lookups = %d, want 1: the round must stop at the rate limit", calls)
 	}
 }

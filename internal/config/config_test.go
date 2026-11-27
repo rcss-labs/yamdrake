@@ -178,3 +178,13 @@ func TestRedactURL(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadRunnerDefaultsHealthAddrToLoopback(t *testing.T) {
+	cfg, err := LoadRunner(envFrom(requiredEnv()))
+	if err != nil {
+		t.Fatalf("LoadRunner() error = %v", err)
+	}
+	if cfg.HealthAddr != "127.0.0.1:8081" {
+		t.Errorf("HealthAddr = %q, want 127.0.0.1:8081 so the runner is not reachable from outside its task by default", cfg.HealthAddr)
+	}
+}

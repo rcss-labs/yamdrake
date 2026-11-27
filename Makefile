@@ -15,8 +15,9 @@ export VERSION COMMIT
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
-build: ## Build yumdrake-orchestrator and yumdrake-runner into bin/
+build: ## Build yumdrake-orchestrator, yumdrake-runner and the yumdrake CLI into bin/
 	@mkdir -p bin
+	go build -ldflags "$(LDFLAGS)" -o bin/yumdrake ./cmd/yumdrake
 	@for pkg in $(BINARY_PACKAGES); do \
 		if [ -d "cmd/$$pkg" ]; then \
 			go build -ldflags "$(LDFLAGS)" -o "bin/yumdrake-$$pkg" "./cmd/$$pkg" || exit 1; \

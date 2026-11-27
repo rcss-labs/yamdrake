@@ -29,6 +29,8 @@ type Orchestrator struct {
 	Common
 	HTTPAddr       string
 	MigrateOnStart bool
+	// MigrateTimeout bounds the schema migration, separately from StartupTimeout.
+	MigrateTimeout time.Duration
 }
 
 // Runner holds the settings of the runner service.
@@ -81,6 +83,8 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	var cfg Orchestrator
 	cfg.Common = l.loadCommon()
 	cfg.HTTPAddr = l.hostPort("YUMDRAKE_HTTP_ADDR", ":8080")
+
+	cfg.MigrateTimeout = l.duration("YUMDRAKE_MIGRATE_TIMEOUT", "10m")
 
 	switch raw := l.valueOr("YUMDRAKE_MIGRATE_ON_START", "true"); raw {
 	case "true":

@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net"
@@ -14,6 +15,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3/lock"
 
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
@@ -287,4 +292,183 @@ func TestHealthcheckSubcommand(t *testing.T) {
 	if code := run(context.Background(), []string{"yumdrake-orchestrator", "healthcheck"}, envFrom(bad), &stdout, &stderr); code != 2 {
 		t.Errorf("healthcheck with invalid address = %d, want 2", code)
 	}
+}
+
+// TestRunMigrationOutlivesStartupTimeout holds the migration lock for longer
+// than YUMDRAKE_STARTUP_TIMEOUT, so the migration can only finish if it is
+// bounded by YUMDRAKE_MIGRATE_TIMEOUT instead.
+func TestRunMigrationOutlivesStartupTimeout(t *testing.T) {
+	dbURL := testdb.New(t)
+	addr := freeAddr(t)
+
+	connConfig, err := pgx.ParseConfig(dbURL)
+	if err != nil {
+		t.Fatalf("parse database URL: %v", err)
+	}
+	holder := stdlib.OpenDB(*connConfig)
+	defer func() { _ = holder.Close() }()
+	ctx := context.Background()
+	conn, err := holder.Conn(ctx)
+	if err != nil {
+		t.Fatalf("open lock connection: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	locker, err := lock.NewPostgresSessionLocker()
+	if err != nil {
+		t.Fatalf("create locker: %v", err)
+	}
+	if err := locker.SessionLock(ctx, conn); err != nil {
+		t.Fatalf("hold migration lock: %v", err)
+	}
+	released := false
+	release := func(c *sql.Conn) {
+		if !released {
+			released = true
+			if err := locker.SessionUnlock(ctx, c); err != nil {
+				t.Errorf("release migration lock: %v", err)
+			}
+		}
+	}
+	defer release(conn)
+
+	env := baseEnv(t, dbURL, addr)
+	env["YUMDRAKE_STARTUP_TIMEOUT"] = "1s"
+	env["YUMDRAKE_MIGRATE_TIMEOUT"] = "30s"
+	r := start(t, []string{"yumdrake-orchestrator"}, env)
+
+	// The migration is now blocked on the lock; outlast the start-up timeout.
+	select {
+	case code := <-r.done:
+		t.Fatalf("run returned %d while the migration was waiting; stdout: %s", code, r.stdout.String())
+	case <-time.After(2500 * time.Millisecond):
+	}
+	release(conn)
+
+	waitStatus(t, addr, "/readyz", http.StatusOK, 15*time.Second)
+}
+
+// flakyProxy forwards TCP connections to upstream until cut is called, which
+// closes every open connection and makes new ones fail at once. restore lets
+// new connections through again. The listener stays up throughout, so the
+// address never changes and nothing else can claim the port.
+type flakyProxy struct {
+	ln       net.Listener
+	upstream string
+
+	mu    sync.Mutex
+	up    bool
+	conns map[net.Conn]struct{}
+}
+
+func newFlakyProxy(t *testing.T, upstream string) *flakyProxy {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for proxy: %v", err)
+	}
+	p := &flakyProxy{ln: ln, upstream: upstream, up: true, conns: map[net.Conn]struct{}{}}
+	go p.acceptLoop()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		p.closeAll()
+	})
+	return p
+}
+
+func (p *flakyProxy) addr() string { return p.ln.Addr().String() }
+
+func (p *flakyProxy) acceptLoop() {
+	for {
+		client, err := p.ln.Accept()
+		if err != nil {
+			return
+		}
+		p.mu.Lock()
+		up := p.up
+		p.mu.Unlock()
+		if !up {
+			_ = client.Close()
+			continue
+		}
+		go p.forward(client)
+	}
+}
+
+func (p *flakyProxy) forward(client net.Conn) {
+	server, err := net.DialTimeout("tcp", p.upstream, 2*time.Second)
+	if err != nil {
+		_ = client.Close()
+		return
+	}
+	p.mu.Lock()
+	if !p.up { // cut between accept and now
+		p.mu.Unlock()
+		_ = client.Close()
+		_ = server.Close()
+		return
+	}
+	p.conns[client] = struct{}{}
+	p.conns[server] = struct{}{}
+	p.mu.Unlock()
+
+	go func() { _, _ = io.Copy(server, client); _ = server.Close(); _ = client.Close() }()
+	_, _ = io.Copy(client, server)
+	_ = client.Close()
+	_ = server.Close()
+}
+
+func (p *flakyProxy) closeAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for c := range p.conns {
+		_ = c.Close()
+	}
+	p.conns = map[net.Conn]struct{}{}
+}
+
+func (p *flakyProxy) cut() {
+	p.mu.Lock()
+	p.up = false
+	p.mu.Unlock()
+	p.closeAll()
+}
+
+func (p *flakyProxy) restore() {
+	p.mu.Lock()
+	p.up = true
+	p.mu.Unlock()
+}
+
+func TestRunSurvivesValkeyDroppingMidRun(t *testing.T) {
+	dbURL := testdb.New(t)
+	addr := freeAddr(t)
+	proxy := newFlakyProxy(t, valkeyAddr(t))
+	env := baseEnv(t, dbURL, addr)
+	env["YUMDRAKE_VALKEY_ADDR"] = proxy.addr()
+	r := start(t, []string{"yumdrake-orchestrator"}, env)
+
+	waitStatus(t, addr, "/readyz", http.StatusOK, 15*time.Second)
+
+	proxy.cut()
+	body := waitStatus(t, addr, "/readyz", http.StatusServiceUnavailable, 15*time.Second)
+	var parsed struct {
+		Checks map[string]string `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("decode /readyz body %q: %v", body, err)
+	}
+	if parsed.Checks["valkey"] != "failed" || parsed.Checks["postgres"] != "ok" {
+		t.Errorf("checks = %v, want valkey failed and postgres ok (body %s)", parsed.Checks, body)
+	}
+	if code, _, err := get(addr, "/healthz"); err != nil || code != http.StatusOK {
+		t.Errorf("/healthz while Valkey is cut = %d, %v; want 200", code, err)
+	}
+	select {
+	case code := <-r.done:
+		t.Fatalf("run returned %d while Valkey is cut; it must keep serving", code)
+	default:
+	}
+
+	proxy.restore()
+	waitStatus(t, addr, "/readyz", http.StatusOK, 15*time.Second)
 }

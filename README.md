@@ -62,6 +62,15 @@ make smoke              # builds the images and starts the Compose "app" profile
 
 `make smoke` needs Docker. It removes its containers and volumes on exit. See `scripts/smoke.sh -h` for its exit codes.
 
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Clean shutdown. |
+| `1` | Start-up or serve failure. |
+| `2` | Configuration or usage error. |
+| `130` | A second SIGINT or SIGTERM arrived during graceful shutdown and forced an immediate exit. |
+
 ## Environment variables
 
 Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL is only printed with its password replaced by `REDACTED`.
@@ -72,7 +81,8 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_VALKEY_ADDR` | orchestrator, runner | none (required) | `host:port`, with a port from 1 to 65535. |
 | `YUMDRAKE_LOG_LEVEL` | orchestrator, runner | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `YUMDRAKE_SHUTDOWN_TIMEOUT` | orchestrator, runner | `20s` | Go duration greater than zero. |
-| `YUMDRAKE_STARTUP_TIMEOUT` | orchestrator, runner | `60s` | Go duration greater than zero. Bounds the migration (orchestrator) and the schema wait (runner). |
+| `YUMDRAKE_STARTUP_TIMEOUT` | orchestrator, runner | `60s` | Go duration greater than zero. Bounds the database wait (both) and the schema wait (runner). |
+| `YUMDRAKE_MIGRATE_TIMEOUT` | orchestrator | `10m` | Go duration greater than zero. Bounds the schema migration, separately from `YUMDRAKE_STARTUP_TIMEOUT`. |
 | `YUMDRAKE_HTTP_ADDR` | orchestrator | `:8080` | `host:port`, with a port from 1 to 65535. Also read by `healthcheck`. |
 | `YUMDRAKE_MIGRATE_ON_START` | orchestrator | `true` | Must be `true` or `false`. |
 | `YUMDRAKE_HEALTH_ADDR` | runner | `127.0.0.1:8081` | `host:port`, with a port from 1 to 65535. Also read by `healthcheck`. |

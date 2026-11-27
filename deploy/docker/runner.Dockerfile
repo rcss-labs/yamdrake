@@ -16,6 +16,6 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # Final stage: distroless static, nonroot (tag gcr.io/distroless/static-debian12:nonroot).
 FROM gcr.io/distroless/static-debian12@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/yumdrake-runner /yumdrake-runner
-USER nonroot
+USER 65532:65532
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 CMD ["/yumdrake-runner","healthcheck"]
 ENTRYPOINT ["/yumdrake-runner"]

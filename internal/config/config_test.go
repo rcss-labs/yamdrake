@@ -47,6 +47,21 @@ func TestLoadOrchestratorDefaults(t *testing.T) {
 	if !cfg.MigrateOnStart {
 		t.Error("MigrateOnStart = false, want true")
 	}
+	if cfg.MigrateTimeout != 10*time.Minute {
+		t.Errorf("MigrateTimeout = %v, want 10m", cfg.MigrateTimeout)
+	}
+}
+
+func TestLoadOrchestratorMigrateTimeoutOverride(t *testing.T) {
+	env := requiredEnv()
+	env["YUMDRAKE_MIGRATE_TIMEOUT"] = "45m"
+	cfg, err := LoadOrchestrator(envFrom(env))
+	if err != nil {
+		t.Fatalf("LoadOrchestrator() error = %v", err)
+	}
+	if cfg.MigrateTimeout != 45*time.Minute {
+		t.Errorf("MigrateTimeout = %v, want 45m", cfg.MigrateTimeout)
+	}
 }
 
 func TestLoadOrchestratorOverrides(t *testing.T) {
@@ -120,6 +135,7 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 	cases := map[string]string{
 		"YUMDRAKE_VALKEY_ADDR":      "no-port",
 		"YUMDRAKE_STARTUP_TIMEOUT":  "0s",
+		"YUMDRAKE_MIGRATE_TIMEOUT":  "soon",
 		"YUMDRAKE_HTTP_ADDR":        "host:99999",
 		"YUMDRAKE_MIGRATE_ON_START": "yes",
 	}

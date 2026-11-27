@@ -138,21 +138,31 @@ function ConnectForm({ onClose }: { onClose: () => void }) {
   const [discovery, setDiscovery] = useState(emptyCredential)
   const [deploy, setDeploy] = useState(emptyCredential)
 
-  const error: ApiError | null = create.error
+  const [error, setError] = useState<ApiError | null>(null)
   const failedField = error ? fieldForMessage(error.message, fieldNames) : undefined
   const messageFor = (field: (typeof fieldNames)[number]) => (error && failedField === field ? error.message : undefined)
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault()
-    create.mutate({ name: name.trim(), account_id: accountId.trim(), discovery: toInput(discovery), deploy: toInput(deploy) }, { onSuccess: onClose })
+    const request = { name: name.trim(), account_id: accountId.trim(), discovery: toInput(discovery), deploy: toInput(deploy) }
     // Secrets never stay in the form, whatever the result.
     setDiscovery((current) => ({ ...current, secretAccessKey: '' }))
     setDeploy((current) => ({ ...current, secretAccessKey: '' }))
+    setError(null)
+    try {
+      await create.mutateAsync(request)
+      onClose()
+    } catch (failure) {
+      setError(failure as ApiError)
+    } finally {
+      // The request body holds the secrets: do not leave it in the mutation cache.
+      create.reset()
+    }
   }
 
   return (
     <Card>
-      <form className="conn-form" onSubmit={submit} noValidate>
+      <form className="conn-form" onSubmit={(event) => void submit(event)} noValidate>
         <h2>Connect AWS account</h2>
         <div className="conn-grid">
           <Field label="Name" error={messageFor('name')}>

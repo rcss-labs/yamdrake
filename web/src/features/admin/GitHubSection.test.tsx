@@ -1,4 +1,5 @@
-import { screen, within } from '@testing-library/react'
+import type { QueryClient } from '@tanstack/react-query'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { App } from '../../App'
@@ -10,9 +11,15 @@ const path = '/api/v1/admin/github-connections'
 const pem = '-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----'
 
 async function openForm() {
-  renderApp(<App />, { route, me: connectionsManagerMe })
+  const rendered = renderApp(<App />, { route, me: connectionsManagerMe })
   await screen.findByRole('table', { name: 'GitHub connections' })
   await userEvent.click(screen.getByRole('button', { name: 'Connect GitHub' }))
+  return rendered
+}
+
+/** Every mutation the query client still remembers, with its variables and data, as one string. */
+function rememberedMutations(queryClient: QueryClient) {
+  return JSON.stringify(queryClient.getMutationCache().getAll().map((mutation) => [mutation.state.variables, mutation.state.data]))
 }
 
 describe('the GitHub section', () => {
@@ -44,23 +51,23 @@ describe('the GitHub section', () => {
   })
 
   it('connects by token and clears the token afterwards', async () => {
-    await openForm()
+    delayNext('POST', path, 30)
+    const { queryClient } = await openForm()
     await userEvent.type(screen.getByLabelText('Organisation or owner'), 'new-org')
     await userEvent.selectOptions(screen.getByLabelText('Access method'), 'token')
     const token = screen.getByLabelText('Access token')
     expect(token).toHaveAttribute('type', 'password')
     await userEvent.type(token, 'ghp_secretvalue')
     await userEvent.click(screen.getByRole('button', { name: 'Save connection' }))
+    // While the request is pending the form is still mounted and the token is already empty.
+    expect(screen.getByLabelText('Access token')).toHaveValue('')
     expect(await screen.findByRole('row', { name: /new-org/ })).toBeInTheDocument()
     expect(requests.find((request) => request.method === 'POST' && request.path === path)?.body).toEqual({
       owner: 'new-org',
       method: 'token',
       token: 'ghp_secretvalue',
     })
-    expect(document.body.textContent).not.toContain('ghp_secretvalue')
-    await userEvent.click(screen.getByRole('button', { name: 'Connect GitHub' }))
-    await userEvent.selectOptions(screen.getByLabelText('Access method'), 'token')
-    expect(screen.getByLabelText('Access token')).toHaveValue('')
+    await waitFor(() => expect(rememberedMutations(queryClient)).not.toContain('ghp_secretvalue'))
   })
 
   it('connects by GitHub App with the private key as a secret field', async () => {
@@ -83,7 +90,7 @@ describe('the GitHub section', () => {
   })
 
   it('shows a server validation error on its field and clears secrets after a failure', async () => {
-    await openForm()
+    const { queryClient } = await openForm()
     await userEvent.type(screen.getByLabelText('Organisation or owner'), '-bad')
     await userEvent.type(screen.getByLabelText('App ID'), '42')
     await userEvent.type(screen.getByLabelText('Installation ID'), '99')
@@ -93,14 +100,15 @@ describe('the GitHub section', () => {
     expect(await screen.findByText(/is not a valid GitHub user or organisation name/)).toBeInTheDocument()
     expect(owner).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByLabelText('Private key')).toHaveValue('')
-    expect(document.body.textContent).not.toContain('BEGIN RSA')
+    expect(rememberedMutations(queryClient)).not.toContain('BEGIN RSA')
   })
 
-  it('shows a missing app field on the private key field', async () => {
+  it('shows a message that names several App fields on the form, not on one field', async () => {
     await openForm()
     await userEvent.type(screen.getByLabelText('Organisation or owner'), 'app-org')
     await userEvent.click(screen.getByRole('button', { name: 'Save connection' }))
-    expect(await screen.findByText(/requires app_id, installation_id and private_key/)).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/requires app_id, installation_id and private_key/)
+    expect(screen.getByLabelText('App ID')).not.toHaveAttribute('aria-invalid')
   })
 
   it('shows a duplicate owner in plain words', async () => {

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
+import type { ApiError } from '../../api/error'
 import type { CreateGithubConnectionRequest, GithubConnection, GithubMethod } from '../../api/types'
 import { Button, Card, DataTable, EmptyState, ErrorState, Field, Loading, Select, TextInput } from '../../ui'
 import type { DataColumn } from '../../ui'
@@ -29,11 +30,11 @@ function ConnectForm({ onClose }: { onClose: () => void }) {
   const [installationId, setInstallationId] = useState('')
   const [privateKey, setPrivateKey] = useState('')
 
-  const error = create.error
+  const [error, setError] = useState<ApiError | null>(null)
   const failedField = error ? fieldForMessage<string>(error.message, method === 'app' ? appFields : tokenFields) : undefined
   const messageFor = (field: string) => (error && failedField === field ? error.message : undefined)
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault()
     const request: CreateGithubConnectionRequest =
       method === 'token'
@@ -45,15 +46,24 @@ function ConnectForm({ onClose }: { onClose: () => void }) {
             installation_id: Number(installationId) || 0,
             private_key: privateKey,
           }
-    create.mutate(request, { onSuccess: onClose })
     // Secrets never stay in the form, whatever the result.
     setToken('')
     setPrivateKey('')
+    setError(null)
+    try {
+      await create.mutateAsync(request)
+      onClose()
+    } catch (failure) {
+      setError(failure as ApiError)
+    } finally {
+      // The request body holds the secrets: do not leave it in the mutation cache.
+      create.reset()
+    }
   }
 
   return (
     <Card>
-      <form className="conn-form" onSubmit={submit} noValidate>
+      <form className="conn-form" onSubmit={(event) => void submit(event)} noValidate>
         <h2>Connect GitHub</h2>
         <div className="conn-grid">
           <Field label="Organisation or owner" error={messageFor('owner')}>

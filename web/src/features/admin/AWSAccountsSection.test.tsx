@@ -1,3 +1,4 @@
+import type { QueryClient } from '@tanstack/react-query'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
@@ -13,9 +14,15 @@ function rowOf(name: string) {
 }
 
 async function openForm() {
-  renderApp(<App />, { route, me: connectionsManagerMe })
+  const rendered = renderApp(<App />, { route, me: connectionsManagerMe })
   await screen.findByRole('table', { name: 'AWS accounts' })
   await userEvent.click(screen.getByRole('button', { name: 'Connect AWS account' }))
+  return rendered
+}
+
+/** Every mutation the query client still remembers, with its variables and data, as one string. */
+function rememberedMutations(queryClient: QueryClient) {
+  return JSON.stringify(queryClient.getMutationCache().getAll().map((mutation) => [mutation.state.variables, mutation.state.data]))
 }
 
 async function fillBasics(name: string, accountId: string) {
@@ -88,7 +95,8 @@ describe('the AWS accounts section', () => {
   })
 
   it('posts both credential blocks and clears every secret afterwards', async () => {
-    await openForm()
+    delayNext('POST', accountsPath, 30)
+    const { queryClient } = await openForm()
     await fillBasics('Staging', '444444444444')
     await userEvent.type(screen.getByLabelText('Discovery role ARN'), 'arn:aws:iam::444444444444:role/yumdrake-discovery')
     await userEvent.type(screen.getByLabelText('Discovery external ID'), 'staging-ext')
@@ -99,6 +107,8 @@ describe('the AWS accounts section', () => {
     await userEvent.type(secret, 'super-secret-value')
     await userEvent.click(screen.getByRole('button', { name: 'Save account' }))
 
+    // While the request is pending the form is still mounted and its secret is already empty.
+    expect(screen.getByLabelText('Deployment secret access key')).toHaveValue('')
     expect(await screen.findByRole('row', { name: /Staging/ })).toBeInTheDocument()
     const post = requests.find((request) => request.method === 'POST' && request.path === accountsPath)
     expect(post?.body).toEqual({
@@ -108,15 +118,11 @@ describe('the AWS accounts section', () => {
       deploy: { method: 'key', access_key_id: 'AKIAEXAMPLE0001', secret_access_key: 'super-secret-value' },
     })
     expect(within(rowOf('Staging')).getByText('Access key ending 0001')).toBeInTheDocument()
-    expect(document.body.textContent).not.toContain('super-secret-value')
-    // The form closes on success; opening it again shows empty secret fields.
-    await userEvent.click(screen.getByRole('button', { name: 'Connect AWS account' }))
-    await userEvent.selectOptions(screen.getByLabelText('Deployment access method'), 'key')
-    expect(screen.getByLabelText('Deployment secret access key')).toHaveValue('')
+    await waitFor(() => expect(rememberedMutations(queryClient)).not.toContain('super-secret-value'))
   })
 
   it('clears the secrets after a failed save and shows the server error on its field', async () => {
-    await openForm()
+    const { queryClient } = await openForm()
     await fillBasics('Staging', '4444')
     await userEvent.selectOptions(screen.getByLabelText('Discovery access method'), 'key')
     await userEvent.type(screen.getByLabelText('Discovery access key ID'), 'AKIAEXAMPLE0002')
@@ -129,7 +135,7 @@ describe('the AWS accounts section', () => {
     expect(accountId).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByLabelText('Discovery secret access key')).toHaveValue('')
     expect(screen.getByLabelText('Name')).toHaveValue('Staging')
-    expect(document.body.textContent).not.toContain('another-secret')
+    expect(rememberedMutations(queryClient)).not.toContain('another-secret')
   })
 
   it('shows a server error about a credential block on that block', async () => {

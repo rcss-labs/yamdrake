@@ -23,7 +23,7 @@ export function useAwsAccounts() {
 }
 
 export function useCreateAwsAccount() {
-  return useApiMutation<AwsAccount, CreateAwsAccountRequest>('POST', '/api/v1/admin/aws-accounts', { invalidate: [awsKey] })
+  return useApiMutation<AwsAccount, CreateAwsAccountRequest>('POST', '/api/v1/admin/aws-accounts', { invalidate: [awsKey], gcTime: 0 })
 }
 
 /** Tests one account; the answer is shown in its row, so nothing is cached. */
@@ -40,6 +40,7 @@ export function useGithubConnections() {
 export function useCreateGithubConnection() {
   return useApiMutation<GithubConnection, CreateGithubConnectionRequest>('POST', '/api/v1/admin/github-connections', {
     invalidate: [githubKey],
+    gcTime: 0,
   })
 }
 
@@ -61,9 +62,10 @@ export function useJobSources() {
 /**
  * The server sends one plain message for a rejected form, not one per field. This picks the field the
  * message is about by finding its API name in the text ("account_id must be 12 digits"); a message that
- * names none of the fields belongs to the whole form.
+ * names none of the fields, or several of them, belongs to the whole form.
  */
 export function fieldForMessage<Name extends string>(message: string, fieldNames: readonly Name[]): Name | undefined {
   const lower = message.toLowerCase()
-  return fieldNames.find((name) => new RegExp(`(^|[^a-z_])${name}([^a-z_]|$)`).test(lower))
+  const named = fieldNames.filter((name) => new RegExp(`(^|[^a-z_])${name}([^a-z_]|$)`).test(lower))
+  return named.length === 1 ? named[0] : undefined
 }

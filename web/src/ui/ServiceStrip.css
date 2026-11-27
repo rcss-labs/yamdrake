@@ -1,0 +1,49 @@
+.ui-strip {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 16px;
+  vertical-align: middle;
+}
+.ui-strip-cell {
+  display: block;
+  width: 5px;
+  height: 10px;
+  border-radius: 1.5px;
+  background: var(--mute);
+}
+.ui-strip-cell[data-status='succeeded'] {
+  background: var(--ok);
+}
+.ui-strip-cell[data-status='failed'] {
+  height: 16px;
+  background: var(--bad);
+}
+.ui-strip-cell[data-status='running'] {
+  background: var(--run);
+}
+.ui-strip-cell[data-status='pending'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--mute);
+}
+.ui-strip-cell[data-status='skipped'] {
+  height: 3px;
+}
+.ui-strip-cell[data-gap='true'] {
+  margin-left: 5px;
+}
+.ui-strip-lg {
+  height: 24px;
+  gap: 3px;
+}
+.ui-strip-lg .ui-strip-cell {
+  width: 8px;
+  height: 14px;
+  border-radius: 2px;
+}
+.ui-strip-lg .ui-strip-cell[data-status='failed'] {
+  height: 24px;
+}
+.ui-strip-lg .ui-strip-cell[data-status='skipped'] {
+  height: 4px;
+}

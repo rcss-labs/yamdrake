@@ -1,19 +1,19 @@
-# Yamdrake design
+# Yumdrake design
 
 Date: 27 November 2026
-Status: revision 2, draft for approval. Revised after the architecture review in `docs/reviews/2026-11-27-design-review.md`.
+Status: revision 3, draft for approval. Revised after the architecture review in `docs/reviews/2026-11-27-design-review.md` and the owner's decisions recorded in section 19.
 Clickable mockup: https://claude.ai/artifact/5ew1QJFSoieUcSnKzKuP9L
-Mockup source: `docs/mockup/yamdrake-mockup.dc.html`. Its `<style>` block holds the design tokens and component styles, its markup holds each screen's layout, fields and filters, and its script holds sample data and behaviour. The mockup still says "Yumdrake" and predates this revision; section 12 lists the screens it does not have yet.
+Mockup source: `docs/mockup/yumdrake-mockup.dc.html`. Its `<style>` block holds the design tokens and component styles, its markup holds each screen's layout, fields and filters, and its script holds sample data and behaviour. The mockup predates this revision; section 12 lists the screens it does not have yet. The repository is named `yamdrake`; the product is Yumdrake.
 
-Calls marked **(call)** were made while writing and were not decided in conversation. Section 19 lists what the owner still has to decide. Appendix A records what was done with each review finding.
+Calls marked **(call)** were made while writing and were not decided in conversation. Section 19 records what the owner decided and what is still open. Appendix A records what was done with each review finding.
 
 ## 1. Intent
 
 Deployments run on Jenkins today. It is slow, the Groovy setup is large, and a general CI server is the wrong tool for what is a narrow job: put the right config files in place, then roll a new image version onto ECS services.
 
-Yamdrake is a purpose-built deployment tool for ECS. DevOps describe jobs and inventory in YAML. QA, developers and DevOps run those jobs from a web page or a CLI, see exactly what a run will change before it starts, watch it live, and read the full log afterwards. GitHub Actions keeps building images. Yamdrake only deploys versions that already exist.
+Yumdrake is a purpose-built deployment tool for ECS. DevOps describe jobs and inventory in YAML. QA, developers and DevOps run those jobs from a web page or a CLI, see exactly what a run will change before it starts, watch it live, and read the full log afterwards. GitHub Actions keeps building images. Yumdrake only deploys versions that already exist.
 
-Yamdrake owns the whole deployment lifecycle, not only the execution of steps: what exactly will be deployed, who may approve it, what else is touching the same services, whether it worked, and how to put things back.
+Yumdrake owns the whole deployment lifecycle, not only the execution of steps: what exactly will be deployed, who may approve it, what else is touching the same services, whether it worked, and how to put things back.
 
 ## 2. Goals, non-goals, anti-goals
 
@@ -29,15 +29,16 @@ Yamdrake owns the whole deployment lifecycle, not only the execution of steps: w
 - Every run keeps its history, a failure summary naming what failed and why, and the full console log of every step and service, including AWS error messages.
 - A running deployment can be cancelled safely. A service can be restored to exactly what it ran before, including its config files.
 - SAML single sign-on from the start, local accounts for break-glass and service use, and permissions managed in the application.
-- Per-job approvals and Slack notifications, plus environment policies and freezes set by admins.
+- Per-job approvals and Slack notifications, and deployment freezes set by admins.
 - Visibility: an overview with analytics, and a matrix of which version runs where.
 
 **Non-goals**
 
 - Building images or anything else CI does.
-- Deploying frontend applications. Yamdrake's own React UI is in scope; deploying other frontends is not.
+- Deploying frontend applications. Yumdrake's own React UI is in scope; deploying other frontends is not.
 - User-defined step types. Steps are built in.
-- Automatic rollback. Yamdrake restores only when a person asks.
+- In version 1: a step that runs scripts in a container, a separate verify step with HTTP and alarm checks, and admin-set environment policies that override job YAML. The owner moved these to after the first release (section 19).
+- Automatic rollback. Yumdrake restores only when a person asks.
 - Scheduled runs and email notifications.
 - Editing YAML in the application. YAML is edited in git and is read-only in the UI.
 - Reusable job templates, drift detection beyond the Versions page, and GitHub webhooks. These can follow version 1.
@@ -48,7 +49,7 @@ Yamdrake owns the whole deployment lifecycle, not only the execution of steps: w
 - Rebuilding Jenkins: arbitrary scripting as the main way to define a job.
 - Permissions or users defined in YAML.
 - A run view that shows only green and red boxes without the log behind them.
-- Reporting success for something Yamdrake could not confirm.
+- Reporting success for something Yumdrake could not confirm.
 
 ## 3. Constraints
 
@@ -81,7 +82,7 @@ Failure mode: a stale runner may complete an AWS call after losing its lease. St
 **D4. A run executes a pinned manifest.**
 Before approval, every input is resolved and frozen: image digests, git commits, config file contents, current task definitions (section 7.2). Approval is bound to the manifest's identity.
 Considered: snapshotting only the YAML, which leaves tags, branches and S3 objects free to change between approval and execution.
-Failure mode: copies of config files, which may contain secrets, are held in Yamdrake's own bucket. They are encrypted, access-restricted and expired by policy (section 9.4).
+Failure mode: copies of config files, which may contain secrets, are held in Yumdrake's own bucket. They are encrypted, access-restricted and deleted after 30 days (section 9.4).
 
 **D5. Locks cover the whole deployment, per target resource.**
 A run takes locks on every ECS service ARN and every config destination it will touch, all at once, before its first change, and holds them until the run is finished and confirmed.
@@ -101,13 +102,13 @@ Considered: WebSocket, polling.
 The orchestrator assumes a read-only discovery role. The runner assumes a deployment role. Script tasks get their own narrow role.
 Considered: one connection per account for both, which would give the API-facing service write access to every environment.
 
-**D9. Commands run in their own Fargate task, later.**
-The `run` step is a separate security boundary. It is deferred until the deployment engine is proven and gets its own short design first.
+**D9. No script step in version 1.**
+Running commands in a container is a separate security boundary. The owner moved it to after the first release, where it gets its own design.
 
 ## 5. System overview
 
 ```
- Browser (React)        CLI (yamdrake)
+ Browser (React)        CLI (yumdrake)
         \                 /
          HTTPS, REST + SSE
                |
@@ -147,7 +148,7 @@ Every file carries a schema version and a kind. Unknown fields and invalid refer
 ### 6.1 Environments: one file
 
 ```yaml
-apiVersion: yamdrake/v1
+apiVersion: yumdrake/v1
 kind: Environments
 environments:
   - name: hetzner-01
@@ -155,12 +156,12 @@ environments:
     aws_account: "111111111111"
 ```
 
-`name` is unique. `aws_account` must match a connected AWS account. Nothing else lives on an environment. Policies and freezes are set in the application, not here.
+`name` is unique. `aws_account` must match a connected AWS account. Nothing else lives on an environment. Freezes are set in the application, not here.
 
 ### 6.2 Services: one file per service
 
 ```yaml
-apiVersion: yamdrake/v1
+apiVersion: yumdrake/v1
 kind: Service
 name: backend-api
 versions:                            # optional; this is the default
@@ -179,11 +180,6 @@ environments:
       - name: backend-api.toml
         source_toml_path: s3://main-config-bucket/hetzner-01/backend-api.toml
         destination_toml_path: s3://hetzner-01-config/toml/backend-api.toml
-    verify:                          # optional, used by the verify step
-      http:
-        url: https://backend-api.hetzner-01.internal.example.com/health
-        expected_status: 200
-      alarms: [backend-api-hetzner-01-5xx]
 ```
 
 - One block per environment the service exists in. All paths are complete. There are no variables.
@@ -196,7 +192,7 @@ environments:
 ### 6.3 Jobs: one file per job, in any repository
 
 ```yaml
-apiVersion: yamdrake/v1
+apiVersion: yumdrake/v1
 kind: Job
 job: deploy-backend
 title: "Backend and microservices"
@@ -209,7 +205,7 @@ groups:
     label: Backend services
     services: [backend-socket, admin-history, backend-api, backend-worker]
 
-approval:                            # optional; an environment policy may also require it
+approval:                            # optional
   when:
     labels: [prod]
   expires: 24h
@@ -228,12 +224,6 @@ steps:
     needs:
       - step: config-backends
         scope: service               # this service's rollout waits only for its own config
-  - name: verify-backends
-    use: verify
-    group: backends
-    needs:
-      - step: roll-backends
-        scope: service
 ```
 
 Dependency rules:
@@ -249,7 +239,7 @@ Dependency rules:
 
 ```
 select -> resolve manifest -> preflight and diff -> approval (if required)
-       -> take locks -> revalidate -> execute -> verify -> record, release, notify
+       -> take locks -> revalidate -> execute -> record, release, notify
 ```
 
 Every stage is persisted. A run can be resumed from any of them.
@@ -259,7 +249,7 @@ Every stage is persisted. A run can be resumed from any of them.
 The user picks one environment, ticks groups or single services, and picks a version per group with optional per-service overrides.
 
 - Version lists come from the ECR repository each service has set for that environment, filtered and ordered by the service's `versions` rule. A group's list is the tags every selected service has. Lists are cached in Valkey for 60 seconds.
-- The orchestrator checks permission, policy and freezes, then creates the run in `resolving`.
+- The orchestrator checks permission and freezes, then creates the run in `resolving`.
 
 ### 7.2 Resolve the manifest
 
@@ -271,11 +261,11 @@ A runner task, read-only towards the environment, pins everything the run will u
 - For each config destination: a checksum and a copy of what is there now (kept as "previous").
 - The commits of the inventory and job definition used.
 
-Copies go to Yamdrake's artifact bucket, encrypted. The manifest's identity is a hash over all of it. Execution later copies from these stored copies, never from the sources again.
+Copies go to Yumdrake's artifact bucket, encrypted. The manifest's identity is a hash over all of it. Execution later copies from these stored copies, never from the sources again.
 
 ### 7.3 Preflight and diff
 
-The same runner task then checks, without changing anything: that the deployment role can be assumed, each ECS service exists, each image digest exists, every config source was readable, and no freeze or policy blocks the run. Permissions that cannot be proven without writing are reported as "not verified", not as passed.
+The same runner task then checks, without changing anything: that the deployment role can be assumed, each ECS service exists, each image digest exists, every config source was readable, and no freeze blocks the run. Permissions that cannot be proven without writing are reported as "not verified", not as passed.
 
 The user sees a diff before starting, and an approver sees the same one:
 
@@ -288,7 +278,7 @@ A failed preflight ends the run as `failed` before anything was touched.
 
 ### 7.4 Approval
 
-- Required if the job's YAML asks for it in this label, or if the environment's policy does (section 10).
+- Required only where the job's YAML asks for it. The YAML is protected by review in git.
 - Bound to the manifest identity. Approving a run approves exactly that manifest.
 - No locks are held while a run waits for approval.
 
@@ -312,7 +302,7 @@ A failed preflight ends the run as `failed` before anything was touched.
 - A leg whose dependency failed or was skipped is `skipped`, and so is what depends on it.
 - Concurrency is bounded: `max_parallel` per step, plus limits per environment, per AWS account and overall, set in Admin with defaults **(call)** of 10 per environment and 20 per account. Waiting legs are served oldest run first.
 - The scheduler is a function of database state. Any orchestrator task may advance a run and takes a row lock on it while it does.
-- Authorisation, policy and freezes are checked again when a run moves from `queued` to `running`.
+- Authorisation and freezes are checked again when a run moves from `queued` to `running`.
 
 ### 7.8 Queue, leases and recovery
 
@@ -361,7 +351,8 @@ For each selected service, writes the manifest's stored copies to their destinat
 Branch choice, made at resolve time:
 
 - The branch is `v` plus the version being deployed for that service, for example `v2.212.0`. A version that already starts with `v` is used as it is.
-- If that branch does not exist, the fallback branch `dev` is used when the environment's policy allows fallback (section 10 and open question 1). The diff and the log both say so. If fallback is not allowed, preflight fails.
+- If that branch does not exist and the environment is labelled `dev`, the branch `dev` is used instead. The diff and the log both say so.
+- In `preprod` and `prod` there is no fallback: a missing version branch fails preflight, before anything is touched.
 - A file missing from the branch that was chosen fails preflight. There is no per-file fallback.
 
 Credentials: S3 reads and writes use the deployment role of the environment's account, so that role must be allowed to read the source bucket. Env files are read with the GitHub connection whose owner matches the first part of `source_env_path`.
@@ -382,31 +373,17 @@ Because the image is pinned by digest, the version shown on the Versions page is
 
 Recovery: a second attempt looks for a revision tagged with this run and leg. If one exists it is adopted instead of registering another. It then reads the service's deployments and resumes waiting. Updating a service to the revision it already uses is harmless.
 
-### 8.3 `verify`
+### 8.3 Restore
 
-For each selected service, runs the checks its inventory block declares:
+Not a step in YAML but a run Yumdrake builds itself. "Restore" on a service or on a past run creates a run whose manifest is the recorded "previous" state: the exact previous task definition and the previous config file copies. It goes through the same permission (`restore`), approval, locking and execution as any run. Config copies are kept for 30 days, so a restore of an older run puts back the task definition only and says so.
 
-- **ECS**: the intended revision is running at the desired count and healthy. A desired count of zero is reported as "nothing to verify", not as success or failure.
-- **HTTP**: the URL returns the expected status, with retries, called from the runner. The runner must be able to reach it.
-- **Alarms**: the named CloudWatch alarms are `OK`. `INSUFFICIENT_DATA` is reported as not verified.
-
-Read-only, so a second attempt simply runs again.
-
-### 8.4 Restore
-
-Not a step in YAML but a run Yamdrake builds itself. "Restore" on a service or on a past run creates a run whose manifest is the recorded "previous" state: the exact previous task definition and the previous config file copies. It goes through the same permission (`restore`), policy, approval, locking, execution and verification as any run.
-
-A service's first-ever Yamdrake deployment can be restored too, because resolve records what was there before.
-
-### 8.5 `run` (deferred)
-
-Runs listed commands in a named image as an isolated Fargate task. Not part of the first release. Before it is built it gets its own design, which must settle: images pinned by digest from approved registries, source pinned to a commit, a dedicated narrow task role, no runner credentials in the task, CPU, memory and time limits, restricted network and output destinations, safe handling of inputs, and success that includes the output upload.
+A service's first-ever Yumdrake deployment can be restored too, because resolve records what was there before.
 
 ## 9. Sign-in, permissions and secrets
 
 ### 9.1 Sign-in
 
-- **SAML** is the normal way in. Groups arrive in a SAML attribute and are mapped to Yamdrake groups in Admin. Membership is refreshed at each sign-in, and sessions have a maximum age so a removed user loses access.
+- **SAML** is the normal way in. Groups arrive in a SAML attribute and are mapped to Yumdrake groups in Admin. Membership is refreshed at each sign-in, and sessions have a maximum age so a removed user loses access.
 - **Local accounts** exist for a break-glass admin and for service accounts. Passwords are stored as argon2id hashes. Use of the break-glass account is audited and announced.
 - **Sessions** are server-side in Valkey behind a secure, http-only cookie, and can be revoked.
 - **CLI tokens** belong to a user, carry that user's permissions and no more, are stored hashed, expire, and can be revoked.
@@ -421,30 +398,23 @@ Every REST, SSE and CLI request is checked on the server. The UI hides or disabl
 
 ### 9.3 Audit
 
-Every permission, policy, freeze, connection, job and folder change, every run request, approval, rejection, cancellation, reconciliation, restore and lock release, with who and when.
+Every permission, freeze, connection, job and folder change, every run request, approval, rejection, cancellation, reconciliation, restore and lock release, with who and when.
 
 ### 9.4 Secrets
 
-- Secrets Yamdrake must read back (credentials for AWS, GitHub and Slack, the SAML key) are encrypted with KMS before they are stored. The orchestrator can decrypt only what it uses; deployment credentials are decryptable only by the runner.
+- Secrets Yumdrake must read back (credentials for AWS, GitHub and Slack, the SAML key) are encrypted with KMS before they are stored. The orchestrator can decrypt only what it uses; deployment credentials are decryptable only by the runner.
 - Roles assumed with STS are preferred over access keys. Access keys remain possible.
-- Manifest artifacts are encrypted, readable only by the runner, and expired by a retention setting. The UI never shows their contents.
+- Manifest artifacts are encrypted, readable only by the runner, and deleted after 30 days. The UI never shows their contents.
 - RDS storage is encrypted and connections require TLS.
 
-## 10. Policies, approvals, freezes, notifications
-
-**Environment policies**, set in Admin per label or per environment. A job may ask for more than the policy, never less.
-
-- Approval required, and how many approvers.
-- Whether the person who started a run, including a global admin, may approve it.
-- Whether config may fall back to the `dev` branch.
-- Whether script steps may run there.
-- Concurrency limits.
-- Whether a stale YAML sync blocks runs.
+## 10. Approvals, freezes, notifications
 
 **Approvals**
 
-- Who may approve is a permission. A waiting run expires after `approval.expires`, default 24 hours.
-- Approve and reject happen in Yamdrake. Slack carries a link.
+- A job asks for approval only where its YAML says so. There are no admin-set policies in version 1.
+- Who may approve is a permission. Nobody approves their own run unless they are a global admin.
+- A waiting run expires after `approval.expires`, default 24 hours.
+- Approve and reject happen in Yumdrake. Slack carries a link.
 
 **Freezes**
 
@@ -481,7 +451,7 @@ To be added to the mockup before the web plans are written:
 - **Run page**: cancel, the new states, reconciliation, "Plan again", restore.
 - **Queue**: active and queued runs, what each waits for, who holds which lock, runner capacity.
 - **Service page**: current and previous versions per environment, deployment history, config revisions, restore.
-- **Admin**: environment policies and freezes, Slack, the two credentials per AWS account, concurrency limits.
+- **Admin**: freezes, Slack, the two credentials per AWS account, concurrency limits.
 - **System health**: runners, queue depth, expired leases, sync age, connection health.
 
 ## 13. API and CLI
@@ -495,7 +465,7 @@ To be added to the mockup before the web plans are written:
 PostgreSQL holds:
 
 - People and access: users, local credentials, groups, identity-provider group mappings, grants, CLI tokens, audit log.
-- Governance: environment policies, freezes.
+- Governance: freezes.
 - Connections and settings, with secrets encrypted.
 - Definitions: folders, jobs, the active inventory snapshot with its commit.
 - Runs: runs, manifests (the index; contents are in S3), steps, legs (also the work queue: status, lease, generation, intents, failure reasons), locks, approvals, recent log lines, the log archive index, the notification queue.
@@ -506,7 +476,7 @@ S3 holds manifest artifacts and the log archive, with lifecycle rules for each.
 
 ## 15. Deployment and operations
 
-- ECS on Fargate: `yamdrake-orchestrator` behind an internal HTTPS load balancer, `yamdrake-runner` with no inbound access, scaled on queue depth.
+- ECS on Fargate: `yumdrake-orchestrator` behind an internal HTTPS load balancer, `yumdrake-runner` with no inbound access, scaled on queue depth.
 - RDS PostgreSQL with automated backups and point-in-time recovery, and a restore that has been tested. ElastiCache for Valkey. One S3 bucket. KMS keys. Database credentials in Secrets Manager.
 - IAM: the orchestrator's role may assume only discovery roles. The runner's role may assume only deployment roles. `iam:PassRole` in a deployment role is limited to the task and execution roles of the services it deploys.
 - Terraform lives under `deploy/terraform`, named in lowercase with hyphens.
@@ -517,7 +487,7 @@ S3 holds manifest artifacts and the log archive, with lifecycle rules for each.
 ## 16. Testing
 
 - Test first for behaviour: write the failing test, see it fail for the right reason, then implement.
-- Unit: YAML validation and schemas; dependency rules for both scopes; scheduling, skip and result precedence; permission and policy checks; branch choice and fallback; task-definition rewrite.
+- Unit: YAML validation and schemas; dependency rules for both scopes; scheduling, skip and result precedence; permission checks; branch choice and the dev-only fallback; task-definition rewrite.
 - Integration against real PostgreSQL and Valkey: claiming, leases and generations; two schedulers on one run; atomic lock acquisition and the interleaving in D5; log batches, duplicates and gaps; SSE resume.
 - Recovery: for each step, kill the runner immediately before and immediately after each external call, then check that the second attempt adopts or repeats correctly and that an undeterminable outcome becomes `unknown`.
 - Cancellation in each leg state of the table in 7.9.
@@ -530,17 +500,16 @@ S3 holds manifest artifacts and the log archive, with lifecycle rules for each.
 Each is its own implementation plan and ends with something that runs. Nothing that can change a real environment is reachable before plans 3 and 7 are in.
 
 1. **Foundations**: repository layout, Go module, configuration, migrations, local environment (PostgreSQL, Valkey, fake AWS), CI, images.
-2. **YAML and sync**: schemas, validator, GitHub connections, inventory and job sync, read API, `yamdrake validate`.
+2. **YAML and sync**: schemas, validator, GitHub connections, inventory and job sync, read API, `yumdrake validate`.
 3. **Sign-in and permissions**: local accounts, SAML, groups and grants, CLI tokens, audit log.
 4. **Run engine**: run and leg states, queue, leases and generations, scheduler with both dependency scopes, locks, cancellation, reconciliation, logs, SSE. Proven with fake steps.
 5. **Manifest and preflight**: AWS connections with two credentials, version lists, resolve, preflight, diff, revalidation.
-6. **Steps**: `copy-config`, `ecs-deploy`, `verify`, each with its recovery contract. Restore.
-7. **Governance**: environment policies, approvals, freezes, Slack.
+6. **Steps**: `copy-config` and `ecs-deploy`, each with its recovery contract. Restore.
+7. **Approvals, freezes, Slack**.
 8. **Web application, core**: shell, Jobs, Job with plan and diff, Run, Runs, Approvals, Inventory, Admin.
 9. **Web application, visibility**: Overview, Versions, Queue, Service page, System health.
 10. **CLI**, complete.
 11. **Terraform and operations**: infrastructure, IAM, metrics and alarms, backups, first deployment.
-12. **`run` step**, after its own design.
 
 ## 18. Left to the builder
 
@@ -551,18 +520,21 @@ Each is its own implementation plan and ends with something that runs. Nothing t
 - The React component breakdown and the query library.
 - Whether charts are hand-built as in the mockup or use a small library.
 
-## 19. Open for the owner
+## 19. Owner decisions and what is still open
 
-These conflict with something already decided, or cost enough that the owner should choose.
+Decided by the owner on 27 November 2026:
 
-1. **Config fallback to `dev` in preprod and prod.** You asked for a fallback to the `dev` branch whenever the version branch is missing. The review asks for it to be off outside dev, so production never silently takes dev config. This document makes it a per-environment policy and shows any fallback in the diff before the run starts. Which default do you want for preprod and prod: allowed, or blocked?
-2. **Environment policies that override job YAML.** You said approval is per job and not every prod job needs it. The review points out that anyone who can edit a job's YAML can remove its approval, and asks for admin-set policies a job cannot weaken, with no self-approval even for admins in prod. This document includes policies but ships them empty. Do you want a default policy for prod, and should admins be able to approve their own prod runs?
-3. **Copies of config files in Yamdrake's bucket.** Pinned manifests and restore both need them. Env files often hold secrets. They are encrypted and expire, but it is a new place where secrets live. Is that acceptable, and how long should they be kept?
-4. **`verify` in the first release.** It adds inventory fields and needs the runner to reach each service's health URL. Include it now, or start with only the ECS check that is built into `ecs-deploy`?
-5. **The `run` step moves to the end**, behind its own design. You asked for it; the review asks to defer it. This document defers it.
-6. **Size.** The review turns ten plans into twelve and adds manifests, locks, cancel, reconcile, restore, policies and freezes. All are in this document. Say so if any should wait until after a first working release.
-7. **Name.** This revision says Yamdrake, matching the repository and the review. The mockup will be renamed once you confirm.
-8. **Hosting**, needed before plan 11: AWS account and region for Yamdrake itself, VPC and private subnets, hostname and certificate, and the SAML identity provider.
+1. **Config fallback**: to the `dev` branch only in environments labelled `dev`. Blocked in preprod and prod.
+2. **Environment policies**: none. Approval is decided only in each job's YAML. The review's concern, that editing the YAML can remove an approval, is accepted and covered by review in git.
+3. **Config copies**: kept in Yumdrake's bucket, encrypted, for 30 days.
+4. **Verification**: the ECS check inside `ecs-deploy` only. A separate verify step with HTTP and alarm checks comes after version 1.
+5. **Script step**: after version 1.
+6. **Scope**: restore, freezes, and the Queue and System health screens all stay in version 1.
+7. **Name**: Yumdrake. The repository stays `yamdrake`.
+
+Still open, needed before plan 11:
+
+- **Hosting**: AWS account and region for Yumdrake itself, VPC and private subnets, hostname and certificate, and the SAML identity provider.
 
 ## Appendix A. Review findings and what was done
 
@@ -570,24 +542,24 @@ These conflict with something already decided, or cost enough that the owner sho
 |---|---|---|
 | Lifecycle locking | Adopted | D5, 7.5 |
 | Immutable manifests | Adopted. Resolve runs in the runner so the orchestrator never reads config contents | D4, 7.2 |
-| Configuration restoration | Adopted. Resolve also records the previous config so a first deployment can be restored | 8.4 |
+| Configuration restoration | Adopted. Resolve also records the previous config so a first deployment can be restored | 8.3 |
 | Runner recovery and reconciliation | Adopted | D3, 7.8, 7.10, 8 |
 | Separate IAM roles | Adopted. Access keys stay possible, as the owner asked for them | D8, 11, 15 |
 | Preflight and diff | Adopted | 7.3 |
-| Verification | Adopted, subject to open question 4 | 8.3 |
+| Verification | The ECS check is part of `ecs-deploy`. The separate step is after version 1, by owner decision | 8.2, 19 |
 | Concurrency control | Adopted | 7.7 |
 | Cancellation | Adopted, reversing the earlier "not in version 1" | 7.9 |
 | Dependency semantics | Adopted: both scopes, always explicit | 6.3 |
 | Schema versioning | Adopted as `apiVersion` and `kind` at the top of each file, without a `metadata` and `spec` wrapper, to keep the files flat | 6 |
 | Reusable workflows | Deferred, as the review suggests | 2 |
 | Configurable version selection | Adopted | 6.2 |
-| Environment protection policies | Included but empty by default, pending open question 2 | 10 |
+| Environment protection policies | Not adopted, by owner decision. Approval stays per job | 10, 19 |
 | Granular permissions | Adopted | 9.2 |
-| `run` step hardening | Adopted: deferred behind its own design | 8.5 |
+| `run` step hardening | The step is after version 1, by owner decision. The review's requirements apply when it is designed | D9, 19 |
 | Secret handling | Adopted | 7.11, 9.4 |
 | Deployment freeze | Adopted, without a bypass | 10 |
 | Partial success and unknown outcomes | Adopted | 7.6 |
-| Branch fallback | Made a policy, default pending open question 1 | 8.1 |
+| Branch fallback | Adopted as a fixed rule: `dev` environments only | 8.1, 19 |
 | Durable logging | Adopted with PostgreSQL as the acknowledged store | D6, 7.11 |
 | UI additions | Adopted as mockup work before the web plans | 12 |
 | Observability and operations | Adopted | 15 |

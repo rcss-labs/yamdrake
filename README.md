@@ -78,6 +78,19 @@ curl -H "Authorization: Bearer $YUMDRAKE_BOOTSTRAP_TOKEN" localhost:8080/api/v1/
 
 The orchestrator also polls GitHub every `YUMDRAKE_SYNC_INTERVAL` (inventory first, then each job source). A failure to reach GitHub is kept as `sync_error` next to the last good data, which stays in use.
 
+## Web application
+
+The web application lives in `web/` (React, TypeScript and Vite). It needs Node 24 and npm.
+
+```sh
+make web-install   # install dependencies from the lockfile
+make web-lint      # ESLint and the TypeScript check
+make web-test      # unit tests, run once
+make web-build     # production build into web/dist
+```
+
+For development, run the orchestrator on port 8080 and start the dev server with `npm --prefix web run dev`. The dev server proxies `/api` and `/saml` to the orchestrator on `localhost:8080`.
+
 ## Testing
 
 ```sh
@@ -152,4 +165,4 @@ kind: Service
 
 ## CI
 
-The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration and smoke jobs on pull requests and on pushes to `main`.
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration, smoke and web jobs on pull requests and on pushes to `main`.

@@ -10,7 +10,7 @@ BINARY_PACKAGES := orchestrator runner
 # Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
 export VERSION COMMIT
 
-.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke
+.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke web-install web-lint web-test web-build
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -69,3 +69,15 @@ images: ## Build the yumdrake-orchestrator and yumdrake-runner images (tag :dev)
 
 smoke: ## Build and start the app profile in Compose and check it is healthy
 	./scripts/smoke.sh
+
+web-install: ## Install the web application's dependencies from the lockfile
+	npm --prefix web ci
+
+web-lint: ## Lint and type-check the web application
+	npm --prefix web run lint
+
+web-test: ## Run the web application's unit tests once
+	npm --prefix web run test
+
+web-build: ## Build the web application for production into web/dist
+	npm --prefix web run build

@@ -4,3 +4,5 @@ docs
 .idea
 .superpowers
 .github
+web/node_modules
+web/dist

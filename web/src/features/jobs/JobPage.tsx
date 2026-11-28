@@ -5,6 +5,7 @@ import { useCan } from '../../api/hooks'
 import { Button, Card, ErrorState, Loading, PageHeader, Tabs, type TabItem } from '../../ui'
 import { DefinitionTab } from './DefinitionTab'
 import { HistoryTab } from './HistoryTab'
+import { JobFacts } from './JobFacts'
 import { RunTab } from './RunTab'
 import { useJob } from './jobQueries'
 import './job-page.css'
@@ -89,6 +90,7 @@ export function JobPage() {
           </div>
         }
       />
+      <JobFacts job={job} />
       <Tabs
         label="Job sections"
         tabs={tabs}

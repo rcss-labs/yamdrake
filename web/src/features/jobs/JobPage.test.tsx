@@ -201,3 +201,37 @@ describe('the job page', () => {
     expect(screen.getByRole('tab', { name: 'Run' })).toHaveAttribute('aria-selected', 'true')
   })
 })
+
+describe('the job facts row', () => {
+  const fact = (label: string) => screen.getByText(label, { selector: 'dt' }).nextElementSibling as HTMLElement
+
+  it('shows the last run, the success rate of finished runs, the last success and the run count', async () => {
+    const runs = mockState().runs
+    const template = runs.find((run) => run.id === 109)!
+    runs.find((run) => run.id === 103)!.state = 'failed'
+    runs.push({ ...template, id: 300, state: 'partially_succeeded' })
+    // A cancelled run is newest, but it is not a finished deploy: it stays out of the rate.
+    runs.push({ ...template, id: 301, state: 'cancelled' })
+    renderJob('/jobs/1')
+    await waitFor(() => expect(fact('Runs')).toHaveTextContent('5'))
+    expect(fact('Last run')).toHaveTextContent(/^Cancelled, /)
+    expect(fact('Success rate')).toHaveTextContent('50% of 4 finished runs')
+    expect(fact('Last success')).toHaveTextContent(/^hetzner-01, /)
+  })
+
+  it('says so when a job has never run or nothing has finished yet', async () => {
+    renderJob('/jobs/4')
+    await waitFor(() => expect(fact('Last run')).toHaveTextContent('Never run'))
+    expect(fact('Success rate')).toHaveTextContent('No finished runs yet')
+    expect(fact('Last success')).toHaveTextContent('None yet')
+    expect(fact('Runs')).toHaveTextContent('0')
+  })
+
+  it('asks for this job\'s runs once, whichever tab is open', async () => {
+    renderJob('/jobs/1?tab=definition')
+    await waitFor(() => expect(fact('Runs')).toHaveTextContent('3'))
+    const asked = requests.filter((request) => request.path === '/api/v1/runs')
+    expect(asked).toHaveLength(1)
+    expect(new URLSearchParams(asked[0]!.search).get('job')).toBe('1')
+  })
+})

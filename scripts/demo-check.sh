@@ -32,7 +32,7 @@ with `down -v --remove-orphans`, and the script checks that nothing remains.
 Needs Docker, curl, python3, go, and for the browser test node with the web
 dependencies and Chromium (make web-install; npx playwright install chromium).
 
-Environment (default): YUMDRAKE_DEMO_CHECK_PORT=18380.
+Environment (default): YUMDRAKE_DEMO_CHECK_PORT=18380, YUMDRAKE_DEMO_CHECK_FLOCI_PORT=18666.
 
 Exit codes:
   0  all checks passed
@@ -78,6 +78,8 @@ project="yumdrake-demo-check"
 network="${project}_default"
 registry_name="floci-aws-demo-check-ecr-registry"
 port="${YUMDRAKE_DEMO_CHECK_PORT:-18380}"
+# Where this check's Floci is published on loopback (see compose.demo.yaml).
+floci_port="${YUMDRAKE_DEMO_CHECK_FLOCI_PORT:-18666}"
 compose_dir="$repo_root/deploy/compose"
 base_url="http://localhost:$port"
 
@@ -92,6 +94,10 @@ if port_in_use "$port"; then
 	echo "demo-check: FAIL: host port $port is already in use; set YUMDRAKE_DEMO_CHECK_PORT" >&2
 	exit 1
 fi
+if port_in_use "$floci_port"; then
+	echo "demo-check: FAIL: host port $floci_port is already in use; set YUMDRAKE_DEMO_CHECK_FLOCI_PORT" >&2
+	exit 1
+fi
 
 work_dir="$(mktemp -d)"
 env_file="$work_dir/demo.env"
@@ -99,7 +105,7 @@ failures=0
 started=0
 
 # The public demo settings, with this check's own port. The last assignment in an env file wins.
-grep -vE '^(YUMDRAKE_HTTP_PORT|YUMDRAKE_PUBLIC_URL|YUMDRAKE_IMAGE_REPO|YUMDRAKE_VERSION)=' "$compose_dir/demo/demo.env" >"$env_file"
+grep -vE '^(YUMDRAKE_HTTP_PORT|YUMDRAKE_PUBLIC_URL|YUMDRAKE_IMAGE_REPO|YUMDRAKE_VERSION|YUMDRAKE_DEMO_FLOCI_PORT)=' "$compose_dir/demo/demo.env" >"$env_file"
 check_images=(
 	yumdrake-demo-check/yumdrake-orchestrator:check
 	yumdrake-demo-check/yumdrake-runner:check
@@ -109,6 +115,7 @@ check_images=(
 	echo "YUMDRAKE_IMAGE_REPO=yumdrake-demo-check"
 	echo "YUMDRAKE_VERSION=check"
 	echo "YUMDRAKE_HTTP_PORT=$port"
+	echo "YUMDRAKE_DEMO_FLOCI_PORT=$floci_port"
 	echo "YUMDRAKE_PUBLIC_URL=$base_url"
 	# This check's Floci registry has its own name and port range, so a demo you run yourself is not disturbed.
 	echo "YUMDRAKE_DEMO_REGISTRY_NAME=$registry_name"
@@ -219,7 +226,16 @@ fi
 # --- start ------------------------------------------------------------------
 echo "demo-check: building and starting the demo (project $project, port $port)"
 started=1
-compose up -d --build --wait --wait-timeout 600 >/dev/null 2>&1 || abort "the demo did not become healthy"
+compose up -d --build --wait --wait-timeout 900 >/dev/null 2>&1 || abort "the demo did not become healthy"
+# `up --wait` can return while the helper is between two seeding attempts (it restarts when one fails), so ask
+# the helper's own health, which is "healthy" only once it has finished seeding.
+helper_health=""
+for _ in $(seq 1 360); do
+	helper_health="$(docker inspect -f '{{.State.Health.Status}}' "$(compose ps -q demo)" 2>/dev/null)" || helper_health=""
+	[ "$helper_health" = "healthy" ] && break
+	sleep 5
+done
+[ "$helper_health" = "healthy" ] || abort "the demo helper never finished seeding (health: ${helper_health:-unknown})"
 pass "the demo is healthy (the helper has seeded it)"
 
 admin_jar="$work_dir/admin.jar"

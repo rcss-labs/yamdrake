@@ -64,12 +64,13 @@ services:
   floci:
     image: floci/floci:2.5.0
     restart: unless-stopped
-    # Services reach it at http://floci:4566. It is published only on loopback, on a port Docker picks (never 4566
-    # or 4577, which other tools use): Floci starts every ECS task by asking the Docker daemon to pull its image
-    # from a registry address on the host, and it works out that address from the port it is published on.
-    # Without a published port the daemon would be told to pull from localhost:4566, which is not Floci.
+    # Services reach it at http://floci:4566. It is published only on loopback, on a port of its own (never 4566 or
+    # 4577, which other tools use): Floci starts every ECS task by asking the Docker daemon to pull its image from a
+    # registry address on the host, and it works out that address from the port it is published on. Without a
+    # published port the daemon would be told to pull from localhost:4566, which is not Floci. A fixed port, because
+    # Floci did not read a Docker-chosen one correctly on every Docker (demo-check sets its own).
     ports:
-      - "127.0.0.1::4566"
+      - "127.0.0.1:${YUMDRAKE_DEMO_FLOCI_PORT:-18566}:4566"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:

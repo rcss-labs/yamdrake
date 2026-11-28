@@ -10,7 +10,7 @@ BINARY_PACKAGES := orchestrator runner
 # Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
 export VERSION COMMIT
 
-.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke web-install web-lint web-test web-build web-e2e
+.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke tf-check web-install web-lint web-test web-build web-e2e
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -65,6 +65,20 @@ images: ## Build the yumdrake-orchestrator and yumdrake-runner images (tag :dev)
 		docker build -f deploy/docker/$$svc.Dockerfile \
 			--build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" \
 			-t yumdrake-$$svc:dev . || exit 1; \
+	done
+
+TF_DIRS := deploy/terraform/example deploy/terraform/example/target-account
+
+tf-check: ## Check the Terraform example: fmt and validate only, never plan or apply, no AWS credentials needed
+	@set -euo pipefail; \
+	command -v terraform >/dev/null 2>&1 || { echo "terraform is not on PATH (see deploy/terraform/example/versions.tf for the supported range)" >&2; exit 2; }; \
+	for dir in $(TF_DIRS); do \
+		[ -d "$$dir" ] || { echo "missing directory: $$dir" >&2; exit 1; }; \
+	done; \
+	terraform fmt -check -recursive deploy/terraform; \
+	for dir in $(TF_DIRS); do \
+		echo "== $$dir"; \
+		(cd "$$dir" && terraform init -backend=false -input=false >/dev/null && terraform validate); \
 	done
 
 smoke: ## Build and start the app profile in Compose and check it is healthy

@@ -102,6 +102,55 @@ describe('the Runs page', () => {
     expect(screen.queryByRole('button', { name: 'Load older' })).not.toBeInTheDocument()
   })
 
+  it('starts again from the newest page when a filter changes', async () => {
+    addRuns(55)
+    renderApp(<RunsPage />, { route: '/runs' })
+    await screen.findByRole('link', { name: '#254' })
+    await userEvent.click(screen.getByRole('button', { name: 'Load older' }))
+    await waitFor(() => expect(runLinks()).toHaveLength(64))
+    await userEvent.click(screen.getByRole('button', { name: 'Succeeded' }))
+    // 57 runs succeeded: only the newest page of them is shown, with Load older offered again.
+    await waitFor(() => expect(runLinks()).toHaveLength(50))
+    expect(screen.getByRole('button', { name: 'Load older' })).toBeInTheDocument()
+    expect(listRequests().filter((request) => new URLSearchParams(request.search).has('before'))).toHaveLength(1)
+  })
+
+  it('loses and repeats no run when the first page is refreshed after new runs arrived', async () => {
+    addRuns(55)
+    const view = renderApp(<RunsPage />, { route: '/runs' })
+    await screen.findByRole('link', { name: '#254' })
+    await userEvent.click(screen.getByRole('button', { name: 'Load older' }))
+    await waitFor(() => expect(runLinks()).toHaveLength(64))
+    const template = mockState().runs.find((run) => run.id === 109)!
+    for (let id = 300; id < 305; id += 1) mockState().runs.push({ ...template, id })
+    await view.queryClient.invalidateQueries({ queryKey: ['runs'] })
+    await waitFor(() => expect(runLinks()).toHaveLength(69))
+    const expected = [...mockState().runs.map((run) => run.id)].sort((a, b) => b - a).map((id) => `#${id}`)
+    expect(runLinks()).toEqual(expected)
+  })
+
+  it('keeps the loaded runs and says so when an older page fails', async () => {
+    addRuns(55)
+    renderApp(<RunsPage />, { route: '/runs' })
+    await screen.findByRole('link', { name: '#254' })
+    failNext('GET', '/api/v1/runs', 500, 'internal', 'Boom')
+    await userEvent.click(screen.getByRole('button', { name: 'Load older' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Older runs could not be loaded')
+    expect(runLinks()).toHaveLength(50)
+    await userEvent.click(screen.getByRole('button', { name: 'Load older' }))
+    await waitFor(() => expect(runLinks()).toHaveLength(64))
+  })
+
+  it('waits for a pause in typing before searching, while the address follows every key', async () => {
+    const view = renderApp(<RunsPage />, { route: '/runs' })
+    await screen.findByRole('link', { name: '#109' })
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Job, service or person' }), 'Omer')
+    expect(view.location().search).toBe('?q=Omer')
+    await waitFor(() => expect(runLinks()).toEqual(['#107', '#104', '#102']))
+    const asked = listRequests().map((request) => new URLSearchParams(request.search).get('q'))
+    expect(asked.filter((q) => q !== null)).toEqual(['Omer'])
+  })
+
   it('shows an error with a retry when the list cannot be loaded', async () => {
     failNext('GET', '/api/v1/runs', 500, 'internal')
     renderApp(<RunsPage />, { route: '/runs' })

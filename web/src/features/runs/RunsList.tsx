@@ -1,14 +1,26 @@
-import { useQueries } from '@tanstack/react-query'
-import { useState } from 'react'
+import { keepPreviousData, useInfiniteQuery } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import type { ApiError } from '../../api/error'
 import type { RunsFilter, RunsResponse } from '../../api/types'
 import { useInventory } from '../inventory/queries'
 import { Button, Card, EmptyState, ErrorState, Loading, SearchBox, Segmented, Select } from '../../ui'
-import { runsListKey, runsPath } from './queries'
+import { runsKey, runsPath } from './queries'
 import { statesBySegment, statusOptions, useRunFilters } from './runFilters'
 import { RunsTable } from './RunsTable'
 import './runs.css'
+
+const SEARCH_DELAY_MS = 300
+
+/** The value, a little after it stopped changing. The first value is used at once. */
+function useDebounced(value: string): string {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), SEARCH_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [value])
+  return debounced
+}
 
 export interface RunsListProps {
   /** Only this job's runs (its source id); leave out for every job. */
@@ -24,13 +36,15 @@ export function RunsList({ job, search = false, noRunsText }: RunsListProps) {
   const filters = useRunFilters()
   const inventory = useInventory()
   const environments = inventory.data?.environments ?? []
+  // The box and the address follow every key; the request waits for a pause in typing.
+  const query = useDebounced(filters.q.trim())
   const filter: RunsFilter = {
     ...(job === undefined ? {} : { job }),
     ...(filters.environment === '' ? {} : { environment: filters.environment }),
-    ...(filters.q.trim() === '' ? {} : { q: filters.q.trim() }),
+    ...(query === '' ? {} : { q: query }),
     ...(filters.status === 'all' ? {} : { state: statesBySegment[filters.status] }),
   }
-  const filtered = filters.status !== 'all' || filters.environment !== '' || filters.q.trim() !== ''
+  const filtered = filters.status !== 'all' || filters.environment !== '' || query !== ''
 
   return (
     <div className="runs-list">
@@ -49,36 +63,28 @@ export function RunsList({ job, search = false, noRunsText }: RunsListProps) {
           ))}
         </Select>
       </div>
-      {/* Keyed by the filter so a changed filter starts again from the newest page. */}
-      <RunsPages key={JSON.stringify(filter)} filter={filter} showJob={job === undefined} noRunsText={filtered ? 'No runs match these filters' : noRunsText} />
+      <RunsPages filter={filter} showJob={job === undefined} noRunsText={filtered ? 'No runs match these filters' : noRunsText} />
     </div>
   )
 }
 
 function RunsPages({ filter, showJob, noRunsText }: { filter: RunsFilter; showJob: boolean; noRunsText: string }) {
-  // Each "Load older" adds the `before` of the last page loaded.
-  const [cursors, setCursors] = useState<number[]>([])
-  const pages = useQueries({
-    queries: [undefined, ...cursors].map((before) => {
-      const pageFilter: RunsFilter = before === undefined ? filter : { ...filter, before }
-      return {
-        queryKey: runsListKey(pageFilter),
-        queryFn: () => api<RunsResponse>('GET', runsPath(pageFilter)),
-      }
-    }),
+  // One accumulating query per filter: a new filter starts again at the newest page, and a refetch
+  // re-reads every loaded page in order from fresh cursors, so no run is lost or repeated between pages.
+  const query = useInfiniteQuery<RunsResponse, ApiError, { pages: RunsResponse[] }, unknown[], number | undefined>({
+    queryKey: [...runsKey, 'list', filter, 'pages'],
+    initialPageParam: undefined,
+    queryFn: ({ pageParam }) => api<RunsResponse>('GET', runsPath(pageParam === undefined ? filter : { ...filter, before: pageParam })),
+    getNextPageParam: (last) => last.next_before ?? undefined,
+    placeholderData: keepPreviousData,
   })
 
-  const failed = pages.find((page) => page.isError)
-  if (failed) {
-    return <ErrorState error={failed.error as ApiError} onRetry={() => void failed.refetch()} />
+  if (query.isError && !query.data) {
+    return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
   }
-  const first = pages[0]
-  if (!first || first.isPending) return <Loading />
+  if (!query.data) return <Loading />
 
-  const runs = pages.flatMap((page) => page.data?.runs ?? [])
-  const last = pages[pages.length - 1]
-  const nextBefore = last?.data?.next_before ?? null
-
+  const runs = query.data.pages.flatMap((page) => page.runs)
   return (
     <Card flush>
       {runs.length === 0 ? (
@@ -86,10 +92,16 @@ function RunsPages({ filter, showJob, noRunsText }: { filter: RunsFilter; showJo
       ) : (
         <>
           <RunsTable runs={runs} showJob={showJob} />
-          {last?.isPending && <Loading />}
-          {nextBefore !== null && (
+          {query.isFetchNextPageError && (
+            <div className="runs-more" role="alert">
+              <span>{`Older runs could not be loaded. ${query.error.message}`}</span>
+            </div>
+          )}
+          {query.hasNextPage && (
             <div className="runs-more">
-              <Button onClick={() => setCursors([...cursors, nextBefore])}>Load older</Button>
+              <Button disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
+                Load older
+              </Button>
             </div>
           )}
         </>

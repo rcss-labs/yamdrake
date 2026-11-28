@@ -1234,7 +1234,7 @@ export const handlers: HttpHandler[] = [
       .filter(
         (run) =>
           query === '' ||
-          [String(run.id), run.job_id, run.job_name ?? '', run.environment, run.requested_by_name ?? ''].some((part) => part.toLowerCase().includes(query)),
+          [String(run.id), run.job_id, run.label, run.environment, run.manifest_id].some((part) => part.toLowerCase().includes(query)),
       )
       .sort((a, b) => b.id - a.id)
       .slice(0, limit)

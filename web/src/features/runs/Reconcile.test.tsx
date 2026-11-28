@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Me, RunDetail } from '../../api/types'
 import { renderApp } from '../../test/render'
 import { runIds } from '../../test/fixtures'
-import { failNext, mockState, requests, viewerMe } from '../../test/server'
+import { delayNext, failNext, mockState, requests, viewerMe } from '../../test/server'
 import { Reconcile } from './Reconcile'
 
 function unknownRun(): RunDetail {
@@ -64,6 +64,17 @@ describe('Reconcile', () => {
     await waitFor(() => expect(requests.at(-1)?.path).toBe('/api/v1/runs/106/legs/10606/reconcile'))
     expect(requests.at(-1)?.body).toEqual({ outcome })
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('disables the Mark buttons of a leg while its request is pending', async () => {
+    delayNext('POST', '/api/v1/runs/106/legs/10606/reconcile', 300)
+    await renderPanel(unknownRun(), undefined)
+    await userEvent.click(within(rowOf('billing')).getByRole('button', { name: 'Mark succeeded' }))
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Mark succeeded' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(within(rowOf('billing')).getByRole('button', { name: 'Mark succeeded' })).toBeDisabled()
+    expect(within(rowOf('billing')).getByRole('button', { name: 'Mark failed' })).toBeDisabled()
+    await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/reconcile'))).toHaveLength(1))
   })
 
   it('posts nothing when the confirmation is dismissed', async () => {

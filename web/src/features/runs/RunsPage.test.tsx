@@ -55,28 +55,28 @@ describe('the Runs page', () => {
     expect(view.location().search).toBe('?environment=preprod-01')
   })
 
-  it('searches by job, service or person and keeps the search in the URL', async () => {
+  it('searches by what the server matches (job, label, environment, manifest or run id) and keeps the search in the URL', async () => {
     const view = renderApp(<RunsPage />, { route: '/runs' })
     await screen.findByRole('link', { name: '#109' })
-    await userEvent.type(screen.getByRole('searchbox', { name: 'Job, service or person' }), 'Omer')
-    await waitFor(() => expect(runLinks()).toEqual(['#107', '#104', '#102']))
-    expect(lastSearch().get('q')).toBe('Omer')
-    expect(view.location().search).toBe('?q=Omer')
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Job, label, environment, manifest or run id' }), 'portal')
+    await waitFor(() => expect(runLinks()).toEqual(['#106', '#105', '#104', '#101']))
+    expect(lastSearch().get('q')).toBe('portal')
+    expect(view.location().search).toBe('?q=portal')
   })
 
   it('starts from the filters in the address', async () => {
-    renderApp(<RunsPage />, { route: '/runs?status=succeeded&environment=hetzner-01&q=dana' })
+    renderApp(<RunsPage />, { route: '/runs?status=succeeded&environment=hetzner-01&q=deploy' })
     await screen.findByRole('link', { name: '#109' })
     expect(runLinks()).toEqual(['#109', '#108'])
     expect(screen.getByRole('button', { name: 'Succeeded' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('combobox', { name: 'Filter by environment' })).toHaveValue('hetzner-01')
-    expect(screen.getByRole('searchbox', { name: 'Job, service or person' })).toHaveValue('dana')
+    expect(screen.getByRole('searchbox', { name: 'Job, label, environment, manifest or run id' })).toHaveValue('deploy')
   })
 
   it('says so when no run matches the filters', async () => {
     renderApp(<RunsPage />, { route: '/runs' })
     await screen.findByRole('link', { name: '#109' })
-    await userEvent.type(screen.getByRole('searchbox', { name: 'Job, service or person' }), 'nobody-here')
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Job, label, environment, manifest or run id' }), 'nobody-here')
     expect(await screen.findByText('No runs match these filters')).toBeInTheDocument()
   })
 
@@ -144,11 +144,11 @@ describe('the Runs page', () => {
   it('waits for a pause in typing before searching, while the address follows every key', async () => {
     const view = renderApp(<RunsPage />, { route: '/runs' })
     await screen.findByRole('link', { name: '#109' })
-    await userEvent.type(screen.getByRole('searchbox', { name: 'Job, service or person' }), 'Omer')
-    expect(view.location().search).toBe('?q=Omer')
-    await waitFor(() => expect(runLinks()).toEqual(['#107', '#104', '#102']))
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Job, label, environment, manifest or run id' }), 'portal')
+    expect(view.location().search).toBe('?q=portal')
+    await waitFor(() => expect(runLinks()).toEqual(['#106', '#105', '#104', '#101']))
     const asked = listRequests().map((request) => new URLSearchParams(request.search).get('q'))
-    expect(asked.filter((q) => q !== null)).toEqual(['Omer'])
+    expect(asked.filter((q) => q !== null)).toEqual(['portal'])
   })
 
   it('shows an error with a retry when the list cannot be loaded', async () => {

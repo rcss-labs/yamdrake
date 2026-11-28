@@ -85,10 +85,10 @@ export function Reconcile({ run, onShowLog }: { run: RunDetail; onShowLog(scope:
               <Button size="sm" loading={busyLeg === leg.id && checkAgain.isPending} onClick={() => check(leg)}>
                 Check again
               </Button>
-              <Button size="sm" onClick={() => setPending({ kind: 'mark', leg, outcome: 'succeeded' })}>
+              <Button size="sm" disabled={busyLeg === leg.id} onClick={() => setPending({ kind: 'mark', leg, outcome: 'succeeded' })}>
                 Mark succeeded
               </Button>
-              <Button size="sm" onClick={() => setPending({ kind: 'mark', leg, outcome: 'failed' })}>
+              <Button size="sm" disabled={busyLeg === leg.id} onClick={() => setPending({ kind: 'mark', leg, outcome: 'failed' })}>
                 Mark failed
               </Button>
             </>

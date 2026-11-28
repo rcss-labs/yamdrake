@@ -25,7 +25,7 @@ function useDebounced(value: string): string {
 export interface RunsListProps {
   /** Only this job's runs (its source id); leave out for every job. */
   job?: number
-  /** Offer the search box (job, service or person). */
+  /** Offer the search box (job, label, environment, manifest or run id). */
   search?: boolean
   /** Shown when there is no run at all, with no filter set. */
   noRunsText: string
@@ -49,7 +49,7 @@ export function RunsList({ job, search = false, noRunsText }: RunsListProps) {
   return (
     <div className="runs-list">
       <div className="runs-toolbar">
-        {search && <SearchBox label="Job, service or person" value={filters.q} onChange={filters.setQ} />}
+        {search && <SearchBox label="Job, label, environment, manifest or run id" value={filters.q} onChange={filters.setQ} />}
         <Segmented label="Filter by status" options={statusOptions} value={filters.status} onChange={filters.setStatus} />
         <Select aria-label="Filter by environment" value={filters.environment} onChange={(event) => filters.setEnvironment(event.target.value)}>
           <option value="">All environments</option>

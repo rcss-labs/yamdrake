@@ -65,6 +65,7 @@ CREATE TABLE legs (
          'cancelled', 'unknown')),
     attempt          int         NOT NULL DEFAULT 0,
     generation       bigint      NOT NULL DEFAULT 0,
+    lease_expiries   integer     NOT NULL DEFAULT 0,
     runner_id        text        NOT NULL DEFAULT '',
     lease_until      timestamptz,
     cancel_requested boolean     NOT NULL DEFAULT false,

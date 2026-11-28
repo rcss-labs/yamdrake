@@ -76,3 +76,6 @@ func dbTimePtr(t *time.Time) *time.Time {
 	n := dbTime(*t)
 	return &n
 }
+
+// MapError is mapError for packages that write their own SQL against these tables.
+func MapError(err error) error { return mapError(err) }

@@ -305,10 +305,6 @@ func (r *revalidation) image(ctx context.Context, s manifest.Service, region *st
 		r.unchecked(s.Name, "the repository in the manifest is not usable")
 		return
 	}
-	if ref.Account != r.run.Run.AWSAccount {
-		r.unchecked(s.Name, fmt.Sprintf("the repository is in account %s, not the environment's account %s", ref.Account, r.run.Run.AWSAccount))
-		return
-	}
 	if *region == "" {
 		*region = ref.Region
 	}

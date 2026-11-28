@@ -681,6 +681,24 @@ func TestResolveFailsWhenTheDeployCredentialSignsInToAnotherAccount(t *testing.T
 	}
 }
 
+func TestRepositoryInAnotherAccountIsAllowed(t *testing.T) {
+	h := newHarness()
+	inv := inventory()
+	svc := inv.Services["web"]
+	env := svc.Environments["prod-1"]
+	env.ECRRepository = "999999999999.dkr.ecr.eu-west-1.amazonaws.com/web"
+	svc.Environments["prod-1"] = env
+	inv.Services["web"] = svc
+	h.deps.Inventory = func(context.Context, int64) (spec.Inventory, error) { return inv, nil }
+	out, m := h.run(t, claimed(t, "prod", defaultSelection()))
+	if out.State != "succeeded" {
+		t.Fatalf("State = %q (%s: %s), want succeeded", out.State, out.FailureShort, out.FailureDetail)
+	}
+	if c, _ := check(m, "web", "image exists"); c.Status != "passed" {
+		t.Errorf("image check = %+v, want passed", c)
+	}
+}
+
 func TestAWSCallsStopAtTheirDeadline(t *testing.T) {
 	old := resolve.CallTimeout
 	resolve.CallTimeout = 50 * time.Millisecond

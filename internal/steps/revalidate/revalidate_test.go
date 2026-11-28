@@ -369,6 +369,16 @@ func TestRevalidateRefusesAServiceInAnotherAccount(t *testing.T) {
 	h.noLeaks(t, out)
 }
 
+func TestRepositoryInAnotherAccountIsAllowed(t *testing.T) {
+	h := newHarness()
+	h.manifest.Services[0].ECRRepository = "999999999999.dkr.ecr.eu-west-1.amazonaws.com/web"
+	h.manifest.ID = manifest.Identity(h.manifest)
+	out := h.run(t)
+	if out.State != "succeeded" {
+		t.Fatalf("outcome = %q %q: %s\nlog:\n%s", out.State, out.FailureShort, out.FailureDetail, h.env.text())
+	}
+}
+
 func TestRevalidateRetriesThrottlingThenSucceeds(t *testing.T) {
 	h := newHarness()
 	throttled := &smithy.GenericAPIError{Code: "ThrottlingException", Message: secretAWSText}

@@ -529,10 +529,6 @@ func (s *serviceRun) checkImage(ctx context.Context) {
 		s.add(&s.core, checkImageExists, "failed", err.Error())
 		return
 	}
-	if ref.Account != s.r.run.AWSAccount {
-		s.add(&s.core, checkImageExists, "failed", fmt.Sprintf("the repository is in account %s, not the environment's account %s", ref.Account, s.r.run.AWSAccount))
-		return
-	}
 	if s.region == "" {
 		s.region = ref.Region // the service ARN was unusable; S3 follows the repository
 	}

@@ -23,7 +23,9 @@ import (
 
 type sseEvent struct {
 	Name, ID, Data string
-	Comment        bool
+	// KeepAlive is set for the server's `event: ping` frames. A comment line is not one: browsers never show
+	// comments to a page, so the keep-alive must be a named event.
+	KeepAlive bool
 }
 
 // sseStream reads a Server-Sent Events response in the background.
@@ -60,11 +62,12 @@ func (f *runFixture) openStream(server *httptest.Server, token, path string, hea
 			switch {
 			case line == "":
 				if cur.Name != "" || cur.Data != "" {
+					cur.KeepAlive = cur.Name == "ping"
 					s.events <- cur
 				}
 				cur = sseEvent{}
 			case strings.HasPrefix(line, ":"):
-				s.events <- sseEvent{Comment: true, Data: strings.TrimSpace(line[1:])}
+				s.events <- sseEvent{Name: "comment", Data: strings.TrimSpace(line[1:])}
 			case strings.HasPrefix(line, "event: "):
 				cur.Name = line[len("event: "):]
 			case strings.HasPrefix(line, "id: "):
@@ -102,7 +105,7 @@ func (s *sseStream) nextNamed(t *testing.T, timeout time.Duration) sseEvent {
 		if !ok {
 			t.Fatalf("stream ended or stalled while waiting for an event")
 		}
-		if !e.Comment {
+		if !e.KeepAlive {
 			return e
 		}
 	}
@@ -178,17 +181,20 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 			seen[fmt.Sprintf("%d/%d", l.LegID, l.Seq)] = true
 		}
 	}
-	// Idle: a keep-alive comment arrives, no event does.
-	gotComment := false
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !gotComment; {
+	// Idle: only `event: ping` with an empty object arrives (a comment would never reach a browser page).
+	gotPing := false
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !gotPing; {
 		e, ok := stream.next(200 * time.Millisecond)
-		if ok && !e.Comment {
-			t.Fatalf("event %q while idle, want only keep-alive comments", e.Name)
+		if ok && !e.KeepAlive {
+			t.Fatalf("event %q while idle, want only ping events", e.Name)
 		}
-		gotComment = ok && e.Comment
+		if ok && e.Data != "{}" {
+			t.Fatalf("ping data = %q, want {}", e.Data)
+		}
+		gotPing = ok && e.KeepAlive
 	}
-	if !gotComment {
-		t.Error("no keep-alive comment on an idle stream")
+	if !gotPing {
+		t.Error("no ping event on an idle stream")
 	}
 
 	f.addLines(id, store.LogLine{LegID: leg, Seq: 3, Text: "last line"})
@@ -200,7 +206,7 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 		if !ok {
 			break
 		}
-		if e.Comment {
+		if e.KeepAlive {
 			continue
 		}
 		names = append(names, e.Name)
@@ -286,7 +292,7 @@ func TestEventsResumeWithLastEventIDHasNoGapAndNoDuplicate(t *testing.T) {
 			break
 		}
 		switch {
-		case e.Comment:
+		case e.KeepAlive:
 		case e.Name == "log":
 			collect(e)
 		case e.Name == "end":
@@ -334,7 +340,7 @@ func TestEventsWithoutViewLogsCarryNoLogEvents(t *testing.T) {
 			if !ok {
 				break
 			}
-			if !e.Comment {
+			if !e.KeepAlive {
 				names = append(names, e.Name)
 				if strings.Contains(e.Data, "secret-looking detail") {
 					t.Errorf("%s: an event carries log text", name)
@@ -353,7 +359,7 @@ func TestEventsWithoutViewLogsCarryNoLogEvents(t *testing.T) {
 		if !ok {
 			break
 		}
-		if !e.Comment {
+		if !e.KeepAlive {
 			names = append(names, e.Name)
 		}
 	}

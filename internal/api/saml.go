@@ -426,30 +426,60 @@ func (s *server) samlReject(w http.ResponseWriter, r *http.Request, reason strin
 	writeError(w, http.StatusBadRequest, codeInvalid, "the sign-in response was not accepted")
 }
 
-// responseDestination returns the Destination attribute of the response's root
-// element, "" when it has none.
-func responseDestination(encoded string) (string, bool) {
+// responseShape reads the root element of the base64 response: its Destination
+// attribute ("" when it has none) and whether it has a direct child Signature
+// element (which says nothing about whether the signature is valid).
+func responseShape(encoded string) (destination string, hasSignature, ok bool) {
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
-	// Reads one start tag; encoding/xml does not expand external entities, and
-	// the whole document is validated later by the SAML library.
+	// encoding/xml does not expand external entities, and the whole document is
+	// validated later by the SAML library.
 	decoder := xml.NewDecoder(bytes.NewReader(raw)) //nolint:gosec // see above
+	depth := 0
 	for {
 		token, err := decoder.Token()
 		if err != nil {
-			return "", false
+			return "", false, false
 		}
-		if start, ok := token.(xml.StartElement); ok {
-			for _, attr := range start.Attr {
-				if attr.Name.Space == "" && attr.Name.Local == "Destination" {
-					return attr.Value, true
+		switch t := token.(type) {
+		case xml.StartElement:
+			depth++
+			if depth == 1 {
+				for _, attr := range t.Attr {
+					if attr.Name.Space == "" && attr.Name.Local == "Destination" {
+						destination = attr.Value
+					}
 				}
 			}
-			return "", true
+			if depth == 2 && t.Name.Space == "http://www.w3.org/2000/09/xmldsig#" && t.Name.Local == "Signature" {
+				hasSignature = true
+			}
+		case xml.EndElement:
+			depth--
+			if depth == 0 {
+				return destination, hasSignature, true
+			}
 		}
 	}
+}
+
+// signatureValidatedBy says whether a refusal can only have happened after the
+// identity provider's signature was verified, so that it is worth an audit
+// entry. wrong_audience and replay are raised only for an assertion whose
+// signature (or whose response's signature) already checked out. The others are
+// checked against the response's own fields, which are as good as unsigned
+// input unless the response carries a signature: when it does and the library
+// got past it (a bad one is bad_signature) they are authentic too.
+func signatureValidatedBy(reason string, responseHasSignature bool) bool {
+	switch reason {
+	case "wrong_audience", "replay":
+		return true
+	case "expired", "not_yet_valid", "wrong_issuer", "request_mismatch", "idp_refused":
+		return responseHasSignature
+	}
+	return false
 }
 
 // samlACS is the assertion consumer: the identity provider's browser post.
@@ -503,15 +533,30 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		s.samlRejectUnbound(w, "relay_state")
 		return
 	}
+	// The relay state is good for one post: the first that shows it claims it,
+	// so one cookie from an anonymous /start cannot be used for a stream of
+	// posts. A claim that cannot be made (Valkey down) is a 503, not a refusal.
+	nonceSum := sha256.Sum256([]byte(relayState))
+	claimKey := s.KeyPrefix + "saml-relay:" + hex.EncodeToString(nonceSum[:])
+	switch err := s.Valkey.Do(ctx, s.Valkey.B().Set().Key(claimKey).Value("1").Nx().Px(samlRelayTTL+time.Minute).Build()).Error(); {
+	case isNil(err):
+		s.samlRejectUnbound(w, "relay_reused")
+		return
+	case err != nil:
+		s.valkeyFailed(w, "claim saml relay state", err)
+		return
+	}
 
 	// Responses are always for our ACS address, signed or not (the library
 	// allows an unsigned response to omit it).
-	if destination, ok := responseDestination(r.PostForm.Get("SAMLResponse")); !ok || destination != sp.AcsURL.String() {
+	// Nothing has authenticated the response yet, so a refusal here is only logged.
+	responseDestination, responseSigned, shaped := responseShape(r.PostForm.Get("SAMLResponse"))
+	if !shaped || responseDestination != sp.AcsURL.String() {
 		reason := "wrong_destination"
-		if !ok {
+		if !shaped {
 			reason = "malformed"
 		}
-		s.samlReject(w, r, reason, nil)
+		s.samlRejectUnbound(w, reason)
 		return
 	}
 
@@ -523,7 +568,12 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.samlReject(w, r, rejectReason(err), nil)
+		reason := rejectReason(err)
+		if signatureValidatedBy(reason, responseSigned) {
+			s.samlReject(w, r, reason, nil)
+		} else {
+			s.samlRejectUnbound(w, reason)
+		}
 		return
 	}
 

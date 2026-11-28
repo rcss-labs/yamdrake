@@ -90,29 +90,76 @@ func TestTokenCannotManageTokens(t *testing.T) {
 	if got := errorMessage(decodeObject(t, rec)); got != message {
 		t.Errorf("message = %q, want %q", got, message)
 	}
-	rec = h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(own.ID), bearer: bearer})
+	// A token may give up its own power, but not touch another token of its owner.
+	_, sibling := h.newToken(user.ID)
+	rec = h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(sibling.ID), bearer: bearer})
 	h.expect(rec, http.StatusForbidden, "forbidden")
-	if got := errorMessage(decodeObject(t, rec)); got != message {
-		t.Errorf("message = %q, want %q", got, message)
-	}
 	// The bypass to try: a token request that also carries a valid session
 	// cookie and origin. The bearer header decides who the caller is, so it is
 	// still a token.
 	both := sent{method: "POST", path: "/api/v1/tokens", bearer: bearer, sessionID: sessionID, origin: publicURL, body: map[string]any{"name": "sneaky"}}
 	h.expect(h.send(both), http.StatusForbidden, "forbidden")
-	both = sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(own.ID), bearer: bearer, sessionID: sessionID, origin: publicURL}
+	both = sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(sibling.ID), bearer: bearer, sessionID: sessionID, origin: publicURL}
 	h.expect(h.send(both), http.StatusForbidden, "forbidden")
 	// Confirming a CLI sign-in is refused to a token alike.
 	h.expect(h.send(sent{method: "POST", path: "/api/v1/cli/login/confirm", bearer: bearer, sessionID: sessionID, origin: publicURL,
 		body: map[string]any{"user_code": "ABCDEFGH"}}), http.StatusForbidden, "forbidden")
 
 	tokens, err := store.ListTokens(context.Background(), h.pool, user.ID)
-	if err != nil || len(tokens) != 1 || tokens[0].RevokedAt != nil {
-		t.Fatalf("tokens after the refused requests = %v, %v; want only the original, not revoked", tokens, err)
+	if err != nil || len(tokens) != 2 || tokens[0].RevokedAt != nil || tokens[1].RevokedAt != nil {
+		t.Fatalf("tokens after the refused requests = %v, %v; want the two originals, not revoked", tokens, err)
 	}
 	// A session still can.
 	h.expect(h.send(sent{method: "POST", path: "/api/v1/tokens", sessionID: sessionID, origin: publicURL, body: map[string]any{"name": "from the browser"}}), http.StatusCreated, "")
-	h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(own.ID), sessionID: sessionID, origin: publicURL}), http.StatusNoContent, "")
+	h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(sibling.ID), sessionID: sessionID, origin: publicURL}), http.StatusNoContent, "")
+	_ = own
+}
+
+// A token can give its own power up: DELETE of itself, or logout.
+func TestTokenCanRevokeItselfAndNothingElse(t *testing.T) {
+	h := newHarness(t)
+	user := h.newUser("selfrevoke")
+	first, firstTok := h.newToken(user.ID)
+	second, secondTok := h.newToken(user.ID)
+	stranger := h.newUser("stranger")
+	_, strangerTok := h.newToken(stranger.ID)
+	me := func(token string) int { return h.send(sent{method: "GET", path: "/api/v1/me", bearer: token}).Code }
+
+	// Not another token of the same user, not another user's, not an unknown id: all 403.
+	for name, id := range map[string]string{"sibling": itoa(secondTok.ID), "another user's": itoa(strangerTok.ID), "unknown": "999999"} {
+		if code := h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + id, bearer: first}).Code; code != http.StatusForbidden {
+			t.Errorf("a token revoking a %s token: %d, want 403", name, code)
+		}
+	}
+	if me(first) != http.StatusOK || me(second) != http.StatusOK {
+		t.Fatal("a refused revocation changed a token")
+	}
+	h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(firstTok.ID), bearer: first}), http.StatusNoContent, "")
+	if me(first) != http.StatusUnauthorized || me(second) != http.StatusOK {
+		t.Errorf("after DELETE of itself: first %d (want 401), second %d (want 200)", me(first), me(second))
+	}
+
+	// Logout with a token revokes that token and only that token, whatever else the request carries.
+	third, _ := h.newToken(user.ID)
+	sessionID := h.newSession(user.ID)
+	rec := h.send(sent{method: "POST", path: "/api/v1/auth/logout", bearer: third, sessionID: sessionID, origin: publicURL})
+	h.expect(rec, http.StatusNoContent, "")
+	if me(third) != http.StatusUnauthorized {
+		t.Error("the token that logged out still works")
+	}
+	if me(second) != http.StatusOK {
+		t.Error("logging out with one token revoked another")
+	}
+	if h.send(sent{method: "GET", path: "/api/v1/me", sessionID: sessionID}).Code != http.StatusOK {
+		t.Error("logging out with a token ended the browser session")
+	}
+	var audited bool
+	for _, e := range h.auditEntries() {
+		audited = audited || e.Action == "token.revoke"
+	}
+	if !audited {
+		t.Errorf("revoking a token by logout is not audited: %v", h.auditActions())
+	}
 }
 
 // deviceHarness is a harness whose poll interval is short enough to wait out.
@@ -349,5 +396,39 @@ func TestDeviceConfirmAttemptsAreLimitedPerSession(t *testing.T) {
 		if secs, err := h.valkey.Do(context.Background(), h.valkey.B().Ttl().Key(key).Build()).AsInt64(); err != nil || secs < 590 || secs > 600 {
 			t.Errorf("TTL of %s = %d, %v; want about 600", key, secs, err)
 		}
+	}
+}
+
+// A device sign-in confirmed before the user was disabled must not yield a
+// token after the user is enabled again.
+func TestDisablingDropsDeviceSignInsConfirmedByTheUser(t *testing.T) {
+	h := newDeviceHarness(t)
+	user := h.newUser("devicedisabled")
+	bystander := h.newUser("devicebystander")
+	userSession, bystanderSession := h.newSession(user.ID), h.newSession(bystander.ID)
+
+	confirmed := h.startDeviceLogin()
+	h.expect(h.confirmDevice(userSession, confirmed["user_code"].(string)), http.StatusNoContent, "")
+	pending := h.startDeviceLogin() // nobody confirmed it yet
+	others := h.startDeviceLogin()  // confirmed by someone else
+	h.expect(h.confirmDevice(bystanderSession, others["user_code"].(string)), http.StatusNoContent, "")
+
+	path := "/api/v1/admin/users/" + itoa(user.ID)
+	h.expect(h.asAdmin("PATCH", path, map[string]any{"disabled": true}), http.StatusOK, "")
+	h.expect(h.asAdmin("PATCH", path, map[string]any{"disabled": false}), http.StatusOK, "")
+	time.Sleep(350 * time.Millisecond)
+
+	h.expect(h.pollDevice(confirmed["device_code"].(string)), http.StatusBadRequest, "expired_token")
+	// Other people's sign-ins are not touched.
+	rec := h.pollDevice(others["device_code"].(string))
+	h.expect(rec, http.StatusOK, "")
+	if token, _ := decodeObject(t, rec)["token"].(string); !strings.HasPrefix(token, "ymd_") {
+		t.Error("another user's confirmed sign-in was dropped")
+	}
+	// A sign-in nobody has confirmed is not attributed to anyone and stays pending.
+	rec = h.pollDevice(pending["device_code"].(string))
+	h.expect(rec, http.StatusOK, "")
+	if decodeObject(t, rec)["status"] != "pending" {
+		t.Error("a pending sign-in was dropped")
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/audit"
@@ -334,6 +335,20 @@ func truncate(s string, n int) string {
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	principal, _ := PrincipalFrom(r.Context())
+	if principal.Via == viaToken {
+		// A token logs out by revoking itself, and only itself.
+		err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+			err := store.RevokeToken(ctx, tx, principal.TokenID, principal.UserID, s.Now())
+			return audit.Event{Action: "token.revoke", TargetType: "token", TargetID: idString(principal.TokenID),
+				Detail: map[string]any{"via": "logout"}}, err
+		})
+		if err != nil {
+			s.writeAccessError(w, r, err, "token")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if principal.Via == viaSession {
 		if id, ok := session.IDFromRequest(r); ok {
 			ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)

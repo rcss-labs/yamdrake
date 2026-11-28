@@ -5,6 +5,8 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -159,4 +161,76 @@ func TestDisablingTogetherWithGroupChangeRevokesTokensToo(t *testing.T) {
 	otherToken, _ := h.newToken(other.ID)
 	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(other.ID), map[string]any{"disabled": false}), http.StatusOK, "")
 	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: otherToken}), http.StatusOK, "")
+}
+
+func (h *harness) newServiceUser(label string) store.User {
+	h.t.Helper()
+	hash, err := auth.HashPassword(testPassword)
+	if err != nil {
+		h.t.Fatalf("HashPassword: %v", err)
+	}
+	u, err := store.CreateLocalUser(context.Background(), h.pool, uniqueEmail(h.t, label), label, "service", hash)
+	if err != nil {
+		h.t.Fatalf("CreateLocalUser: %v", err)
+	}
+	return u
+}
+
+// A service account has no browser, so an administrator mints its token.
+func TestAdminMintsATokenForAServiceAccount(t *testing.T) {
+	h := newHarness(t)
+	svc := h.newServiceUser("bot")
+	adminSession := h.newSession(h.admin.ID)
+	path := "/api/v1/admin/users/" + itoa(svc.ID) + "/tokens"
+	mint := func(sessionID string, id int64, body any) *httptest.ResponseRecorder {
+		return h.send(sent{method: "POST", path: "/api/v1/admin/users/" + itoa(id) + "/tokens", sessionID: sessionID, origin: publicURL, body: body})
+	}
+
+	rec := h.send(sent{method: "POST", path: path, sessionID: adminSession, origin: publicURL, body: map[string]any{"name": "ci", "ttl_days": 30}})
+	h.expect(rec, http.StatusCreated, "")
+	created := decodeObject(t, rec)
+	plaintext, _ := created["plaintext"].(string)
+	if !strings.HasPrefix(plaintext, "ymd_") || created["name"] != "ci" || created["expires_at"] == nil || created["id"] == nil {
+		t.Fatalf("response = %v, want the shape of POST /tokens", created)
+	}
+	if me := decodeObject(t, h.send(sent{method: "GET", path: "/api/v1/me", bearer: plaintext})); me["email"] != svc.Email {
+		t.Errorf("the token belongs to %v, want the service account", me["email"])
+	}
+	var entry *store.AuditEntry
+	for _, e := range h.auditEntries() {
+		if e.Action == "token.create" && strings.Contains(string(e.Detail), `"ci"`) {
+			entry = &e
+			break
+		}
+	}
+	if entry == nil || entry.Actor != h.admin.Email || entry.TargetID != itoa(int64(created["id"].(float64))) {
+		t.Fatalf("audit entry = %+v, want token.create by the admin naming the token", entry)
+	}
+	if strings.Contains(string(entry.Detail), plaintext) || strings.Contains(string(entry.Detail), plaintext[4:]) {
+		t.Error("the audit entry holds the token value")
+	}
+
+	// Only service accounts: a local user, a SAML user, an unknown one.
+	samlUser, _ := store.UpsertSAMLUser(context.Background(), h.pool, uniqueEmail(t, "samlsvc"), "S", time.Now())
+	for name, id := range map[string]int64{"local": h.newUser("localsvc").ID, "saml": samlUser.ID, "an administrator": h.admin.ID} {
+		rec := mint(adminSession, id, map[string]any{"name": "x"})
+		if rec.Code != http.StatusUnprocessableEntity || errorCodeOf(rec) != "invalid" {
+			t.Errorf("%s user: %s, want 422 invalid", name, failure(rec))
+		}
+	}
+	h.expect(mint(adminSession, svc.ID+999, map[string]any{"name": "x"}), http.StatusNotFound, "not_found")
+	h.expect(mint(adminSession, svc.ID, map[string]any{"name": ""}), http.StatusBadRequest, "invalid")
+	h.expect(mint(adminSession, svc.ID, map[string]any{"name": "x", "ttl_days": 9999}), http.StatusBadRequest, "invalid")
+
+	// Admin only: manage_access is not enough, and neither is an admin's token
+	// (a token that could mint tokens could renew admin power for ever).
+	manager := h.newUser("mgr")
+	h.grant(manager.ID, "manage_access")
+	h.expect(mint(h.newSession(manager.ID), svc.ID, map[string]any{"name": "x"}), http.StatusForbidden, "forbidden")
+	h.expect(h.send(sent{method: "POST", path: path, bearer: h.adminToken, body: map[string]any{"name": "x"}}), http.StatusForbidden, "forbidden")
+	h.expect(h.send(sent{method: "POST", path: path, body: map[string]any{"name": "x"}}), http.StatusUnauthorized, "unauthorized")
+	tokens, _ := store.ListTokens(context.Background(), h.pool, svc.ID)
+	if len(tokens) != 1 {
+		t.Errorf("the service account has %d tokens, want only the one minted", len(tokens))
+	}
 }

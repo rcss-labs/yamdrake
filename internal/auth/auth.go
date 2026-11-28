@@ -48,6 +48,8 @@ type Principal struct {
 	Admin  bool
 	Grants []store.Grant
 	Via    string // "session" or "token"
+	// TokenID is the token that made the request (zero for a session).
+	TokenID int64
 	// Source is where the account comes from: "saml", "local" or "service".
 	Source string
 	// LastSignInAt is the user's last SSO sign-in (nil when they never signed in that way).

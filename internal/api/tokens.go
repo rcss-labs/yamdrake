@@ -108,6 +108,76 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, body)
 }
 
+// createServiceToken mints a token for a service account, which has no browser
+// to do it from. Global admins only, and only from a browser session (a token
+// that could mint tokens could renew admin power for ever); the audit entry
+// names the token and never its value. The plaintext is in this response only.
+func (s *server) createServiceToken(w http.ResponseWriter, r *http.Request) {
+	principal, _ := PrincipalFrom(r.Context())
+	if principal.Via != viaSession {
+		writeError(w, http.StatusForbidden, codeForbidden, messageTokensNeedSession)
+		return
+	}
+	if !principal.Admin {
+		s.writeAccessError(w, r, errAdminRequired, "token")
+		return
+	}
+	id, ok := pathID(r)
+	if !ok {
+		notFound(w, "user")
+		return
+	}
+	var req struct {
+		Name          string `json:"name"`
+		ExpiresInDays int    `json:"ttl_days"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" || len(name) > maxTokenNameLength {
+		invalid(w, fmt.Sprintf("name is required and at most %d characters", maxTokenNameLength))
+		return
+	}
+	if req.ExpiresInDays < 0 || req.ExpiresInDays > maxTokenDays {
+		invalid(w, fmt.Sprintf("ttl_days must be between 0 (the default, 90) and %d", maxTokenDays))
+		return
+	}
+	var plaintext string
+	var created store.Token
+	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+		user, err := store.UserByID(ctx, tx, id)
+		if err != nil {
+			return audit.Event{}, err
+		}
+		if user.Source != "service" {
+			return audit.Event{}, fmt.Errorf("%w: tokens are minted here only for service accounts", store.ErrInvalid)
+		}
+		plaintext, created, err = auth.NewToken(ctx, tx, id, name, time.Duration(req.ExpiresInDays)*24*time.Hour, s.Now())
+		if err != nil {
+			return audit.Event{}, err
+		}
+		detail := map[string]any{"name": name, "user_id": id, "email": user.Email}
+		if created.ExpiresAt != nil {
+			detail["expires_at"] = created.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		return audit.Event{Action: "token.create", TargetType: "token", TargetID: idString(created.ID), Detail: detail}, nil
+	})
+	if errors.Is(err, store.ErrInvalid) {
+		writeError(w, http.StatusUnprocessableEntity, codeInvalid, "tokens are minted here only for service accounts")
+		return
+	}
+	if err != nil {
+		s.writeAccessError(w, r, err, "user")
+		return
+	}
+	body := struct {
+		tokenResponse
+		Plaintext string `json:"plaintext"`
+	}{tokenView(created), plaintext}
+	writeJSON(w, http.StatusCreated, body)
+}
+
 // issueToken creates a token for principal and its audit entry in one
 // transaction, attributed to principal (who need not be the request's caller:
 // the device sign-in issues it for the user who confirmed).
@@ -138,18 +208,20 @@ func (s *server) issueToken(r *http.Request, principal auth.Principal, name stri
 	return plaintext, created, nil
 }
 
-// revokeToken revokes one of the caller's own tokens (from a browser session
-// only, like creating one). A token of someone else is a 404, the same as an
+// revokeToken revokes one of the caller's own tokens (from a browser session),
+// or the token that makes the request. A token of someone else is a 404, the same as an
 // unknown id, so its existence is not revealed.
 func (s *server) revokeToken(w http.ResponseWriter, r *http.Request) {
 	principal, _ := PrincipalFrom(r.Context())
-	if principal.Via != viaSession {
-		writeError(w, http.StatusForbidden, codeForbidden, messageTokensNeedSession)
+	id, ok := pathID(r)
+	if !ok && principal.Via == viaSession {
+		notFound(w, "token")
 		return
 	}
-	id, ok := pathID(r)
-	if !ok {
-		notFound(w, "token")
+	// A token may give up its own power and nothing else; any other id (a
+	// sibling, a stranger's, an unknown one) is refused alike.
+	if principal.Via != viaSession && (!ok || id != principal.TokenID) {
+		writeError(w, http.StatusForbidden, codeForbidden, messageTokenRevokesItself)
 		return
 	}
 	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {

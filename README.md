@@ -123,7 +123,8 @@ These routes need no sign-in and should be rate-limited at the load balancer or 
 
 Tokens look like `ymd_...`. They are shown once and stored only as a SHA-256 hash. They expire (90 days by default, at most 365 days) and can be revoked. A token carries its owner's permissions. Send it as `Authorization: Bearer <token>`.
 
-- `GET /api/v1/tokens` and `POST /api/v1/tokens` (body `{"name": ..., "ttl_days": ...}`) list and create your own tokens. `DELETE /api/v1/tokens/{id}` revokes one. Creating and revoking tokens needs a browser session: a request made with a token answers `403` "Sign in with your browser to manage tokens", so a token cannot renew itself.
+- `GET /api/v1/tokens` and `POST /api/v1/tokens` (body `{"name": ..., "ttl_days": ...}`) list and create your own tokens. `DELETE /api/v1/tokens/{id}` revokes one. Creating and revoking tokens needs a browser session: a request made with a token answers `403` "Sign in with your browser to manage tokens", so a token cannot renew itself. A token can give up its own power: `DELETE /api/v1/tokens/{id}` with the token's own id, or `POST /api/v1/auth/logout`, revokes that token (and only that one); any other id answers `403`.
+- A service account has no browser, so a global admin mints its token with `POST /api/v1/admin/users/{id}/tokens` (body `{"name": ..., "ttl_days": ...}`) from a browser session. It works only for users whose source is `service` (otherwise `422` `invalid`), is audited with the token's id and name (never its value) and returns the plaintext once, in the shape of `POST /api/v1/tokens`.
 - A token of a SAML user works only while that user's last SSO sign-in is at most `YUMDRAKE_TOKEN_SSO_MAX_AGE` old (default 168 hours). After that it answers `401` "Sign in again with SSO: yumdrake login". Tokens of `local` and `service` users are not affected.
 - Disabling a user revokes all of that user's tokens; enabling the user again does not bring them back.
 
@@ -166,6 +167,8 @@ Keep the local admin from `create-admin` as a break-glass account.
 Users, groups, grants, identity-provider mappings and the audit log live under `/api/v1/admin/`. `users`, `groups`, `grants` and `idp-mappings` need `manage_access`; `audit` needs `view_audit`.
 
 Actions: `view`, `view_logs`, `run`, `cancel`, `approve`, `restore`, `manage_jobs`, `manage_connections`, `manage_access` and `view_audit`. Every signed-in user has `view`. A group marked admin has every action.
+
+`manage_access` is not admin. Only a global admin may touch admin groups, their members and mappings, or the SSO settings. A holder of `manage_access` who is not an admin may create or delete a grant, add a user to a group, or map an identity-provider group to a group only for an action and scope they hold themselves (a grant wider than their own answers `403`), and grants of `manage_access`, `manage_connections` and `view_audit` can be created or deleted only by an admin.
 
 A grant gives a group one action, optionally limited to a label (`dev`, `preprod` or `prod`) or to one environment, and optionally to one folder.
 

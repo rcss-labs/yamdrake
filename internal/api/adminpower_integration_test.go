@@ -145,8 +145,9 @@ func TestManageAccessStillManagesOrdinaryAccess(t *testing.T) {
 	rec := m.send(sent{method: "POST", path: "/api/v1/admin/groups", bearer: m.managerToken, body: map[string]any{"name": "deployers-" + uniqueEmail(t, "g")}})
 	m.expect(rec, http.StatusCreated, "")
 	group := int64(decodeObject(t, rec)["id"].(float64))
-	if code := m.asManager("POST", "/api/v1/admin/grants", map[string]any{"group_id": group, "action": "run", "label": "dev"}); code != http.StatusCreated {
-		t.Errorf("create a grant: status %d, want 201", code)
+	// What a manager may grant is limited to what they hold (see TestManagerCanGrantOnlyWhatTheyHold).
+	if code := m.asManager("POST", "/api/v1/admin/grants", map[string]any{"group_id": group, "action": "run", "label": "dev"}); code != http.StatusForbidden {
+		t.Errorf("grant an action they do not hold: status %d, want 403", code)
 	}
 	if code := m.asManager("PATCH", "/api/v1/admin/users/"+itoa(plainUser.ID), map[string]any{"group_ids": []int64{group}}); code != http.StatusOK {
 		t.Errorf("add a user to a plain group: status %d, want 200", code)
@@ -235,4 +236,118 @@ func TestManagerCannotReachAdminPowerThroughUsers(t *testing.T) {
 	if _, err := store.UserByEmail(context.Background(), m.pool, email); err == nil {
 		t.Error("a refused request created the user")
 	}
+}
+
+// scopedManager is a manage_access holder who also holds `run` in dev.
+func (m *managerHarness) scopedManager() (store.User, string) {
+	m.t.Helper()
+	user := m.newUser("scoped")
+	m.grant(user.ID, "manage_access")
+	group, err := store.CreateGroup(context.Background(), m.pool, "run-dev-"+uniqueEmail(m.t, "g"), false)
+	if err != nil {
+		m.t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := store.SetManualMembership(context.Background(), m.pool, user.ID, group.ID, true); err != nil {
+		m.t.Fatalf("SetManualMembership: %v", err)
+	}
+	if _, err := store.CreateGrant(context.Background(), m.pool, store.Grant{GroupID: group.ID, Action: "run", Label: "dev"}); err != nil {
+		m.t.Fatalf("CreateGrant: %v", err)
+	}
+	token, _ := m.newToken(user.ID)
+	return user, token
+}
+
+// A manage_access holder may hand out only what they hold themselves.
+func TestManagerCanGrantOnlyWhatTheyHold(t *testing.T) {
+	m := newManagerHarness(t)
+	target := m.createGroupVia("targets-"+uniqueEmail(t, "g"), false)
+	_, scopedToken := m.scopedManager()
+	grant := func(token string, body map[string]any) int {
+		body["group_id"] = target
+		return m.send(sent{method: "POST", path: "/api/v1/admin/grants", bearer: token, body: body}).Code
+	}
+	// A manager with only manage_access holds no `run`.
+	if code := grant(m.managerToken, map[string]any{"action": "run", "label": "dev"}); code != http.StatusForbidden {
+		t.Errorf("grant run without holding it: %d, want 403", code)
+	}
+	for name, body := range map[string]map[string]any{
+		"run in prod":           {"action": "run", "label": "prod"},
+		"run unscoped":          {"action": "run"},
+		"run in an environment": {"action": "run", "environment": "dev-eu"}, // not provably inside dev
+		"view_logs":             {"action": "view_logs", "label": "dev"},
+		"manage_access":         {"action": "manage_access"},
+		"manage_connections":    {"action": "manage_connections"},
+		"view_audit":            {"action": "view_audit"},
+	} {
+		if code := grant(scopedToken, body); code != http.StatusForbidden {
+			t.Errorf("%s: %d, want 403", name, code)
+		}
+	}
+	if code := grant(scopedToken, map[string]any{"action": "run", "label": "dev"}); code != http.StatusCreated {
+		t.Errorf("grant what they hold: %d, want 201", code)
+	}
+	// An administrator can grant anything, including the three admin-only actions.
+	for _, action := range []string{"manage_access", "manage_connections", "view_audit", "run"} {
+		if rec := m.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": target, "action": action}); rec.Code != http.StatusCreated {
+			t.Errorf("admin grants %s: %d, want 201", action, rec.Code)
+		}
+	}
+}
+
+// The same rule when removing a grant: a manager cannot delete a grant that is
+// wider than their own, or one of the admin-only actions.
+func TestManagerCanDeleteOnlyGrantsTheyCouldCreate(t *testing.T) {
+	m := newManagerHarness(t)
+	target := m.createGroupVia("deltargets-"+uniqueEmail(t, "g"), false)
+	_, scopedToken := m.scopedManager()
+	create := func(body map[string]any) int64 {
+		body["group_id"] = target
+		rec := m.asAdmin("POST", "/api/v1/admin/grants", body)
+		m.expect(rec, http.StatusCreated, "")
+		return int64(decodeObject(t, rec)["id"].(float64))
+	}
+	prod, audit, dev := create(map[string]any{"action": "run", "label": "prod"}), create(map[string]any{"action": "view_audit"}), create(map[string]any{"action": "run", "label": "dev"})
+	for name, id := range map[string]int64{"run in prod": prod, "view_audit": audit} {
+		if code := m.send(sent{method: "DELETE", path: "/api/v1/admin/grants/" + itoa(id), bearer: scopedToken}).Code; code != http.StatusForbidden {
+			t.Errorf("delete %s: %d, want 403", name, code)
+		}
+	}
+	if code := m.send(sent{method: "DELETE", path: "/api/v1/admin/grants/" + itoa(dev), bearer: scopedToken}).Code; code != http.StatusNoContent {
+		t.Errorf("delete a grant they hold: %d, want 204", code)
+	}
+	if code := m.send(sent{method: "DELETE", path: "/api/v1/admin/grants/" + itoa(audit), bearer: m.managerToken}).Code; code != http.StatusForbidden {
+		t.Errorf("delete view_audit as a plain manager: %d, want 403", code)
+	}
+	m.expect(m.asAdmin("DELETE", "/api/v1/admin/grants/"+itoa(audit), nil), http.StatusNoContent, "")
+}
+
+// The way round the grant rule: join, or map to, a group that already holds
+// more than the manager does.
+func TestManagerCannotJoinOrMapAGroupHoldingMoreThanTheirOwn(t *testing.T) {
+	m := newManagerHarness(t)
+	rich := m.createGroupVia("rich-"+uniqueEmail(t, "g"), false)
+	m.expect(m.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": rich, "action": "manage_connections"}), http.StatusCreated, "")
+	modest := m.createGroupVia("modest-"+uniqueEmail(t, "g"), false)
+	m.expect(m.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": modest, "action": "run", "label": "dev"}), http.StatusCreated, "")
+	scoped, scopedToken := m.scopedManager()
+
+	if code := m.asManager("PATCH", "/api/v1/admin/users/"+itoa(m.manager.ID), map[string]any{"group_ids": []int64{rich}}); code != http.StatusForbidden {
+		t.Errorf("join a group with manage_connections: %d, want 403", code)
+	}
+	if m.memberOf(m.manager.ID)[rich] {
+		t.Error("the manager joined the richer group")
+	}
+	if code := m.send(sent{method: "PUT", path: "/api/v1/admin/idp-mappings/rich-idp", bearer: m.managerToken, body: map[string]any{"group_id": rich}}).Code; code != http.StatusForbidden {
+		t.Errorf("map to that group: %d, want 403", code)
+	}
+	// Adding someone else counts the same.
+	other := m.newUser("joiner")
+	if code := m.asManager("PATCH", "/api/v1/admin/users/"+itoa(other.ID), map[string]any{"group_ids": []int64{rich}}); code != http.StatusForbidden {
+		t.Errorf("add another user to it: %d, want 403", code)
+	}
+	// A group within their own power is fine, and so is leaving a group.
+	if code := m.send(sent{method: "PATCH", path: "/api/v1/admin/users/" + itoa(other.ID), bearer: scopedToken, body: map[string]any{"group_ids": []int64{modest}}}).Code; code != http.StatusOK {
+		t.Errorf("add a user to a group within their power: %d, want 200", code)
+	}
+	_ = scoped
 }

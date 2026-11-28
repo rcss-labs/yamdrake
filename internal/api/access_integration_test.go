@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -209,6 +211,83 @@ func TestCannotRemoveLastAdmin(t *testing.T) {
 	h.expect(rec, http.StatusConflict, "conflict")
 }
 
+// holdAdminLock takes the admin lock in a transaction of its own and returns
+// it with the PostgreSQL backend pid that holds it.
+func (h *harness) holdAdminLock() (pgx.Tx, int) {
+	h.t.Helper()
+	ctx := context.Background()
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		h.t.Fatalf("begin: %v", err)
+	}
+	if err := store.LockAdminChanges(ctx, tx); err != nil {
+		h.t.Fatalf("LockAdminChanges: %v", err)
+	}
+	var pid int
+	if err := tx.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+		h.t.Fatalf("pg_backend_pid: %v", err)
+	}
+	return tx, pid
+}
+
+// waitForAdminLockWaiters waits (up to 10 seconds) until at least n backends
+// other than holderPID wait for the admin lock itself: the advisory lock with
+// its key, ungranted, in this database, so other locks and other tests on a
+// shared server are not counted.
+func (h *harness) waitForAdminLockWaiters(holderPID, n int) bool {
+	h.t.Helper()
+	key := store.AdminLockKey()
+	classID, objID := int64(uint32(uint64(key)>>32)), int64(uint32(uint64(key)))
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var got int
+		err := h.pool.QueryRow(context.Background(), `SELECT count(DISTINCT pid) FROM pg_locks
+WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+AND classid::bigint = $1 AND objid::bigint = $2 AND pid <> $3
+AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`, classID, objID, holderPID).Scan(&got)
+		if err != nil {
+			h.t.Fatalf("read pg_locks: %v", err)
+		}
+		if got >= n {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The admin-affecting writes of identity-provider mappings take the same lock
+// as the other writes that can change who is an administrator.
+func TestIDPMappingChangesTakeTheAdminLock(t *testing.T) {
+	h := newHarness(t)
+	group := h.createGroupVia("locked-"+uniqueEmail(t, "g"), false)
+	h.expect(h.asAdmin("PUT", "/api/v1/admin/idp-mappings/to-delete", map[string]any{"group_id": group}), http.StatusOK, "")
+	for name, request := range map[string]struct {
+		method, path string
+		body         any
+		want         int
+	}{
+		"put":    {"PUT", "/api/v1/admin/idp-mappings/locked-one", map[string]any{"group_id": group}, http.StatusOK},
+		"delete": {"DELETE", "/api/v1/admin/idp-mappings/to-delete", nil, http.StatusNoContent},
+	} {
+		holder, pid := h.holdAdminLock()
+		done := make(chan int, 1)
+		go func() {
+			done <- h.send(sent{method: request.method, path: request.path, bearer: h.adminToken, body: request.body}).Code
+		}()
+		if !h.waitForAdminLockWaiters(pid, 1) {
+			_ = holder.Rollback(context.Background())
+			t.Fatalf("%s: the request did not wait for the admin lock", name)
+		}
+		_ = holder.Rollback(context.Background())
+		if code := <-done; code != request.want {
+			t.Errorf("%s: status %d, want %d", name, code, request.want)
+		}
+	}
+}
+
 // Two administrators each disable the other. Left alone the two requests could
 // both read "two administrators" before either writes; the admin lock makes the
 // second one count afresh. The test holds the lock itself, so both requests are
@@ -223,14 +302,8 @@ func TestTwoConcurrentRemovalsOfDifferentAdminsCannotBothSucceed(t *testing.T) {
 	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(second.ID), map[string]any{"group_ids": []int64{groups[0].ID}}), http.StatusOK, "")
 	secondToken, _ := h.newToken(second.ID)
 
-	holder, err := h.pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
+	holder, holderPID := h.holdAdminLock()
 	defer func() { _ = holder.Rollback(ctx) }()
-	if err := store.LockAdminChanges(ctx, holder); err != nil {
-		t.Fatalf("LockAdminChanges: %v", err)
-	}
 
 	var wg sync.WaitGroup
 	codes := make([]int, 2)
@@ -247,24 +320,10 @@ func TestTwoConcurrentRemovalsOfDifferentAdminsCannotBothSucceed(t *testing.T) {
 	}
 
 	// Both requests must be queued on the advisory lock before it is released.
-	waiters := func() int {
-		var n int
-		err := h.pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks
-WHERE locktype = 'advisory' AND NOT granted
-AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&n)
-		if err != nil {
-			t.Fatalf("read pg_locks: %v", err)
-		}
-		return n
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for waiters() < 2 {
-		if time.Now().After(deadline) {
-			_ = holder.Rollback(ctx)
-			wg.Wait()
-			t.Fatalf("only %d requests waited on the admin lock (answers %v); both must take it before changing anything", waiters(), codes)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !h.waitForAdminLockWaiters(holderPID, 2) {
+		_ = holder.Rollback(ctx)
+		wg.Wait()
+		t.Fatalf("fewer than 2 requests waited on the admin lock (answers %v); both must take it before changing anything", codes)
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the lock: %v", err)

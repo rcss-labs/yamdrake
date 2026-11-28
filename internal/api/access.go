@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/audit"
 	"github.com/rcss-labs/yamdrake/internal/auth"
@@ -45,6 +46,52 @@ func isAdmin(r *http.Request) bool {
 	return ok && principal.Admin
 }
 
+// errGrantTooWide is returned when a non-admin would hand out (or take away, or
+// pull someone into a group that holds) more than they hold themselves.
+var errGrantTooWide = errors.New("you may only manage grants for an action and scope you hold yourself")
+
+// adminOnlyGrantActions can be granted or revoked only by a global admin.
+var adminOnlyGrantActions = map[string]bool{
+	string(auth.ManageAccess): true, string(auth.ManageConnections): true, string(auth.ViewAudit): true,
+}
+
+// checkGrantAllowed is the rule for a caller without Admin: not an admin-only
+// action, and an action and scope the caller holds (Principal.Can on the
+// grant's own label, environment and folder, so a wider grant is refused).
+func checkGrantAllowed(principal auth.Principal, g store.Grant) error {
+	if principal.Admin {
+		return nil
+	}
+	if adminOnlyGrantActions[g.Action] {
+		return errAdminRequired
+	}
+	if !principal.Can(auth.Action(g.Action), auth.Target{Label: g.Label, Environment: g.Environment, FolderID: g.FolderID}) {
+		return errGrantTooWide
+	}
+	return nil
+}
+
+// checkGroupWithinPower refuses a non-admin pulling anyone into a group (by
+// membership or by an identity-provider mapping) whose grants exceed the
+// caller's own: that would be the same as creating those grants.
+func checkGroupWithinPower(ctx context.Context, db store.DBTX, principal auth.Principal, groupID int64) error {
+	if principal.Admin {
+		return nil
+	}
+	grants, err := store.ListGrants(ctx, db)
+	if err != nil {
+		return err
+	}
+	for _, g := range grants {
+		if g.GroupID == groupID {
+			if err := checkGrantAllowed(principal, g); err != nil {
+				return errGrantTooWide
+			}
+		}
+	}
+	return nil
+}
+
 // adminGroupIDs returns the ids of the admin groups, read inside the caller's
 // transaction (and so under its admin lock).
 func adminGroupIDs(ctx context.Context, db store.DBTX) (map[int64]bool, error) {
@@ -67,6 +114,8 @@ func (s *server) writeAccessError(w http.ResponseWriter, r *http.Request, err er
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		notFound(w, what)
+	case errors.Is(err, errGrantTooWide):
+		writeError(w, http.StatusForbidden, codeForbidden, errGrantTooWide.Error())
 	case errors.Is(err, errAdminRequired):
 		writeError(w, http.StatusForbidden, codeForbidden, errAdminRequired.Error())
 	case errors.Is(err, errLastAdmin):
@@ -262,6 +311,16 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 				if err := refuseAdminPowerInUserChange(ctx, tx, id, req.Disabled != nil, beforeManual, req.ManualGroupIDs); err != nil {
 					return err
 				}
+				if req.ManualGroupIDs != nil {
+					principal, _ := PrincipalFrom(ctx)
+					for _, groupID := range *req.ManualGroupIDs {
+						if !slices.Contains(beforeManual, groupID) {
+							if err := checkGroupWithinPower(ctx, tx, principal, groupID); err != nil {
+								return err
+							}
+						}
+					}
+				}
 			}
 			before := map[string]any{"disabled": user.Disabled, "group_ids": beforeManual}
 			after := map[string]any{"disabled": user.Disabled, "group_ids": beforeManual}
@@ -316,6 +375,7 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Disabled != nil && *req.Disabled {
 		deleted := s.deleteUserSessions(r, id)
 		sessionsDeleted = &deleted
+		s.dropConfirmedDeviceSignIns(r, id)
 	}
 	user, err := store.UserByID(r.Context(), s.Pool, id)
 	if err != nil {
@@ -364,6 +424,38 @@ func refuseAdminPowerInUserChange(ctx context.Context, tx pgx.Tx, userID int64, 
 	}
 	return nil
 }
+
+// dropConfirmedDeviceSignIns deletes the device sign-ins this user confirmed
+// and nobody collected yet, so a code confirmed before the disable cannot be
+// collected after the user is enabled again. A pending sign-in belongs to no one
+// yet and is left alone. Best effort, logged: Resolve refuses a disabled user
+// at collection anyway.
+func (s *server) dropConfirmedDeviceSignIns(r *http.Request, userID int64) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*valkeyTimeout)
+	defer cancel()
+	want := confirmedPrefix + idString(userID)
+	var cursor uint64
+	for {
+		entry, err := s.Valkey.Do(ctx, s.Valkey.B().Scan().Cursor(cursor).Match(s.KeyPrefix+"device:*").Count(200).Build()).AsScanEntry()
+		if err != nil {
+			s.Log.Error("drop device sign-ins of a disabled user", "user_id", userID, "error", err.Error())
+			return
+		}
+		for _, key := range entry.Elements {
+			if err := dropIfEqualScript.Exec(ctx, s.Valkey, []string{key}, []string{want}).Error(); err != nil && !isNil(err) {
+				s.Log.Error("drop a device sign-in of a disabled user", "user_id", userID, "error", err.Error())
+			}
+		}
+		if cursor = entry.Cursor; cursor == 0 {
+			return
+		}
+	}
+}
+
+// dropIfEqualScript deletes the key only while it still holds the given value.
+var dropIfEqualScript = valkey.NewLuaScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0`)
 
 func (s *server) deleteUserSessions(r *http.Request, userID int64) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), valkeyTimeout)
@@ -545,9 +637,19 @@ func (s *server) putIDPMapping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+		// A mapping decides who becomes an administrator at the next sign-in, so
+		// it changes under the same lock as the other admin-affecting writes.
+		if err := store.LockAdminChanges(ctx, tx); err != nil {
+			return audit.Event{}, err
+		}
 		mappings, err := store.ListIDPMappings(ctx, tx)
 		if err != nil {
 			return audit.Event{}, err
+		}
+		if principal, _ := PrincipalFrom(ctx); !principal.Admin {
+			if err := checkGroupWithinPower(ctx, tx, principal, req.GroupID); err != nil {
+				return audit.Event{}, err
+			}
 		}
 		if !isAdmin(r) {
 			admins, err := adminGroupIDs(ctx, tx)
@@ -580,6 +682,9 @@ func (s *server) deleteIDPMapping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+		if err := store.LockAdminChanges(ctx, tx); err != nil {
+			return audit.Event{}, err
+		}
 		mappings, err := store.ListIDPMappings(ctx, tx)
 		if err != nil {
 			return audit.Event{}, err
@@ -652,10 +757,15 @@ func (s *server) createGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var created store.Grant
+	wanted := store.Grant{GroupID: req.GroupID, Action: req.Action, Label: req.Label, Environment: req.Environment, FolderID: req.FolderID}
+	principal, _ := PrincipalFrom(r.Context())
+	if err := checkGrantAllowed(principal, wanted); err != nil {
+		s.writeAccessError(w, r, err, "grant")
+		return
+	}
 	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
 		var err error
-		created, err = store.CreateGrant(ctx, tx, store.Grant{GroupID: req.GroupID, Action: req.Action,
-			Label: req.Label, Environment: req.Environment, FolderID: req.FolderID})
+		created, err = store.CreateGrant(ctx, tx, wanted)
 		return audit.Event{Action: "grant.create", TargetType: "grant", TargetID: idString(created.ID), Detail: grantDetail(created)}, err
 	})
 	if err != nil {
@@ -679,6 +789,10 @@ func (s *server) deleteGrant(w http.ResponseWriter, r *http.Request) {
 		index := slices.IndexFunc(grants, func(g store.Grant) bool { return g.ID == id })
 		if index < 0 {
 			return audit.Event{}, store.ErrNotFound
+		}
+		principal, _ := PrincipalFrom(ctx)
+		if err := checkGrantAllowed(principal, grants[index]); err != nil {
+			return audit.Event{}, err
 		}
 		if err := store.DeleteGrant(ctx, tx, id); err != nil {
 			return audit.Event{}, err
@@ -754,6 +868,7 @@ func (s *server) accessRoutes() []routeDef {
 		{"GET /api/v1/admin/users", auth.ManageAccess, s.listUsers},
 		{"POST /api/v1/admin/users", auth.ManageAccess, s.createUser},
 		{"PATCH /api/v1/admin/users/{id}", auth.ManageAccess, s.updateUser},
+		{"POST /api/v1/admin/users/{id}/tokens", auth.ManageAccess, s.createServiceToken},
 		{"GET /api/v1/admin/groups", auth.ManageAccess, s.listGroups},
 		{"POST /api/v1/admin/groups", auth.ManageAccess, s.createGroup},
 		{"PATCH /api/v1/admin/groups/{id}", auth.ManageAccess, s.updateGroup},

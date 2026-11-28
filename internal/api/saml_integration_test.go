@@ -547,8 +547,12 @@ func TestRejects(t *testing.T) {
 			usersBefore, rejectedBefore := h.userCount(), h.auditCount("saml.rejected")
 			rec := h.postACS(flow, row.cookie)
 			// A response that is not tied to a sign-in we started is logged, not audited.
+			// Only a rejection after a valid signature is audited; refusals of
+			// a bad signature, a wrong destination, or a relay state that was
+			// not valid or was already used are only logged.
 			audited := 1
-			if row.reason == "relay_state" {
+			switch row.reason {
+			case "relay_state", "bad_signature", "wrong_destination", "replay":
 				audited = 0
 			}
 			if rec.Code != http.StatusBadRequest {
@@ -1075,8 +1079,8 @@ func TestOneRequestAnswersOnlyOnce(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || sessionCookie(rec) != nil {
 		t.Fatalf("second response: status %d %s, want 400 and no session", rec.Code, failure(rec))
 	}
-	if h.userCount() != users || h.auditCount("saml.rejected") != rejected+1 {
-		t.Errorf("the reused request changed state or was not audited once: %v", h.auditActions())
+	if h.userCount() != users || h.auditCount("saml.rejected") != rejected {
+		t.Errorf("the reused request changed state or was audited (the relay state is claimed once, so it is only logged): %v", h.auditActions())
 	}
 }
 

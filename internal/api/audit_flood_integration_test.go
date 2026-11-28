@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crewjam/saml"
+
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -100,10 +102,102 @@ func TestAnonymousACSPostsAreLoggedNotAudited(t *testing.T) {
 		t.Errorf("the log holds response material")
 	}
 
-	// A rejection after the relay state validated is still audited.
-	h.postACS(idp.begin().unsigned(t), true)
+	// A rejection after a valid signature is still audited: a correctly signed
+	// but expired response.
+	idp.tweak = pastTweak(-10 * time.Minute)
+	expired := idp.begin()
+	idp.tweak = nil
+	h.postACS(expired, true)
 	if got := h.auditCount("saml.rejected"); got != before+1 {
-		t.Fatalf("a rejected response of a real sign-in wrote %d entries, want 1", got-before)
+		t.Fatalf("a signed but expired response wrote %d entries, want 1", got-before)
+	}
+}
+
+// pastTweak moves the assertion and the response into the past.
+func pastTweak(d time.Duration) func(*saml.IdpAuthnRequest) {
+	return func(req *saml.IdpAuthnRequest) {
+		a := req.Assertion
+		a.IssueInstant = a.IssueInstant.Add(d)
+		a.Conditions.NotBefore = a.Conditions.NotBefore.Add(d)
+		a.Conditions.NotOnOrAfter = a.Conditions.NotOnOrAfter.Add(d)
+		a.Subject.SubjectConfirmations[0].SubjectConfirmationData.NotOnOrAfter =
+			a.Subject.SubjectConfirmations[0].SubjectConfirmationData.NotOnOrAfter.Add(d)
+		req.Now = req.Now.Add(d)
+	}
+}
+
+// One relay cookie, taken once from an anonymous /start, used to be enough to
+// write an audit row per junk post for ten minutes. The nonce is claimed by the
+// first post that shows it; nothing that is not signed by the identity provider
+// is audited.
+func TestOneRelayCookieCannotFloodTheAuditLog(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	logs := h.logTo()
+	before := h.auditCount("saml.rejected")
+
+	flow := idp.begin()
+	junk := func(f samlFlow, response string) samlFlow {
+		return f.withResponse([]byte(response))
+	}
+	for i := range 50 {
+		rec := h.postACS(junk(flow, fmt.Sprintf("<junk n=%d/>", i)), true)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("junk post %d: %s, want 400", i, failure(rec))
+		}
+	}
+	if got := h.auditCount("saml.rejected"); got != before {
+		t.Fatalf("50 junk posts with one cookie wrote %d audit entries, want none", got-before)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("the refusals are not logged at warn")
+	}
+
+	// The same cookie cannot be used for a real response afterwards either.
+	idp.signIn(uniqueEmail(t, "late"), "Late", "eng-devops")
+	real := idp.begin()
+	h.postACS(junk(real, "<junk/>"), true) // claims the nonce
+	real.form = idp.answer(real.locURL)
+	if rec := h.postACS(real, true); rec.Code != http.StatusBadRequest || sessionCookie(rec) != nil {
+		t.Errorf("a response on an already claimed relay state: %s, want 400 and no session", failure(rec))
+	}
+
+	// The bypass to try: a fresh cookie for each post and a bogus Signature
+	// element, so the response looks signed. It is not valid, so not audited.
+	acs := publicURL + "/saml/acs"
+	for range 15 {
+		f := idp.begin()
+		bogus := fmt.Sprintf(`<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" Destination="%s" Version="2.0">`+
+			`<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo/></ds:Signature></samlp:Response>`, acs)
+		h.postACS(junk(f, bogus), true)
+	}
+	if got := h.auditCount("saml.rejected"); got != before {
+		t.Fatalf("junk with bogus signatures wrote %d audit entries, want none", got-before)
+	}
+
+	// A correctly signed but expired assertion still writes exactly one.
+	idp.tweak = pastTweak(-10 * time.Minute)
+	expired := idp.begin()
+	idp.tweak = nil
+	h.postACS(expired, true)
+	if got := h.auditCount("saml.rejected"); got != before+1 {
+		t.Fatalf("a signed expired response wrote %d entries, want 1", got-before)
+	}
+}
+
+// If Valkey cannot be asked whether the relay state was used, the answer is 503
+// and nothing is written.
+func TestACSWithValkeyDownIs503AndAuditsNothing(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	idp.signIn(uniqueEmail(t, "down"), "Down", "eng-devops")
+	flow := idp.begin()
+	entries, users := len(h.auditEntries()), h.userCount()
+	h.rebuild(func(d *Deps) { d.Valkey = deadValkey(t) })
+	rec := h.postACS(flow, true)
+	if rec.Code != http.StatusServiceUnavailable || sessionCookie(rec) != nil {
+		t.Fatalf("status %d %s, want 503 and no session", rec.Code, failure(rec))
+	}
+	if len(h.auditEntries()) != entries || h.userCount() != users {
+		t.Errorf("a 503 wrote something: %v", h.auditActions())
 	}
 }
 

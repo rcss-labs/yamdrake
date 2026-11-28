@@ -293,6 +293,42 @@ func TestCacheTwoMinutesAndWorksWithoutValkey(t *testing.T) {
 	}
 }
 
+func TestMissingServiceKeepsTheTwoMinuteCache(t *testing.T) {
+	ctx := context.Background()
+	envs := []spec.Environment{envEU}
+	w := newWorld()
+	w.run(acctEU, "main", "api", repoURI(acctEU, "api")+":1.0.0", nil)
+	w.run(acctEU, "main", "web", repoURI(acctEU, "web")+":1.0.0", nil)
+	delete(w.services, acctEU+"|main|web")
+	inv := inventoryOf(envs, serviceSpec("api", "semver", envs...), serviceSpec("web", "semver", envs...))
+
+	client := openTestValkey(t)
+	prefix := fmt.Sprintf("running-test-%d:", time.Now().UnixNano())
+	t.Cleanup(func() {
+		keys, _ := client.Do(ctx, client.B().Keys().Pattern(prefix+"*").Build()).AsStrSlice()
+		for _, key := range keys {
+			client.Do(ctx, client.B().Del().Key(key).Build())
+		}
+	})
+
+	svc := newService(t, w, Config{Valkey: client, KeyPrefix: prefix})
+	m, err := svc.Matrix(ctx, inv)
+	if err != nil {
+		t.Fatalf("Matrix: %v", err)
+	}
+	if cell := cellOf(t, m, "web", "prod-eu"); cell.State != "error" || cell.Error != "ServiceNotFound" {
+		t.Fatalf("web in prod-eu = %+v, want a ServiceNotFound error", cell)
+	}
+
+	keys, err := client.Do(ctx, client.B().Keys().Pattern(prefix+"running:prod-eu:*").Build()).AsStrSlice()
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("keys for prod-eu = %v, %v; want exactly one under the prefix", keys, err)
+	}
+	if ttl := ttlMillis(t, client, keys[0]); ttl <= 100_000 || ttl > 120_000 {
+		t.Errorf("TTL = %d ms, want just under 120000 when only a service is missing", ttl)
+	}
+}
+
 func TestDatabaseFactsAreNotCached(t *testing.T) {
 	ctx := context.Background()
 	f := newDBFixture(t)

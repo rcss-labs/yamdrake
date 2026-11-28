@@ -28,8 +28,8 @@ export function onUnauthorized(listener: UnauthorizedListener): () => void {
   }
 }
 
-// Every field the API documents as a list. Go sends null for a list nobody appended to, and the screens
-// map and search these lists, so a null here would blank the whole page. Other nulls (for example
+// Every field the API documents as a list. The Go server sends [] for these today; this is a safety net
+// in case a null ever reaches a screen, which maps and searches these lists and would blank the page. Other nulls (for example
 // last_used_at) are real values and stay.
 const LIST_FIELDS: ReadonlySet<string> = new Set([
   'accounts',

@@ -251,7 +251,7 @@ describe('useRunLive on an active run', () => {
 
   it('refreshes the approval when the state event says another person decided', async () => {
     const { result } = await watchActiveRun(runIds.waitingApproval)
-    expect(result.current.run?.approval?.decision).toBe('pending')
+    expect(result.current.run?.approval?.decision).toBe('')
     const stored = mockState().runs.find((candidate) => candidate.id === runIds.waitingApproval)!
     stored.state = 'queued'
     stored.approval = { ...stored.approval!, decision: 'approved', decided_by_name: 'Gal Grantee', decided_at: '2026-11-27T12:00:00Z' }

@@ -233,7 +233,9 @@ func (r *leg) storedCopy(item manifest.ConfigItem) ([]byte, error) {
 	if r.x.d.Artifacts == nil {
 		return nil, errors.New("no artifact store")
 	}
-	return r.x.d.Artifacts.Get(r.ctx, item.ArtifactKey, item.SHA256)
+	callCtx, cancel := context.WithTimeout(r.ctx, resolve.CallTimeout)
+	defer cancel()
+	return r.x.d.Artifacts.Get(callCtx, item.ArtifactKey, item.SHA256)
 }
 
 // --- writing ----------------------------------------------------------------

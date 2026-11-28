@@ -401,7 +401,8 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 			token, _ = h.newToken(u.ID)
 			granted[route.action] = token
 		}
-		if rec := h.send(sent{method: method, path: path, bearer: token}); rec.Code == http.StatusForbidden {
+		// Changing the SSO settings needs Admin on top of manage_access.
+		if rec := h.send(sent{method: method, path: path, bearer: token}); rec.Code == http.StatusForbidden && route.pattern != "PUT /api/v1/admin/sso" {
 			t.Errorf("%s with %s granted still got 403", name, route.action)
 		}
 	}

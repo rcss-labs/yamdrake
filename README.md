@@ -137,7 +137,7 @@ Codes expire after 10 minutes. A session may make at most 10 confirm attempts pe
 
 ## Single sign-on (SAML)
 
-An admin with `manage_access` configures SSO at `GET` and `PUT /api/v1/admin/sso`, and checks it with `POST /api/v1/admin/sso/test`.
+A global admin configures SSO with `PUT /api/v1/admin/sso`; `manage_access` alone is not enough, because whoever controls the identity provider can sign in as anyone (a non-admin gets `403`). Holders of `manage_access` can read the settings (`GET /api/v1/admin/sso`) and check them (`POST /api/v1/admin/sso/test`).
 
 Give the identity provider:
 

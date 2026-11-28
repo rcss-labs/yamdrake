@@ -394,7 +394,7 @@ Actions: `view`, `view_logs`, `run`, `cancel`, `approve`, `restore`, `manage_job
 
 A grant gives a group an action within a scope: an environment label, a single environment, and optionally a folder. A group may instead be a global admin. Every signed-in user has `view`.
 
-`manage_access` does not confer admin power. Only a global admin may create a group with the admin flag, change a group's admin flag, add or remove members of an admin group, map an identity-provider group to an admin group (or change or remove such a mapping), or disable or enable a user who is in an admin group. A `manage_access` holder who is not an admin gets 403 for these and can still manage non-admin groups, grants and non-admin users.
+`manage_access` does not confer admin power. Only a global admin may create a group with the admin flag, change a group's admin flag, add or remove members of an admin group, map an identity-provider group to an admin group (or change or remove such a mapping), disable or enable a user who is in an admin group, or change the single sign-on settings (whoever controls the identity provider can sign in as anyone). A `manage_access` holder who is not an admin gets 403 for these and can still manage non-admin groups, grants and non-admin users, and read and test the single sign-on settings.
 
 Every REST, SSE and CLI request is checked on the server. The UI hides or disables what a user may not do.
 

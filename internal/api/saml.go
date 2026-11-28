@@ -813,7 +813,13 @@ func hasSigningCertificate(idp *saml.EntityDescriptor) bool {
 	return false
 }
 
+// putSSO changes the single sign-on settings. Whoever controls the identity
+// provider can sign in as anyone, so this needs Admin, not just manage_access.
 func (s *server) putSSO(w http.ResponseWriter, r *http.Request) {
+	if !isAdmin(r) {
+		s.writeAccessError(w, r, errAdminRequired, "sso")
+		return
+	}
 	var req ssoRequest
 	if !decodeBody(w, r, &req) {
 		return

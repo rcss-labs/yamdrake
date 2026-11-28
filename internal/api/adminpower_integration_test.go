@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
@@ -167,4 +168,71 @@ func TestManageAccessStillManagesOrdinaryAccess(t *testing.T) {
 	}
 	// Administrators can still do all of it.
 	m.expect(m.asAdmin("POST", "/api/v1/admin/groups", map[string]any{"name": "more-admins-" + uniqueEmail(t, "g"), "admin": true}), http.StatusCreated, "")
+}
+
+// Whoever controls the identity provider can sign in as anyone, so changing
+// the single sign-on settings is admin power; reading and testing are not.
+func TestOnlyAnAdministratorChangesSSOSettings(t *testing.T) {
+	m := newManagerHarness(t)
+	idp := m.newIDP()
+	before := len(m.auditEntries())
+	body := map[string]any{"enabled": true, "idp_metadata_xml": idp.metadataXML()}
+
+	rec := m.send(sent{method: "PUT", path: "/api/v1/admin/sso", bearer: m.managerToken, body: body})
+	m.expect(rec, http.StatusForbidden, "forbidden")
+	if got := len(m.auditEntries()); got != before {
+		t.Errorf("a refused change left %d audit entries", got-before)
+	}
+	settings, err := auth.LoadSAMLSettings(context.Background(), m.pool)
+	if err != nil || settings.Enabled || settings.IDPMetadataXML != "" {
+		t.Fatalf("stored settings after the refused PUT = %+v, %v; want none", settings, err)
+	}
+	// Reading and testing stay open to manage_access.
+	getRec := m.send(sent{method: "GET", path: "/api/v1/admin/sso", bearer: m.managerToken})
+	m.expect(getRec, http.StatusOK, "")
+	m.expect(m.send(sent{method: "POST", path: "/api/v1/admin/sso/test", bearer: m.managerToken}), http.StatusOK, "")
+
+	// An administrator can, and the GET shape is the same as before.
+	m.expect(m.asAdmin("PUT", "/api/v1/admin/sso", body), http.StatusOK, "")
+	adminGet := decodeObject(t, m.asAdmin("GET", "/api/v1/admin/sso", nil))
+	for _, key := range []string{"enabled", "idp_metadata_xml", "entity_id", "groups_attribute", "email_attribute", "name_attribute", "metadata_url", "acs_url"} {
+		if _, ok := adminGet[key]; !ok {
+			t.Errorf("GET /admin/sso lost the field %q", key)
+		}
+	}
+	if len(adminGet) != 8 {
+		t.Errorf("GET /admin/sso has %d fields, want the 8 of the web contract", len(adminGet))
+	}
+	// The manager sees the same document.
+	if got := decodeObject(t, m.send(sent{method: "GET", path: "/api/v1/admin/sso", bearer: m.managerToken})); len(got) != 8 {
+		t.Errorf("manager GET has %d fields, want 8", len(got))
+	}
+}
+
+// Other ways a manager might try to reach admin power: a new user placed in an
+// admin group in the same request, or a field that sets an existing admin's
+// identity or password. None of those exist; the requests are refused.
+func TestManagerCannotReachAdminPowerThroughUsers(t *testing.T) {
+	m := newManagerHarness(t)
+	email := uniqueEmail(t, "planted")
+	for name, body := range map[string]map[string]any{
+		"new user with group_ids":  {"email": email, "name": "n", "source": "local", "password": shortPassword, "group_ids": []int64{m.adminGroup}},
+		"new user with admin flag": {"email": email, "name": "n", "source": "local", "password": shortPassword, "admin": true},
+	} {
+		if rec := m.send(sent{method: "POST", path: "/api/v1/admin/users", bearer: m.managerToken, body: body}); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %s, want 400", name, failure(rec))
+		}
+	}
+	for name, body := range map[string]map[string]any{
+		"change an email":   {"email": "x@example.test"},
+		"set a password":    {"password": shortPassword},
+		"change the source": {"source": "saml"},
+	} {
+		if rec := m.send(sent{method: "PATCH", path: "/api/v1/admin/users/" + itoa(m.otherAdmin.ID), bearer: m.managerToken, body: body}); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %s, want 400", name, failure(rec))
+		}
+	}
+	if _, err := store.UserByEmail(context.Background(), m.pool, email); err == nil {
+		t.Error("a refused request created the user")
+	}
 }

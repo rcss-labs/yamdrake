@@ -174,6 +174,18 @@ make web-build     # production build into web/dist
 
 For development, run the orchestrator on port 8080 and start the dev server with `npm --prefix web run dev`. The dev server proxies `/api` and `/saml` to the orchestrator on `localhost:8080`.
 
+With the dev server on `http://localhost:5173`, sign-in answers 403 unless the orchestrator runs with `YUMDRAKE_PUBLIC_URL=http://localhost:5173`, because the API checks the `Origin` of every write against the public URL.
+
+### Browser test
+
+```sh
+make dev-up                                          # PostgreSQL and Valkey
+(cd web && npx playwright install chromium)          # once; add --with-deps on a bare Linux machine
+make web-e2e                                         # builds, then runs the test in Chromium
+```
+
+`make web-e2e` runs `web/e2e/foundation.spec.ts` against the real orchestrator binary (`bin/yumdrake-orchestrator`, with the web application embedded), not the Vite dev server. The helper `test/e2e/webstack` starts it on free ports with its own database (`yumdrake_web_e2e_*`, dropped at the end) and its own Valkey key prefix, plus the fake GitHub from `test/e2e/fakegithub` holding `internal/spec/testdata/valid`. It needs the Compose services (or `YUMDRAKE_TEST_DATABASE_URL` and `YUMDRAKE_TEST_VALKEY_ADDR` pointing at others). The helper stops the orchestrator and drops the database when the test ends, fails or is interrupted. Set `YUMDRAKE_E2E_SHOTS_DIR` to a directory to keep the eight full-page screenshots the test takes.
+
 ## Testing
 
 ```sh

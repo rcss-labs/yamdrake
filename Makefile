@@ -10,7 +10,7 @@ BINARY_PACKAGES := orchestrator runner
 # Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
 export VERSION COMMIT
 
-.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke web-install web-lint web-test web-build
+.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke web-install web-lint web-test web-build web-e2e
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -83,3 +83,6 @@ web-build: ## Build the web application and copy it into internal/webui/dist for
 	npm --prefix web run build
 	find internal/webui/dist -mindepth 1 ! -name .gitkeep -delete
 	cp -R web/dist/. internal/webui/dist/
+
+web-e2e: build ## Run the browser test (Chromium) against the real orchestrator binary, the Compose services and a fake GitHub (see dev-up)
+	npm --prefix web run test:e2e

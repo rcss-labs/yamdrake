@@ -10,8 +10,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "lint": "eslint . --max-warnings 0 && tsc --noEmit",
-    "test": "vitest run"
+    "lint": "eslint . --max-warnings 0 && tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "5.3.0",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
+    "@playwright/test": "1.65.1",
     "@testing-library/dom": "10.4.2",
     "@testing-library/jest-dom": "8.0.0",
     "@testing-library/react": "16.3.3",

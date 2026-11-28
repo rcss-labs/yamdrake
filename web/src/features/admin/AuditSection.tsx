@@ -29,11 +29,21 @@ function valueText(value: unknown): string | null {
   return null
 }
 
-function PlainPairs({ pairs, separator }: { pairs: [string, unknown][]; separator: string }) {
-  const shown = pairs.flatMap(([key, value]) => {
+type Shown = { key: string; text: string }
+
+// Entries worth showing: a value that says something. Empty strings and ids of 0 ("none") are noise;
+// false and other numbers (including 0 for a count) are information.
+function shownPairs(pairs: [string, unknown][]): Shown[] {
+  return pairs.flatMap(([key, value]) => {
+    if (value === '' || (value === 0 && key.endsWith('_id'))) {
+      return []
+    }
     const text = valueText(value)
     return text === null ? [] : [{ key, text }]
   })
+}
+
+function PlainPairs({ shown, separator }: { shown: Shown[]; separator: string }) {
   return shown.map(({ key, text }, index) => (
     <span key={key}>
       {index > 0 && separator}
@@ -46,20 +56,24 @@ function PlainPairs({ pairs, separator }: { pairs: [string, unknown][]; separato
 // is listed as "before: key value, key value; after: ...". Deeper data is not worth a table cell.
 function Detail({ detail }: { detail: Record<string, unknown> | undefined }) {
   const entries = Object.entries(detail ?? {})
-  const plain = entries.filter(([, value]) => valueText(value) !== null)
-  const nested = entries.flatMap(([key, value]) =>
-    typeof value === 'object' && value !== null && !Array.isArray(value) ? [[key, Object.entries(value)] as const] : [],
-  )
+  const plain = shownPairs(entries)
+  const nested = entries
+    .flatMap(([key, value]) =>
+      typeof value === 'object' && value !== null && !Array.isArray(value)
+        ? [{ key, shown: shownPairs(Object.entries(value)) }]
+        : [],
+    )
+    .filter(({ shown }) => shown.length > 0)
   if (plain.length === 0 && nested.length === 0) {
     return null
   }
   return (
     <div className="audit-detail">
-      <PlainPairs pairs={plain} separator=" · " />
-      {nested.map(([key, pairs], index) => (
+      <PlainPairs shown={plain} separator=" · " />
+      {nested.map(({ key, shown }, index) => (
         <span key={key}>
           {(plain.length > 0 || index > 0) && (index > 0 ? '; ' : ' · ')}
-          {key}: <PlainPairs pairs={pairs} separator=", " />
+          {key}: <PlainPairs shown={shown} separator=", " />
         </span>
       ))}
     </div>

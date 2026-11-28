@@ -43,9 +43,18 @@ describe('the groups and permissions section', () => {
 
   it('shows an empty state for a group without grants and for no mappings', async () => {
     mockState().mappings = []
+    mockState().grants = []
     await openGroups()
-    expect(within(group('Administrators')).getByText('No grants yet')).toBeInTheDocument()
+    expect(within(group('QA')).getByText('No grants yet')).toBeInTheDocument()
+    expect(within(group('QA')).getByText(/A group with no grants can only view/)).toBeInTheDocument()
     expect(screen.getByText('No identity provider groups are mapped')).toBeInTheDocument()
+  })
+
+  it('tells that an administrator group needs no grants', async () => {
+    await openGroups()
+    const admins = within(group('Administrators'))
+    expect(admins.getByText('Administrators can do everything. Grants are not needed for this group.')).toBeInTheDocument()
+    expect(admins.queryByText(/can only view/)).not.toBeInTheDocument()
   })
 
   it('shows an empty state when there are no groups', async () => {

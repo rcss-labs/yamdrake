@@ -42,6 +42,48 @@ describe('the audit log section', () => {
     expect(within(row).getByText('true')).toHaveClass('mono')
   })
 
+  it('leaves out empty values and zero ids, keeping false and other numbers', async () => {
+    mockState().audit = [
+      {
+        id: 10,
+        at: '2026-11-27T11:20:00Z',
+        actor: 'dana@example.com',
+        action: 'grant.create',
+        target_type: 'grant',
+        target_id: '4',
+        actor_id: 1,
+        detail: { label: '', action: 'run', group_id: 2, folder_id: 0, environment: '' },
+      },
+      {
+        id: 11,
+        at: '2026-11-27T11:19:00Z',
+        actor: 'dana@example.com',
+        action: 'source.create',
+        target_type: 'source',
+        target_id: '5',
+        actor_id: 1,
+        detail: { path: null, repo: 'acme/platform', app_id: 0, installation_id: 0, retries: 0, enabled: false },
+      },
+      {
+        id: 12,
+        at: '2026-11-27T11:18:00Z',
+        actor: 'dana@example.com',
+        action: 'grant.update',
+        target_type: 'grant',
+        target_id: '6',
+        actor_id: 1,
+        detail: { before: { folder_id: 0, label: '', action: 'run' }, after: { folder_id: 3, label: 'x', action: 'run' } },
+      },
+    ]
+    renderApp(<App />, { route: '/admin/audit', me: auditorMe })
+    const grant = (await screen.findByText('grant.create')).closest('tr')!
+    expect(grant.querySelector('.audit-detail')).toHaveTextContent(/^action run · group_id 2$/)
+    const source = screen.getByText('source.create').closest('tr')!
+    expect(source.querySelector('.audit-detail')).toHaveTextContent(/^repo acme\/platform · retries 0 · enabled false$/)
+    const update = screen.getByText('grant.update').closest('tr')!
+    expect(update.querySelector('.audit-detail')).toHaveTextContent(/^before: action run; after: folder_id 3, label x, action run$/)
+  })
+
   it('shows an entry that has no detail at all', async () => {
     mockState().audit = [
       { id: 9, at: '2026-11-27T11:20:00Z', actor: 'system', actor_id: null, action: 'auth.logout', target_type: 'user', target_id: '3' },

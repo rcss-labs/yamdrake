@@ -22,9 +22,11 @@ var (
 	// format names the service alone, which is ambiguous across clusters.
 	ecsServicePattern = regexp.MustCompile(`^arn:aws[a-z-]*:ecs:([a-z0-9-]+):(\d{12}):service/([A-Za-z0-9_-]{1,255})/([A-Za-z0-9_.-]{1,255})$`)
 
-	// <account>.dkr.ecr.<region>.<domain>/<name>. The domain is AWS's, or
-	// localhost (with an optional port) for the Floci test emulator.
-	ecrPattern = regexp.MustCompile(`^(\d{12})\.dkr\.ecr\.([a-z0-9-]+)\.(?:amazonaws\.com(?:\.cn)?|localhost(?::\d{1,5})?)/([a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*)$`)
+	// <account>.dkr.ecr.<region>.<domain>/<name>. The domain is AWS's;
+	// ecrEmulatorPattern also takes localhost (with an optional port) for the
+	// Floci test emulator and is used only when an endpoint override is set.
+	ecrPattern         = regexp.MustCompile(`^(\d{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?/([a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*)$`)
+	ecrEmulatorPattern = regexp.MustCompile(`^(\d{12})\.dkr\.ecr\.([a-z0-9-]+)\.localhost(?::\d{1,5})?/([a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*)$`)
 
 	bucketPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 )
@@ -39,9 +41,13 @@ func ParseECSService(arn string) (ECSServiceRef, error) {
 }
 
 // ParseECRRepository parses a repository URI without a tag or digest:
-// <account>.dkr.ecr.<region>.amazonaws.com/<name>.
-func ParseECRRepository(uri string) (ECRRepoRef, error) {
+// <account>.dkr.ecr.<region>.amazonaws.com/<name>. A *.localhost[:port] host
+// (the Floci emulator) is accepted only when o.EndpointURL is set.
+func ParseECRRepository(uri string, o Options) (ECRRepoRef, error) {
 	m := ecrPattern.FindStringSubmatch(uri)
+	if m == nil && o.EndpointURL != "" {
+		m = ecrEmulatorPattern.FindStringSubmatch(uri)
+	}
 	if m == nil {
 		return ECRRepoRef{}, fmt.Errorf("invalid ECR repository URI %q: want <account>.dkr.ecr.<region>.amazonaws.com/<name> without a tag or digest", uri)
 	}

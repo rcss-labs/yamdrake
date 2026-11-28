@@ -61,11 +61,10 @@ func TestParseECRRepository(t *testing.T) {
 		{"123456789012.dkr.ecr.eu-west-1.amazonaws.com/app", ECRRepoRef{"123456789012", "eu-west-1", "app"}},
 		{"123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app-api", ECRRepoRef{"123456789012", "us-east-1", "team/app-api"}},
 		{"123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/app", ECRRepoRef{"123456789012", "cn-north-1", "app"}},
-		{"111111111111.dkr.ecr.us-east-1.localhost:4577/app", ECRRepoRef{"111111111111", "us-east-1", "app"}},
 	}
 	for _, tc := range valid {
 		t.Run(tc.in, func(t *testing.T) {
-			got, err := ParseECRRepository(tc.in)
+			got, err := ParseECRRepository(tc.in, Options{})
 			if err != nil {
 				t.Fatalf("ParseECRRepository(%q) error = %v", tc.in, err)
 			}
@@ -91,7 +90,7 @@ func TestParseECRRepository(t *testing.T) {
 	}
 	for _, in := range invalid {
 		t.Run("invalid "+in, func(t *testing.T) {
-			_, err := ParseECRRepository(in)
+			_, err := ParseECRRepository(in, Options{})
 			if err == nil {
 				t.Fatalf("ParseECRRepository(%q) succeeded, want an error", in)
 			}
@@ -99,6 +98,25 @@ func TestParseECRRepository(t *testing.T) {
 				t.Errorf("error %q does not name the value %q", err, in)
 			}
 		})
+	}
+}
+
+// A localhost registry host exists only for the Floci test emulator: it is
+// accepted when an endpoint override is configured and refused for real AWS,
+// where it could point a repository at a server of someone's choosing.
+func TestParseECRRepositoryAcceptsLocalhostOnlyWithEndpointOverride(t *testing.T) {
+	const uri = "111111111111.dkr.ecr.us-east-1.localhost:4577/app"
+	want := ECRRepoRef{"111111111111", "us-east-1", "app"}
+	got, err := ParseECRRepository(uri, Options{EndpointURL: "http://localhost:4577"})
+	if err != nil || got != want {
+		t.Errorf("with an endpoint override: got %+v, %v; want %+v", got, err, want)
+	}
+	if _, err := ParseECRRepository(uri, Options{}); err == nil {
+		t.Errorf("without an endpoint override %q was accepted, want an error", uri)
+	}
+	// Real AWS hosts stay valid with an override.
+	if _, err := ParseECRRepository("123456789012.dkr.ecr.eu-west-1.amazonaws.com/app", Options{EndpointURL: "http://localhost:4577"}); err != nil {
+		t.Errorf("amazonaws.com host with an override: %v", err)
 	}
 }
 

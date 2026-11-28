@@ -730,6 +730,29 @@ func TestLogNeverContainsFileContents(t *testing.T) {
 	}
 }
 
+func TestGitHubFactoryErrorTextIsNeverLogged(t *testing.T) {
+	const plantedToken = "ghp_plantedTokenValue123"
+	h := newHarness()
+	h.deps.GitHub = func(context.Context, string) (resolve.Source, error) {
+		return nil, fmt.Errorf("bad credentials for %s", plantedToken)
+	}
+	out, m := h.run(t, claimed(t, "prod", defaultSelection()))
+	if out.State != "failed" {
+		t.Fatalf("State = %q, want failed", out.State)
+	}
+	if c, _ := check(m, "web", "config source web.env"); c.Status != "failed" {
+		t.Errorf("check = %+v, want failed when there is no GitHub access", c)
+	}
+	if !strings.Contains(h.env.text(), "GitHub access") {
+		t.Errorf("the log should still say that GitHub access failed:\n%s", h.env.text())
+	}
+	for _, text := range []string{h.env.text(), string(out.Result), out.FailureShort, out.FailureDetail} {
+		if strings.Contains(text, plantedToken) {
+			t.Errorf("the factory's error text reached %q", text)
+		}
+	}
+}
+
 func TestArtifactStoreFailureIsFailedCheckWithoutContent(t *testing.T) {
 	h := newHarness()
 	h.artifacts.fail = fmt.Errorf("put: %s", secretEnvValue) // an error text that must not be echoed

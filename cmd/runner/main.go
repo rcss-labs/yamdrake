@@ -3,16 +3,20 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/app"
+	"github.com/rcss-labs/yamdrake/internal/artifacts"
 	"github.com/rcss-labs/yamdrake/internal/awsx"
 	"github.com/rcss-labs/yamdrake/internal/awsx/deploy"
 	"github.com/rcss-labs/yamdrake/internal/config"
@@ -20,7 +24,11 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner"
+	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/steps/fake"
+	"github.com/rcss-labs/yamdrake/internal/steps/resolve"
+	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/version"
 	"github.com/rcss-labs/yamdrake/internal/wake"
 )
@@ -78,18 +86,16 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 		Addr:   cfg.HealthAddr,
 		Fields: []any{"runner_id", cfg.RunnerID, "env", cfg.Env, "fake_steps", cfg.FakeSteps},
 		Extend: func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (app.Extension, error) {
-			credentials, err := newDeployCredentials(ctx, log, cfg, pool)
+			identity, err := newRunnerIdentity(ctx, log, cfg, pool)
 			if err != nil {
 				return app.Extension{}, err
 			}
-			// The runner does not deploy yet: nothing takes the provider until
-			// the deployment engine does.
-			_ = credentials
 			bus := wake.New(client, log, wake.WithKeyPrefix(cfg.ValkeyKeyPrefix))
 			sink := logs.NewWriter(pool, logFlushEvery, logMaxBatch, time.Now, func(runID int64) {
 				bus.Publish(context.Background(), wake.TopicLogs, runID)
 			}, log)
 			r := newRunner(cfg, pool, sink, bus, log)
+			r.Register("resolve", resolve.New(resolveDeps(cfg, pool, identity, log)))
 			return app.Extension{Background: []func(context.Context){
 				func(ctx context.Context) {
 					if err := r.Run(ctx, legWakeups(ctx, bus)); err != nil {
@@ -111,24 +117,69 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 	}, stdout)
 }
 
-// newDeployCredentials builds the provider of deployment credentials from the
+// runnerIdentity is what the runner's real executors are built from: the
+// runner's own AWS identity, the secret cipher and the provider of deployment
+// credentials.
+type runnerIdentity struct {
+	awsConfig   aws.Config
+	cipher      secrets.Cipher
+	credentials *deploy.Provider
+}
+
+// newRunnerIdentity builds the provider of deployment credentials from the
 // runner's own AWS identity. Only the runner binary imports internal/awsx/deploy
 // (internal/awsx/boundary_test.go). Nothing is resolved here, so a runner
 // without AWS credentials still starts; a missing KMS region does fail it, as
 // it fails the orchestrator, because the secret cipher cannot work.
-func newDeployCredentials(ctx context.Context, log *slog.Logger, cfg config.Runner, pool *pgxpool.Pool) (*deploy.Provider, error) {
+func newRunnerIdentity(ctx context.Context, log *slog.Logger, cfg config.Runner, pool *pgxpool.Pool) (runnerIdentity, error) {
 	awsConfig, err := awsx.BaseConfig(ctx, cfg.AWS)
 	if err != nil {
 		if cfg.SecretsMode == "kms" {
-			return nil, err
+			return runnerIdentity{}, err
 		}
 		log.Warn("the default AWS configuration could not be loaded; deploying to AWS accounts will fail", "error", err.Error())
 	}
 	cipher, err := app.NewCipher(cfg.Common, awsConfig)
 	if err != nil {
-		return nil, err
+		return runnerIdentity{}, err
 	}
-	return deploy.New(pool, cipher, awsConfig, cfg.AWS).WithLogger(log), nil
+	return runnerIdentity{
+		awsConfig:   awsConfig,
+		cipher:      cipher,
+		credentials: deploy.New(pool, cipher, awsConfig, cfg.AWS).WithLogger(log),
+	}, nil
+}
+
+// resolveDeps wires the resolve executor. It reads the run's own inventory
+// snapshot (not the active one), uses the deployment credentials of the run's
+// account for ECS, ECR and S3, GitHub through the stored connections, and
+// writes config copies to the artifact bucket with the runner's own identity.
+func resolveDeps(cfg config.Runner, pool *pgxpool.Pool, id runnerIdentity, log *slog.Logger) resolve.Deps {
+	artifactClient := s3.NewFromConfig(id.awsConfig, func(o *s3.Options) { o.UsePathStyle = cfg.AWS.UsePathStyleS3() })
+	githubClient := app.GitHubClients(pool, id.cipher, cfg.GitHubAPIURL, log)
+	return resolve.Deps{
+		AWS: id.credentials.For,
+		GitHub: func(ctx context.Context, owner string) (resolve.Source, error) {
+			client, err := githubClient(ctx, owner)
+			if err != nil {
+				return nil, err // a fixed message that names the owner and never a credential
+			}
+			return client, nil
+		},
+		Artifacts: artifacts.New(artifactClient, cfg.ArtifactBucket, cfg.ArtifactKMSKeyID),
+		Inventory: func(ctx context.Context, snapshotID int64) (spec.Inventory, error) {
+			snapshot, err := store.SnapshotByID(ctx, pool, snapshotID)
+			if err != nil {
+				return spec.Inventory{}, err
+			}
+			var inventory spec.Inventory
+			if err := json.Unmarshal(snapshot.Inventory, &inventory); err != nil {
+				return spec.Inventory{}, fmt.Errorf("inventory snapshot %d does not decode: %w", snapshotID, err)
+			}
+			return inventory, nil
+		},
+		Options: cfg.AWS,
+	}
 }
 
 // legWakeups turns "legs" wake-ups into the signal Runner.Run waits on. The
@@ -151,15 +202,17 @@ func legWakeups(ctx context.Context, bus *wake.Bus) <-chan struct{} {
 // the runner announces its run on the "runs" topic so the orchestrator
 // advances it at once. The fake steps are registered only when
 // the configuration allows them (YUMDRAKE_ENV=dev and YUMDRAKE_FAKE_STEPS=true;
-// config.LoadRunner refuses fakes anywhere else). The real executors arrive
-// with plans 5 and 6, so until then a runner without fakes fails every leg it
-// claims with "no executor for this step".
+// config.LoadRunner refuses fakes anywhere else). The caller registers the real
+// "resolve" afterwards, which replaces the fake one; copy-config and ecs-deploy
+// arrive with plan 6, so a runner without fakes fails those legs with "no
+// executor for this step".
 func newRunner(cfg config.Runner, pool *pgxpool.Pool, sink runner.LineSink, bus *wake.Bus, log *slog.Logger) *runner.Runner {
 	q := queue.New(pool, cfg.Lease, nil) // nil: the database clock, shared by every runner and orchestrator
 	r := runner.New(q, sink, cfg.RunnerID, cfg.Concurrency, cfg.Heartbeat, cfg.Poll, log).
 		WithShutdownTimeout(cfg.ShutdownTimeout).
 		WithSettledNotifier(func(runID int64) { bus.Publish(context.Background(), wake.TopicRuns, runID) })
 	if cfg.FakeSteps && cfg.Env == "dev" {
+		// TODO(task 8): the fake revalidate stays registered here until the real one replaces it.
 		fake.Register(r, fake.Options{StepTime: 2 * time.Second, SlowFor: 30 * time.Second})
 		log.Warn("fake steps are registered; nothing real will be changed")
 	}

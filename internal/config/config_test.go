@@ -64,6 +64,23 @@ func TestLoadRunnerArtifactStore(t *testing.T) {
 	}
 }
 
+func TestLoadRunnerGitHubAPIURL(t *testing.T) {
+	env := requiredEnv()
+	cfg, err := LoadRunner(envFrom(env))
+	if err != nil || cfg.GitHubAPIURL != "https://api.github.com" {
+		t.Fatalf("default GitHub API URL = %q, err = %v", cfg.GitHubAPIURL, err)
+	}
+	env["YUMDRAKE_GITHUB_API_URL"] = "https://github.example.com/api/v3"
+	cfg, err = LoadRunner(envFrom(env))
+	if err != nil || cfg.GitHubAPIURL != "https://github.example.com/api/v3" {
+		t.Errorf("GitHub API URL = %q, err = %v", cfg.GitHubAPIURL, err)
+	}
+	env["YUMDRAKE_GITHUB_API_URL"] = "ftp://nope"
+	if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_GITHUB_API_URL") {
+		t.Errorf("bad GitHub API URL error = %v", err)
+	}
+}
+
 func TestLoadOrchestratorDefaults(t *testing.T) {
 	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
 	if err != nil {

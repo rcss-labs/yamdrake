@@ -79,6 +79,9 @@ type Runner struct {
 	// encryption instead of S3-managed keys.
 	ArtifactBucket   string
 	ArtifactKMSKeyID string
+	// GitHubAPIURL (YUMDRAKE_GITHUB_API_URL, default https://api.github.com)
+	// is where resolving reads env files from.
+	GitHubAPIURL string
 	// ValkeyKeyPrefix goes in front of the Valkey channels; it must equal the
 	// orchestrator's so that wake-ups reach each other.
 	ValkeyKeyPrefix string
@@ -225,6 +228,7 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 	if cfg.ArtifactKMSKeyID != "" && !kmsKeyIDPattern.MatchString(cfg.ArtifactKMSKeyID) {
 		l.fail("YUMDRAKE_ARTIFACT_KMS_KEY_ID", "must be a KMS key id, key ARN or alias without spaces")
 	}
+	cfg.GitHubAPIURL = l.githubAPIURL()
 	switch cfg.Env = l.valueOr("YUMDRAKE_ENV", "prod"); cfg.Env {
 	case "dev", "prod":
 	default:

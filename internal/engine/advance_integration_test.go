@@ -4,8 +4,6 @@ package engine
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
@@ -181,11 +179,10 @@ func TestHappyPathStateSequence(t *testing.T) {
 	h.advance(run.ID)
 	planned := h.expectState(run.ID, "planned")
 
-	// The manifest is the resolve leg's result and its id is the hex SHA-256 of it.
+	// The manifest is the resolve leg's result and its id is the manifest's own identity.
 	resolve := h.legByKind(run.ID, "resolve")
-	sum := sha256.Sum256(resolve.Result)
-	if planned.ManifestID != hex.EncodeToString(sum[:]) || string(planned.Manifest) != string(resolve.Result) {
-		t.Fatalf("manifest %q / %q, want the resolve result %q hashed", planned.Manifest, planned.ManifestID, resolve.Result)
+	if planned.ManifestID != sampleManifest(run.ID).ID || string(planned.Manifest) != string(resolve.Result) {
+		t.Fatalf("manifest %q / %q, want the resolve result %q with its identity", planned.Manifest, planned.ManifestID, resolve.Result)
 	}
 	if len(h.locks(run.ID)) != 0 {
 		t.Fatalf("a planned run holds locks")

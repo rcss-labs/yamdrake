@@ -46,6 +46,7 @@ func (s *server) runRoutes() []routeDef {
 		{"GET /api/v1/runs", auth.View, s.listRuns},
 		{"GET /api/v1/runs/{id}", auth.View, s.getRun},
 		{"GET /api/v1/runs/{id}/log", auth.View, s.getRunLog},
+		{"GET /api/v1/runs/{id}/plan", auth.View, s.getRunPlan},
 		{"GET /api/v1/runs/{id}/events", auth.View, s.streamEvents},
 		{"POST /api/v1/runs/{id}/start", auth.View, s.startRun},
 		{"POST /api/v1/runs/{id}/cancel", auth.View, s.cancelRun},

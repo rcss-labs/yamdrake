@@ -378,6 +378,7 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		"GET /api/v1/runs":                              auth.View,
 		"GET /api/v1/runs/{id}":                         auth.View,
 		"GET /api/v1/runs/{id}/log":                     auth.View,
+		"GET /api/v1/runs/{id}/plan":                    auth.View,
 		"GET /api/v1/runs/{id}/events":                  auth.View,
 		"POST /api/v1/runs/{id}/start":                  auth.View,
 		"POST /api/v1/runs/{id}/cancel":                 auth.View,

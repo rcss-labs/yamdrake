@@ -99,11 +99,18 @@ func (l *loader) loadSyncSettings() SyncSettings {
 		l.fail("YUMDRAKE_SYNC_INTERVAL", "must be at least 10s")
 	}
 
-	s.GitHubAPIURL = l.valueOr("YUMDRAKE_GITHUB_API_URL", defaultGitHubAPIURL)
-	if reason := validateHTTPURL(s.GitHubAPIURL); reason != "" {
+	s.GitHubAPIURL = l.githubAPIURL()
+	return s
+}
+
+// githubAPIURL reads YUMDRAKE_GITHUB_API_URL; the runner reads config sources
+// from GitHub too, so both binaries load it.
+func (l *loader) githubAPIURL() string {
+	value := l.valueOr("YUMDRAKE_GITHUB_API_URL", defaultGitHubAPIURL)
+	if reason := validateHTTPURL(value); reason != "" {
 		l.fail("YUMDRAKE_GITHUB_API_URL", reason)
 	}
-	return s
+	return value
 }
 
 // validateHTTPURL returns a reason that never contains raw.

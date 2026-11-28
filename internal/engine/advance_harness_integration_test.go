@@ -287,12 +287,7 @@ func (h *harness) setLeg(legID int64, state string) {
 // resolved settles the run's resolve leg as succeeded with a plan result.
 func (h *harness) resolved(runID int64) {
 	h.t.Helper()
-	leg := h.legByKind(runID, "resolve")
-	_, err := h.pool.Exec(context.Background(),
-		`UPDATE legs SET state = 'succeeded', result = '{"services":{"plan":"ready"}}'::jsonb, finished_at = now() WHERE id = $1`, leg.ID)
-	if err != nil {
-		h.t.Fatalf("settle resolve leg: %v", err)
-	}
+	h.settleResolve(runID, "succeeded", sampleManifest(runID))
 }
 
 // planned creates a run, lets it resolve and returns it in state planned.

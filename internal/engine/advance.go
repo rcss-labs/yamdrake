@@ -2,8 +2,6 @@ package engine
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +13,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yamdrake/internal/manifest"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/wake"
@@ -297,15 +296,31 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 	return nil
 }
 
-// copyManifest stores the resolve leg's result as the run's manifest, with the
-// hex SHA-256 of the result as its id.
+// copyManifest stores the resolve leg's result as the run's manifest when the
+// leg settled, failed ones too: a failed plan is shown with its failed checks.
+// The id is the manifest's own identity (a hash over the pinned inputs, see
+// manifest.Identity), recomputed here from the stored bytes rather than taken
+// from the manifest's id field on trust: approvals bind to this value, so it
+// must describe exactly what is stored. A result that is not a manifest on a
+// leg that succeeded is an error (the run cannot be planned without one); on a
+// failed leg it is skipped, because that leg's result is only a diagnostic.
 func copyManifest(ctx context.Context, tx pgx.Tx, runID int64, legs []store.Leg) error {
 	resolve, ok := latestLeg(legs, "resolve")
-	if !ok || resolve.State != legSucceeded || len(resolve.Result) == 0 {
+	if !ok || (resolve.State != legSucceeded && resolve.State != legFailed) || len(resolve.Result) == 0 {
 		return nil
 	}
-	sum := sha256.Sum256(resolve.Result)
-	return store.SetManifest(ctx, tx, runID, resolve.Result, hex.EncodeToString(sum[:]))
+	var m manifest.Manifest
+	if err := json.Unmarshal(resolve.Result, &m); err != nil {
+		if resolve.State == legFailed {
+			return nil
+		}
+		return fmt.Errorf("the resolve result of run %d is not a manifest: %w", runID, err)
+	}
+	identity := manifest.Identity(m)
+	if m.ID != "" && m.ID != identity {
+		return fmt.Errorf("the resolve result of run %d carries manifest id %q but its inputs hash to %q", runID, m.ID, identity)
+	}
+	return store.SetManifest(ctx, tx, runID, resolve.Result, identity)
 }
 
 func sortedIDs(ids []int64) []int64 {

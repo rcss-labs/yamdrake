@@ -295,7 +295,9 @@ func (r *resolution) sourceFor(ctx context.Context, owner string) (Source, error
 	entry.once.Do(func() {
 		entry.s, entry.err = r.x.d.GitHub(ctx, owner)
 		if entry.err != nil {
-			r.env.Log("error", "GitHub access for "+owner+" failed: "+entry.err.Error())
+			// The factory's error text is not echoed: only its own wiring knows
+			// whether it is free of credentials, and the log must not depend on that.
+			r.env.Log("error", "GitHub access for "+owner+" failed.")
 		}
 	})
 	return entry.s, entry.err

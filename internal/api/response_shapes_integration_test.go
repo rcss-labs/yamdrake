@@ -106,9 +106,12 @@ var notAListResponse = map[string]bool{
 	// The run routes need runs, so TestGetRunIncludesFailureSummary,
 	// TestListRunsFilters and TestLogEndpointFiltersPagesAndNeedsViewLogs check
 	// their lists with nullSlices; the event stream is not JSON.
-	"GET /api/v1/runs":             true,
-	"GET /api/v1/runs/{id}":        true,
-	"GET /api/v1/runs/{id}/log":    true,
+	"GET /api/v1/runs":          true,
+	"GET /api/v1/runs/{id}":     true,
+	"GET /api/v1/runs/{id}/log": true,
+	// The plan needs a stored manifest; TestPlanEndpointServesRedactedManifest
+	// checks its lists with nullSlices.
+	"GET /api/v1/runs/{id}/plan":   true,
 	"GET /api/v1/runs/{id}/events": true,
 }
 

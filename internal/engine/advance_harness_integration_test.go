@@ -111,6 +111,20 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		for _, action := range actions {
 			p.Grants = append(p.Grants, store.Grant{Action: action})
 		}
+		// The engine re-resolves the requester from the database when a queued
+		// run starts, so the person's group and grants are stored as well.
+		group, err := store.CreateGroup(ctx, pool, name+"-group", admin)
+		if err != nil {
+			t.Fatalf("CreateGroup %s: %v", name, err)
+		}
+		if err := store.SetManualMembership(ctx, pool, user.ID, group.ID, true); err != nil {
+			t.Fatalf("SetManualMembership %s: %v", name, err)
+		}
+		for _, action := range actions {
+			if _, err := store.CreateGrant(ctx, pool, store.Grant{GroupID: group.ID, Action: action}); err != nil {
+				t.Fatalf("CreateGrant %s %s: %v", name, action, err)
+			}
+		}
 		return p
 	}
 	h.admin = person("admin", true)

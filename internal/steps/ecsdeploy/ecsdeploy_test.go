@@ -519,6 +519,10 @@ func TestLookupBeyondTheCapWithAnInterruptedRegisterIsUnknown(t *testing.T) {
 		if len(f.ecs.registers) != 1 {
 			t.Errorf("registers = %d, want 1", len(f.ecs.registers))
 		}
+		// No register was intended, so no revision of ours exists: one page is enough.
+		if f.ecs.listCalls != 1 {
+			t.Errorf("ListTaskDefinitions calls = %d, want 1", f.ecs.listCalls)
+		}
 	})
 }
 
@@ -601,6 +605,24 @@ func TestAmbiguousUpdateChecksServiceFirst(t *testing.T) {
 		}
 		if slices.Contains(f.env.DoKeys(), "update-service:"+arn8+":retry-2") {
 			t.Errorf("keys = %v", f.env.DoKeys())
+		}
+	})
+	t.Run("restore: tasks of the target that stopped before the update was intended do not count", func(t *testing.T) {
+		f := newFixture(t)
+		arn6 := tdARN(6)
+		f.ecs.addTD(6, nil)
+		f.svc.TargetTaskDefinition = arn6
+		opAt := t0.Add(time.Hour)
+		f.env.PresetOps = []store.Op{{ID: 1, Seq: 1, Name: "update-service", Key: "update-service:" + arn6, State: "intended", At: opAt}}
+		// The target ran in an earlier deploy; its tasks stopped before this update was intended.
+		old := crashedTask("old", opAt.Add(-30*time.Minute), 3)
+		old.TaskDefinitionArn = aws.String(arn6)
+		old.StartedAt = aws.Time(opAt.Add(-2 * time.Hour))
+		f.ecs.stopped = append(f.ecs.stopped, old)
+		out := f.run()
+		f.want(out, "succeeded")
+		if len(f.ecs.updates) != 1 || !slices.Contains(f.env.DoKeys(), "update-service:"+arn6+":retry-2") {
+			t.Errorf("updates = %d, keys = %v, want one retry-2 update", len(f.ecs.updates), f.env.DoKeys())
 		}
 	})
 	t.Run("stopped tasks of an interrupted update could not be read", func(t *testing.T) {

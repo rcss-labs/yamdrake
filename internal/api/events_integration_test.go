@@ -211,8 +211,10 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 	var names []string
 	var lines []string
 	finalStateAt := -1
+	// The stream ends when the server closes it. Pings keep arriving, so the bound is one
+	// deadline for the whole drain, not a silence between events.
+	drainDeadline := time.After(wait)
 	for closed := false; !closed; {
-		// The stream ends when the server closes it; a silence of `wait` is a failure, not an end.
 		select {
 		case e, ok := <-stream.events:
 			if !ok {
@@ -233,8 +235,8 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 					lines = append(lines, l.Text)
 				}
 			}
-		case <-time.After(wait):
-			t.Fatalf("the stream neither sent more nor closed within %s; events so far = %v", wait, names)
+		case <-drainDeadline:
+			t.Fatalf("the stream did not close within %s; events so far = %v", wait, names)
 		}
 	}
 	if len(names) < 3 || names[len(names)-1] != "end" || finalStateAt < 0 || finalStateAt > len(names)-2 {

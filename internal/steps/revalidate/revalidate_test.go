@@ -69,6 +69,7 @@ type stubAWS struct {
 	mu          sync.Mutex
 	taskDef     string          // the task definition the service runs
 	serviceGone bool            // DescribeServices reports it missing
+	serviceName string          // when set, DescribeServices returns only this service, under this name
 	images      map[string]bool // digests that exist
 	objects     map[string][]byte
 	s3Err       error // returned by every GetObject when set
@@ -86,9 +87,14 @@ func (s *stubAWS) DescribeServices(_ context.Context, in *ecs.DescribeServicesIn
 	if s.serviceGone {
 		return &ecs.DescribeServicesOutput{Failures: []ecstypes.Failure{{Arn: aws.String(in.Services[0]), Reason: aws.String("MISSING")}}}, nil
 	}
-	return &ecs.DescribeServicesOutput{Services: []ecstypes.Service{{
+	svc := ecstypes.Service{
 		ServiceArn: aws.String(webARN), ServiceName: aws.String("web"), Status: aws.String("ACTIVE"), TaskDefinition: aws.String(s.taskDef),
-	}}}, nil
+	}
+	if s.serviceName != "" {
+		svc.ServiceName = aws.String(s.serviceName)
+		svc.ServiceArn = aws.String("arn:aws:ecs:eu-west-1:111122223333:service/main/" + s.serviceName)
+	}
+	return &ecs.DescribeServicesOutput{Services: []ecstypes.Service{svc}}, nil
 }
 
 func (s *stubAWS) DescribeTaskDefinition(context.Context, *ecs.DescribeTaskDefinitionInput, ...func(*ecs.Options)) (*ecs.DescribeTaskDefinitionOutput, error) {
@@ -171,11 +177,19 @@ func (e *testEnv) text() string {
 // --- fixture ----------------------------------------------------------------
 
 type harness struct {
-	aws       *stubAWS
-	artifacts *stubArtifacts
-	env       *testEnv
-	manifest  manifest.Manifest
-	raw       []byte // overrides the encoded manifest when set
+	aws               *stubAWS
+	artifacts         *stubArtifacts
+	artifactsOverride resolve.ArtifactStore // used instead of artifacts when set
+	env               *testEnv
+	manifest          manifest.Manifest
+	raw               []byte // overrides the encoded manifest when set
+}
+
+// putOnlyArtifacts is a store that can write but cannot read stored copies.
+type putOnlyArtifacts struct{}
+
+func (putOnlyArtifacts) Put(context.Context, int64, string, string, string, bool, []byte) (string, string, error) {
+	return "", "", errors.New("put only")
 }
 
 // newHarness is a run planned for one service, "web", with a stored env file
@@ -235,6 +249,9 @@ func (h *harness) run(t *testing.T) queue.Outcome {
 		},
 		Clients:   func(aws.Config) resolve.Clients { return resolve.Clients{ECS: h.aws, ECR: h.aws, S3: h.aws} },
 		Artifacts: h.artifacts,
+	}
+	if h.artifactsOverride != nil {
+		deps.Artifacts = h.artifactsOverride
 	}
 	task := queue.Claimed{
 		Leg: store.Leg{ID: 2, RunID: runID, Kind: "revalidate"},
@@ -312,6 +329,16 @@ func TestServiceRemovedSincePlanningFails(t *testing.T) {
 	h.aws.serviceGone = true
 	out := h.run(t)
 	h.wantDrift(t, out, "web")
+}
+
+func TestOnlyServiceReturnedIsMatchedLikeResolve(t *testing.T) {
+	h := newHarness()
+	h.aws.serviceName = "web-alias"
+	out := h.run(t)
+	if out.State != "succeeded" {
+		t.Fatalf("outcome = %q %q: %s\nlog:\n%s", out.State, out.FailureShort, out.FailureDetail, h.env.text())
+	}
+	h.noLeaks(t, out)
 }
 
 func TestDestinationChangedSincePlanningFails(t *testing.T) {
@@ -408,6 +435,19 @@ func TestEverythingChangedIsReportedTogether(t *testing.T) {
 	h.aws.objects["config-dest/env/web.env"] = envChanged
 	out := h.run(t)
 	h.wantDrift(t, out, webTaskDef6, "web.env", "image")
+}
+
+func TestArtifactStoreWithoutReaderCannotPass(t *testing.T) {
+	h := newHarness()
+	h.artifactsOverride = putOnlyArtifacts{}
+	out := h.run(t)
+	if out.State != "failed" || out.FailureShort != "could not re-check the targets" {
+		t.Fatalf("outcome = %q %q (%s), want failed \"could not re-check the targets\"", out.State, out.FailureShort, out.FailureDetail)
+	}
+	if !strings.Contains(out.FailureDetail, "the artifact store cannot read stored copies") {
+		t.Errorf("detail %q does not say the store cannot read stored copies", out.FailureDetail)
+	}
+	h.noLeaks(t, out)
 }
 
 func TestCancelledBeforeAnythingIsRead(t *testing.T) {

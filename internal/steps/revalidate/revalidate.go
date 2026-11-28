@@ -234,6 +234,11 @@ func (r *revalidation) taskDefinition(ctx context.Context, s manifest.Service, r
 			break
 		}
 	}
+	// same rule as resolve: ECS returned only the service asked for
+	if found == nil && len(described.Services) == 1 {
+		c := described.Services[0]
+		found = &struct{ status, taskDefinition string }{aws.ToString(c.Status), aws.ToString(c.TaskDefinition)}
+	}
 	switch {
 	case found == nil:
 		r.changed(s.Name, "service %s in cluster %s no longer exists; it ran %s at planning time", ref.Service, ref.Cluster, s.PreviousTaskDefinition)

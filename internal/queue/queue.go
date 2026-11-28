@@ -28,9 +28,10 @@ import (
 // started (the generation moved on), or the leg is settled or back in the queue.
 var ErrLeaseLost = errors.New("lease lost")
 
-// MaxAttempts is how many times an expired leg is given to a runner before it
-// becomes unknown.
-const MaxAttempts = 5
+// MaxLeaseExpiries is how many times a leg's lease may run out before the leg
+// becomes unknown. A graceful Release does not count; Attempt (claims) is
+// informational.
+const MaxLeaseExpiries = 5
 
 const unknownDetail = "no runner could confirm the outcome after 5 attempts"
 
@@ -60,12 +61,24 @@ type Queue struct {
 }
 
 // New returns a queue whose leases last lease from the time of the claim or
-// heartbeat, measured by now (time.Now in production).
+// heartbeat. A nil now means the database clock, which production uses so that
+// every orchestrator and runner agrees on when a lease ends whatever their own
+// clocks say; tests inject a clock instead.
 func New(pool *pgxpool.Pool, lease time.Duration, now func() time.Time) *Queue {
 	return &Queue{pool: pool, lease: lease, now: now}
 }
 
-func (q *Queue) at() time.Time { return q.now().UTC().Truncate(time.Microsecond) }
+// at is the time to write: nil (SQL NULL) when the database clock applies.
+// Every statement that takes it wraps the parameter as coalesce($n::timestamptz, now()).
+func (q *Queue) at() any {
+	if q.now == nil {
+		return nil
+	}
+	return q.now().UTC().Truncate(time.Microsecond)
+}
+
+// leaseSeconds is the lease as a parameter for make_interval(secs => ...).
+func (q *Queue) leaseSeconds() float64 { return q.lease.Seconds() }
 
 // Claim gives the oldest queued leg (by queued_at, then id) to runnerID: state
 // claimed, a new generation, one more attempt, a lease. It returns nil, nil when
@@ -78,14 +91,13 @@ func (q *Queue) Claim(ctx context.Context, runnerID string) (*Claimed, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	now := q.at()
 	var legID int64
 	err = tx.QueryRow(ctx,
 		`UPDATE legs SET state = 'claimed', generation = generation + 1, attempt = attempt + 1,
-			runner_id = $1, lease_until = $2
+			runner_id = $1, lease_until = coalesce($2::timestamptz, now()) + make_interval(secs => $3::float8)
 		 WHERE state = 'queued' AND id = (SELECT id FROM legs WHERE state = 'queued'
 			ORDER BY queued_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
-		 RETURNING id`, runnerID, now.Add(q.lease)).Scan(&legID)
+		 RETURNING id`, runnerID, q.at(), q.leaseSeconds()).Scan(&legID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -139,14 +151,15 @@ func (q *Queue) guarded(ctx context.Context, what, query string, legID, generati
 // Heartbeat extends the lease. ErrLeaseLost when the caller no longer holds the leg.
 func (q *Queue) Heartbeat(ctx context.Context, legID, generation int64) error {
 	return q.guarded(ctx, "heartbeat",
-		`UPDATE legs SET lease_until = $3 WHERE id = $1 AND `+heldBy,
-		legID, generation, q.at().Add(q.lease))
+		`UPDATE legs SET lease_until = coalesce($3::timestamptz, now()) + make_interval(secs => $4::float8)
+		 WHERE id = $1 AND `+heldBy,
+		legID, generation, q.at(), q.leaseSeconds())
 }
 
 // MarkRunning moves a claimed leg to running (started_at is set the first time).
 func (q *Queue) MarkRunning(ctx context.Context, legID, generation int64) error {
 	return q.guarded(ctx, "mark running",
-		`UPDATE legs SET state = 'running', started_at = coalesce(started_at, $3) WHERE id = $1 AND `+heldBy,
+		`UPDATE legs SET state = 'running', started_at = coalesce(started_at, coalesce($3::timestamptz, now())) WHERE id = $1 AND `+heldBy,
 		legID, generation, q.at())
 }
 
@@ -169,13 +182,16 @@ func (q *Queue) Complete(ctx context.Context, legID, generation int64, o Outcome
 	}
 	return q.guarded(ctx, "complete",
 		`UPDATE legs SET state = $3, result = $4, failure_short = $5, failure_detail = $6,
-			finished_at = $7, lease_until = NULL
+			finished_at = coalesce($7::timestamptz, now()), lease_until = NULL
 		 WHERE id = $1 AND `+heldBy,
 		legID, generation, o.State, jsonOrNull(o.Result), o.FailureShort, o.FailureDetail, q.at())
 }
 
 // Release gives the leg back to the queue: state queued, no runner, no lease.
-// Attempt, resume data and operations are kept.
+// Attempt, resume data and operations are kept, and so is queued_at: a leg a
+// runner handed back gracefully keeps its place at the front. (Sweep, by
+// contrast, sets queued_at to now: a leg whose runner vanished goes to the
+// back, so a leg that keeps killing runners does not starve the others.)
 func (q *Queue) Release(ctx context.Context, legID, generation int64) error {
 	return q.guarded(ctx, "release",
 		`UPDATE legs SET state = 'queued', runner_id = '', lease_until = NULL WHERE id = $1 AND `+heldBy,
@@ -214,7 +230,7 @@ func (q *Queue) Intend(ctx context.Context, legID, generation int64, name, key s
 	// ON CONFLICT on (leg_id, key) is the idempotency guarantee itself.
 	_, err = tx.Exec(ctx,
 		`INSERT INTO operations (leg_id, seq, name, key, intent, state, at)
-		 VALUES ($1, (SELECT coalesce(max(seq), 0) + 1 FROM operations WHERE leg_id = $1), $2, $3, $4, 'intended', $5)
+		 VALUES ($1, (SELECT coalesce(max(seq), 0) + 1 FROM operations WHERE leg_id = $1), $2, $3, $4, 'intended', coalesce($5::timestamptz, now()))
 		 ON CONFLICT (leg_id, key) DO NOTHING`,
 		legID, name, key, jsonOrNull(intent), q.at())
 	if err != nil {
@@ -224,6 +240,9 @@ func (q *Queue) Intend(ctx context.Context, legID, generation int64, name, key s
 		`SELECT `+store.OpColumns+` FROM operations WHERE leg_id = $1 AND key = $2`, legID, key))
 	if err != nil {
 		return store.Op{}, fmt.Errorf("intend: %w", store.MapError(err))
+	}
+	if op.Name != name {
+		return store.Op{}, fmt.Errorf("intend: key %q already names operation %q, not %q: %w", key, op.Name, name, store.ErrInvalid)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return store.Op{}, fmt.Errorf("intend: %w", err)
@@ -249,7 +268,7 @@ func (q *Queue) Finish(ctx context.Context, legID, generation, opID int64, ok bo
 		state = "done"
 	}
 	tag, err := tx.Exec(ctx,
-		`UPDATE operations SET state = $3, result = $4, at = $5
+		`UPDATE operations SET state = $3, result = $4, at = coalesce($5::timestamptz, now())
 		 WHERE id = $1 AND leg_id = $2 AND state = 'intended'`,
 		opID, legID, state, jsonOrNull(result), q.at())
 	if err != nil {
@@ -287,8 +306,8 @@ func (q *Queue) CancelRequested(ctx context.Context, legID int64) (bool, error) 
 }
 
 // Sweep takes every leg whose lease has passed away from its runner. With fewer
-// than MaxAttempts attempts the leg goes back to the queue (resume data and
-// operations kept); at MaxAttempts it becomes unknown, because a runner may
+// than MaxLeaseExpiries expiries the leg goes back to the queue (resume data and
+// operations kept); at MaxLeaseExpiries it becomes unknown, because a runner may
 // have changed something outside and nobody can say what.
 //
 // Each UPDATE re-checks its predicate against the latest committed row, so a
@@ -302,18 +321,20 @@ func (q *Queue) Sweep(ctx context.Context) (requeued, unknown int, err error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	now := q.at()
-	expired := `state IN ('claimed', 'running') AND lease_until < $1`
+	expired := `state IN ('claimed', 'running') AND lease_until < coalesce($1::timestamptz, now())`
 	tag, err := tx.Exec(ctx,
-		`UPDATE legs SET state = 'queued', runner_id = '', lease_until = NULL, queued_at = $1
-		 WHERE `+expired+` AND attempt < $2`, now, MaxAttempts)
+		`UPDATE legs SET state = 'queued', runner_id = '', lease_until = NULL,
+			queued_at = coalesce($1::timestamptz, now()), lease_expiries = lease_expiries + 1
+		 WHERE `+expired+` AND lease_expiries + 1 < $2`, now, MaxLeaseExpiries)
 	if err != nil {
 		return 0, 0, fmt.Errorf("sweep: requeue: %w", err)
 	}
 	requeued = int(tag.RowsAffected())
 	tag, err = tx.Exec(ctx,
-		`UPDATE legs SET state = 'unknown', lease_until = NULL, finished_at = $1,
+		`UPDATE legs SET state = 'unknown', lease_until = NULL, finished_at = coalesce($1::timestamptz, now()),
+			lease_expiries = lease_expiries + 1,
 			failure_short = 'outcome unknown', failure_detail = $3
-		 WHERE `+expired+` AND attempt >= $2`, now, MaxAttempts, unknownDetail)
+		 WHERE `+expired+` AND lease_expiries + 1 >= $2`, now, MaxLeaseExpiries, unknownDetail)
 	if err != nil {
 		return 0, 0, fmt.Errorf("sweep: mark unknown: %w", err)
 	}

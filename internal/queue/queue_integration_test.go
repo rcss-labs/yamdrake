@@ -260,9 +260,6 @@ func TestClaimSkipsLegLockedByAnotherTransaction(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := store.GetLeg(context.Background(), tx, first.ID); err != nil {
-		t.Fatalf("GetLeg: %v", err)
-	}
 	if _, err := tx.Exec(context.Background(), "SELECT id FROM legs WHERE id = $1 FOR UPDATE", first.ID); err != nil {
 		t.Fatalf("lock leg: %v", err)
 	}
@@ -645,7 +642,7 @@ func TestSweepRequeuesThenMarksUnknownAtFiveAttempts(t *testing.T) {
 		got := e.get(leg.ID)
 		if attempt < 5 {
 			if requeued != 1 || unknown != 0 || got.State != "queued" || got.RunnerID != "" || got.LeaseUntil != nil ||
-				got.Attempt != attempt || string(got.Resume) != `{"cp": 1}` {
+				got.Attempt != attempt || got.LeaseExpiries != attempt || string(got.Resume) != `{"cp": 1}` {
 				t.Fatalf("attempt %d: sweep = %d, %d; leg %+v", attempt, requeued, unknown, got)
 			}
 			if ops, _ := e.q.Ops(ctx, leg.ID); len(ops) != 1 || ops[0].ID != opID || ops[0].State != "intended" {
@@ -701,7 +698,11 @@ func TestSweepRacingCompleteLeavesOneConsistentOutcome(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			completed[i] = e.q.Complete(ctx, c.Leg.ID, c.Leg.Generation, Outcome{State: "succeeded"}) == nil
+			err := e.q.Complete(ctx, c.Leg.ID, c.Leg.Generation, Outcome{State: "succeeded"})
+			if err != nil && !errors.Is(err, ErrLeaseLost) {
+				t.Errorf("Complete leg %d: %v; the loser must get ErrLeaseLost", c.Leg.ID, err)
+			}
+			completed[i] = err == nil
 		}()
 	}
 	if _, _, err := e.q.Sweep(ctx); err != nil {
@@ -739,7 +740,7 @@ func TestReleaseReturnsLegToQueueKeepingResume(t *testing.T) {
 		t.Fatalf("Release: %v", err)
 	}
 	got := e.get(c.Leg.ID)
-	if got.State != "queued" || got.RunnerID != "" || got.LeaseUntil != nil || got.Attempt != 1 || got.Generation != 1 || string(got.Resume) != `{"cp": 7}` {
+	if got.State != "queued" || got.RunnerID != "" || got.LeaseUntil != nil || got.Attempt != 1 || got.LeaseExpiries != 0 || got.Generation != 1 || string(got.Resume) != `{"cp": 7}` {
 		t.Fatalf("leg after Release = %+v", got)
 	}
 	if ops, _ := e.q.Ops(ctx, c.Leg.ID); len(ops) != 1 || ops[0].ID != op.ID {
@@ -771,5 +772,139 @@ func TestCancelRequested(t *testing.T) {
 	}
 	if _, err := e.q.CancelRequested(ctx, 999999); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("CancelRequested(unknown) = %v, want store.ErrNotFound", err)
+	}
+}
+
+// Isolates the generation predicate: the leg is still claimed (by the new
+// holder), so only the generation tells the old holder apart.
+func TestStaleCompleteWhileNewHolderStillClaimedChangesNothing(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	oldGen, _, legID := e.reclaimed()
+	before := e.get(legID)
+	err := e.q.Complete(context.Background(), legID, oldGen, Outcome{State: "succeeded", Result: []byte(`{"by":"old"}`)})
+	if !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("stale Complete = %v, want ErrLeaseLost", err)
+	}
+	if after := e.get(legID); !reflect.DeepEqual(before, after) {
+		t.Fatalf("stale Complete changed a leg held by the new runner:\nbefore %+v\nafter  %+v", before, after)
+	}
+}
+
+func TestStaleHolderOfSweptQueuedLegIsRejected(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newEnv(t)
+	e.addLeg("svc", e.clock.Now())
+	first := e.claim("old")
+	op, err := e.q.Intend(ctx, first.Leg.ID, first.Leg.Generation, "n", "k", nil)
+	if err != nil {
+		t.Fatalf("Intend: %v", err)
+	}
+	e.clock.Advance(testLease + time.Second)
+	if _, _, err := e.q.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	before := e.get(first.Leg.ID)
+	if before.State != "queued" {
+		t.Fatalf("state = %q, want queued", before.State)
+	}
+	for name, call := range legWrites(e.q, first.Leg.ID, op.ID) {
+		if err := call(first.Leg.Generation); !errors.Is(err, ErrLeaseLost) {
+			t.Errorf("%s on a swept, queued leg = %v, want ErrLeaseLost", name, err)
+		}
+	}
+	if after := e.get(first.Leg.ID); !reflect.DeepEqual(before, after) {
+		t.Fatalf("stale writes changed the queued leg:\nbefore %+v\nafter  %+v", before, after)
+	}
+}
+
+// A graceful Release is not a lease expiry: only expiries count toward unknown.
+func TestReleasesDoNotConsumeTheExpiryBudget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newEnv(t)
+	leg := e.addLeg("svc", e.clock.Now())
+	for i := 1; i <= 4; i++ {
+		c := e.claim("r")
+		if err := e.q.Release(ctx, leg.ID, c.Leg.Generation); err != nil {
+			t.Fatalf("Release %d: %v", i, err)
+		}
+	}
+	for expiry := 1; expiry <= 5; expiry++ {
+		c := e.claim("r")
+		if c.Leg.Attempt != 4+expiry {
+			t.Fatalf("claim %d: attempt = %d, want %d", expiry, c.Leg.Attempt, 4+expiry)
+		}
+		e.clock.Advance(testLease + time.Second)
+		if _, _, err := e.q.Sweep(ctx); err != nil {
+			t.Fatalf("Sweep: %v", err)
+		}
+		got := e.get(leg.ID)
+		wantState := "queued"
+		if expiry == 5 {
+			wantState = "unknown"
+		}
+		if got.State != wantState || got.LeaseExpiries != expiry {
+			t.Fatalf("after expiry %d: state %q expiries %d, want %q, %d", expiry, got.State, got.LeaseExpiries, wantState, expiry)
+		}
+	}
+}
+
+func TestIntendWithKnownKeyAndDifferentNameIsInvalid(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newEnv(t)
+	e.addLeg("svc", e.clock.Now())
+	c := e.claim("r")
+	if _, err := e.q.Intend(ctx, c.Leg.ID, c.Leg.Generation, "register", "k", nil); err != nil {
+		t.Fatalf("Intend: %v", err)
+	}
+	if _, err := e.q.Intend(ctx, c.Leg.ID, c.Leg.Generation, "deregister", "k", nil); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("Intend with another name = %v, want store.ErrInvalid", err)
+	}
+	if ops, _ := e.q.Ops(ctx, c.Leg.ID); len(ops) != 1 || ops[0].Name != "register" {
+		t.Fatalf("ops = %+v", ops)
+	}
+}
+
+// With a nil clock the queue uses the database clock (R22).
+func TestNilClockUsesDatabaseTime(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newEnv(t)
+	q := New(e.pool, testLease, nil)
+	// The legs' queued_at is far in the past of the fake clock's date, so the
+	// database clock cannot be mistaken for the test clock.
+	e.addLeg("svc", e.clock.Now())
+
+	var before, after time.Time
+	if err := e.pool.QueryRow(ctx, "SELECT now()").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	c, err := q.Claim(ctx, "r")
+	if err != nil || c == nil {
+		t.Fatalf("Claim = %v, %v", c, err)
+	}
+	if err := q.Heartbeat(ctx, c.Leg.ID, c.Leg.Generation); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	if err := e.pool.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	got := e.get(c.Leg.ID)
+	if got.LeaseUntil == nil || got.LeaseUntil.Before(before.Add(testLease-time.Second)) || got.LeaseUntil.After(after.Add(testLease+time.Second)) {
+		t.Fatalf("lease_until = %v, want database now (%v .. %v) + %v", got.LeaseUntil, before, after, testLease)
+	}
+	// Sweep compares against the database clock too: nothing is expired yet,
+	// and a lease already in the database's past is.
+	if requeued, unknown, err := q.Sweep(ctx); err != nil || requeued+unknown != 0 {
+		t.Fatalf("Sweep = %d, %d, %v; want nothing", requeued, unknown, err)
+	}
+	if _, err := e.pool.Exec(ctx, "UPDATE legs SET lease_until = now() - interval '1 second' WHERE id = $1", c.Leg.ID); err != nil {
+		t.Fatal(err)
+	}
+	if requeued, _, err := q.Sweep(ctx); err != nil || requeued != 1 {
+		t.Fatalf("Sweep = %d, %v; want 1 requeued", requeued, err)
 	}
 }

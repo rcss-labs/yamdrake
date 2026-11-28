@@ -135,7 +135,7 @@ function serviceFixture(name: string, environments: string[]): Service {
                 line: 12 + index,
               },
             ]
-          : null,
+          : [],
       tomls:
         name === 'billing'
           ? [
@@ -146,7 +146,7 @@ function serviceFixture(name: string, environments: string[]): Service {
                 line: 20 + index,
               },
             ]
-          : null,
+          : [],
       line: 10 + index,
     }
   })
@@ -196,7 +196,7 @@ export function buildJobDefinition(id: string, title: string, groups: NonNullabl
     approval: approvalLabels.length > 0 ? { labels: approvalLabels, expires: 4 * 3600 * 1e9, line: 9 } : null,
     slack_channel: '#deployments',
     steps: [
-      { name: 'copy-config', use: 'copy-config', group: groups[0]?.id ?? '', max_parallel: 4, timeout: 0, needs: null, line: 14 },
+      { name: 'copy-config', use: 'copy-config', group: groups[0]?.id ?? '', max_parallel: 4, timeout: 0, needs: [], line: 14 },
       {
         name: 'deploy',
         use: 'deploy-ecs',

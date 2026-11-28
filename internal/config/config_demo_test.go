@@ -25,6 +25,9 @@ func TestRefusesDemoKeyOutsideDev(t *testing.T) {
 		{"demo key in prod is refused", DemoSecretKey, "prod", true},
 		{"demo key with no env (default prod) is refused", DemoSecretKey, "", true},
 		{"demo key in dev is allowed", DemoSecretKey, "dev", false},
+		{"dev compose key in prod is refused", DevComposeSecretKey, "prod", true},
+		{"dev compose key with no env is refused", DevComposeSecretKey, "", true},
+		{"dev compose key in dev is allowed", DevComposeSecretKey, "dev", false},
 		{"another key in prod is allowed", validSecretKey, "prod", false},
 	}
 	for loaderName, load := range loaders {
@@ -41,7 +44,7 @@ func TestRefusesDemoKeyOutsideDev(t *testing.T) {
 					if err == nil || !strings.Contains(err.Error(), "YUMDRAKE_LOCAL_SECRET_KEY") {
 						t.Fatalf("error = %v, want one naming YUMDRAKE_LOCAL_SECRET_KEY", err)
 					}
-					if strings.Contains(err.Error(), DemoSecretKey) {
+					if strings.Contains(err.Error(), DemoSecretKey) || strings.Contains(err.Error(), DevComposeSecretKey) {
 						t.Errorf("error echoes the key: %v", err)
 					}
 					return

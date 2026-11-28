@@ -25,7 +25,7 @@ function makeTwoGroupJob() {
     { id: 'billing', label: 'Billing', services: ['billing'], line: 9 },
   ]
   definition.steps = [
-    { name: 'config-backends', use: 'copy-config', group: 'backends', max_parallel: 4, timeout: 0, needs: null, line: 14 },
+    { name: 'config-backends', use: 'copy-config', group: 'backends', max_parallel: 4, timeout: 0, needs: [], line: 14 },
     { name: 'roll-backends', use: 'deploy-ecs', group: 'backends', max_parallel: 0, timeout: 1800 * 1e9, needs: [{ step: 'config-backends', scope: 'service', line: 19 }], line: 17 },
     { name: 'config-billing', use: 'copy-config', group: 'billing', max_parallel: 0, timeout: 0, needs: [{ step: 'config-backends', scope: 'step', line: 25 }], line: 22 },
   ]

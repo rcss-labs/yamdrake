@@ -256,6 +256,7 @@ func startEngineOrchestrator(t *testing.T, databaseURL, keyPrefix, valkeyAddr, g
 		"YUMDRAKE_VALKEY_ADDR":       valkeyAddr,
 		"YUMDRAKE_HTTP_ADDR":         addr,
 		"YUMDRAKE_LOCAL_SECRET_KEY":  localSecretKey,
+		"YUMDRAKE_ENV":               "dev", // the key is public, which only dev accepts
 		"YUMDRAKE_PUBLIC_URL":        "http://" + addr,
 		"YUMDRAKE_VALKEY_KEY_PREFIX": keyPrefix,
 		"YUMDRAKE_SYNC_INTERVAL":     syncInterval.String(),

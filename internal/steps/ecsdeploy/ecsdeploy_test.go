@@ -147,10 +147,20 @@ func (f *fakeECS) ListTaskDefinitions(_ context.Context, in *ecs.ListTaskDefinit
 	if f.listCalls <= f.hideLists {
 		return out, nil
 	}
-	for i := len(f.tds) - 1; i >= 0 && len(out.TaskDefinitionArns) < int(aws.ToInt32(in.MaxResults)); i-- {
+	var matching []string // newest first
+	for i := len(f.tds) - 1; i >= 0; i-- {
 		if strings.HasPrefix(aws.ToString(f.tds[i].td.Family), aws.ToString(in.FamilyPrefix)) {
-			out.TaskDefinitionArns = append(out.TaskDefinitionArns, aws.ToString(f.tds[i].td.TaskDefinitionArn))
+			matching = append(matching, aws.ToString(f.tds[i].td.TaskDefinitionArn))
 		}
+	}
+	start := 0
+	if in.NextToken != nil {
+		start, _ = strconv.Atoi(*in.NextToken) // the token is the index to continue from
+	}
+	end := min(start+int(aws.ToInt32(in.MaxResults)), len(matching))
+	out.TaskDefinitionArns = matching[start:end]
+	if end < len(matching) {
+		out.NextToken = aws.String(strconv.Itoa(end))
 	}
 	return out, nil
 }
@@ -460,6 +470,62 @@ func TestAdoptsTaggedRevisionInsteadOfRegisteringAgain(t *testing.T) {
 	}
 }
 
+func intendedRegister() store.Op {
+	return store.Op{ID: 1, Seq: 1, Name: "register-task-definition", Key: "register-task-definition:77", State: "intended"}
+}
+
+// addUntagged stores n revisions after the newest one, with no tags.
+func (f *fakeECS) addUntagged(n int) {
+	for range n {
+		f.addTD(f.tds[len(f.tds)-1].td.Revision+1, nil)
+	}
+}
+
+func TestAdoptsTaggedRevisionBeyondTheFirstPage(t *testing.T) {
+	f := newFixture(t)
+	f.ecs.addTD(8, stamp(runID, legID))
+	f.ecs.addUntagged(25) // other deploys registered after ours
+	f.env.PresetOps = []store.Op{intendedRegister()}
+	out := f.run()
+	f.want(out, "succeeded")
+	if len(f.ecs.registers) != 0 {
+		t.Errorf("registered %d revisions, want 0", len(f.ecs.registers))
+	}
+	if res := f.result(out); !res.Adopted || res.TaskDefinition != tdARN(8) {
+		t.Errorf("result = %+v", res)
+	}
+}
+
+func TestLookupBeyondTheCapWithAnInterruptedRegisterIsUnknown(t *testing.T) {
+	t.Run("an interrupted register may be further back", func(t *testing.T) {
+		f := newFixture(t)
+		f.ecs.addTD(8, stamp(runID, legID))
+		f.ecs.addUntagged(250)
+		f.env.PresetOps = []store.Op{intendedRegister()}
+		out := f.run()
+		f.want(out, "unknown")
+		if out.FailureShort != "could not find an interrupted register's revision among the newest 200" {
+			t.Errorf("short = %q", out.FailureShort)
+		}
+		if len(f.ecs.registers) != 0 || len(f.ecs.updates) != 0 {
+			t.Errorf("registers %d, updates %d", len(f.ecs.registers), len(f.ecs.updates))
+		}
+	})
+	t.Run("no register was ever intended", func(t *testing.T) {
+		f := newFixture(t)
+		f.ecs.addUntagged(250)
+		out := f.run()
+		f.want(out, "succeeded")
+		if len(f.ecs.registers) != 1 {
+			t.Errorf("registers = %d, want 1", len(f.ecs.registers))
+		}
+		// No register was intended, so no revision of ours exists: one page is enough.
+		if f.ecs.listCalls != 1 {
+			t.Errorf("ListTaskDefinitions calls = %d, want 1", f.ecs.listCalls)
+		}
+	})
+}
+
 func TestAmbiguousRegisterLooksForTaggedRevisionFirst(t *testing.T) {
 	intended := store.Op{ID: 1, Seq: 1, Name: "register-task-definition", Key: "register-task-definition:77", State: "intended"}
 
@@ -520,6 +586,68 @@ func TestAmbiguousUpdateChecksServiceFirst(t *testing.T) {
 		}
 		if !slices.Contains(f.env.DoKeys(), "update-service:"+arn8+":retry-2") {
 			t.Errorf("keys = %v", f.env.DoKeys())
+		}
+	})
+	// ECS started the revision, the rollout failed and the circuit breaker
+	// rolled the service back: it is no longer on the revision. The op has a
+	// real time, as it always does in production (the operations.at column).
+	for _, tc := range []struct {
+		name    string
+		started time.Duration // task StartedAt relative to the intended op's At
+	}{
+		{"service not on it but our revision ran and stopped", 10 * time.Second},
+		{"service not on it but our revision started at the op time", 0},
+		{"service not on it but our revision started 30s before the op time (clock skew)", -30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t)
+			opAt := t0.Add(time.Hour)
+			f.env.PresetOps[1].At = opAt
+			task := crashedTask("ran", opAt.Add(2*time.Minute), 3)
+			task.TaskDefinitionArn = aws.String(arn8)
+			task.StartedAt = aws.Time(opAt.Add(tc.started))
+			f.ecs.stopped = append(f.ecs.stopped, task)
+			out := f.run()
+			f.want(out, "failed")
+			if out.FailureShort != "ECS already rolled this revision back" {
+				t.Errorf("short = %q", out.FailureShort)
+			}
+			if len(f.ecs.updates) != 0 {
+				t.Errorf("updated again: %+v", f.ecs.updates)
+			}
+			if slices.Contains(f.env.DoKeys(), "update-service:"+arn8+":retry-2") {
+				t.Errorf("keys = %v", f.env.DoKeys())
+			}
+		})
+	}
+	t.Run("restore: tasks of the target that stopped before the update was intended do not count", func(t *testing.T) {
+		f := newFixture(t)
+		arn6 := tdARN(6)
+		f.ecs.addTD(6, nil)
+		f.svc.TargetTaskDefinition = arn6
+		opAt := t0.Add(time.Hour)
+		f.env.PresetOps = []store.Op{{ID: 1, Seq: 1, Name: "update-service", Key: "update-service:" + arn6, State: "intended", At: opAt}}
+		// The target ran in an earlier deploy; its tasks stopped before this update was intended.
+		old := crashedTask("old", opAt.Add(-30*time.Minute), 3)
+		old.TaskDefinitionArn = aws.String(arn6)
+		old.StartedAt = aws.Time(opAt.Add(-2 * time.Hour))
+		f.ecs.stopped = append(f.ecs.stopped, old)
+		out := f.run()
+		f.want(out, "succeeded")
+		if len(f.ecs.updates) != 1 || !slices.Contains(f.env.DoKeys(), "update-service:"+arn6+":retry-2") {
+			t.Errorf("updates = %d, keys = %v, want one retry-2 update", len(f.ecs.updates), f.env.DoKeys())
+		}
+	})
+	t.Run("stopped tasks of an interrupted update could not be read", func(t *testing.T) {
+		f := setup(t)
+		f.ecs.listTasksErr = func(int) error { return refusal(400, "AccessDeniedException") }
+		out := f.run()
+		f.want(out, "unknown")
+		if out.FailureShort != "could not check an interrupted update" {
+			t.Errorf("short = %q", out.FailureShort)
+		}
+		if len(f.ecs.updates) != 0 {
+			t.Errorf("updated: %+v", f.ecs.updates)
 		}
 	})
 }

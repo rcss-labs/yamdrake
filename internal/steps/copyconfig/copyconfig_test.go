@@ -107,9 +107,16 @@ func (f *fakeS3) PutObject(ctx context.Context, in *s3.PutObjectInput, _ ...func
 	return &s3.PutObjectOutput{}, nil
 }
 
-type fakeArtifacts struct{ objects map[string][]byte }
+type fakeArtifacts struct {
+	objects     map[string][]byte
+	sawDeadline *bool
+}
 
-func (f fakeArtifacts) Get(_ context.Context, key, want string) ([]byte, error) {
+func (f fakeArtifacts) Get(ctx context.Context, key, want string) ([]byte, error) {
+	if f.sawDeadline != nil {
+		_, ok := ctx.Deadline()
+		*f.sawDeadline = ok
+	}
 	data, ok := f.objects[key]
 	if !ok {
 		return nil, errors.New("no such artifact")
@@ -143,7 +150,7 @@ type fixture struct {
 
 func newFixture(t *testing.T, files ...file) *fixture {
 	t.Helper()
-	f := &fixture{t: t, s3: newFakeS3(), art: fakeArtifacts{objects: map[string][]byte{}}, env: &runnertest.Env{Attempt: 2}, account: "123456789012"}
+	f := &fixture{t: t, s3: newFakeS3(), art: fakeArtifacts{objects: map[string][]byte{}, sawDeadline: new(bool)}, env: &runnertest.Env{Attempt: 2}, account: "123456789012"}
 	for _, file := range files {
 		data := []byte(file.content)
 		key := "art/" + file.name
@@ -454,6 +461,17 @@ func TestCorruptArtifactFailsWithoutWriting(t *testing.T) {
 		t.Errorf("something was written: %v", f.s3.puts)
 	}
 	want(t, "not written", result(t, out).NotWritten, uri(f, "a.env", "b.env")...)
+}
+
+func TestArtifactReadHasACallDeadline(t *testing.T) {
+	f := newFixture(t, file{"web.env", "web.env", "A=1\n"})
+	out := f.run()
+	if out.State != "succeeded" {
+		t.Fatalf("outcome = %q %q", out.State, out.FailureShort)
+	}
+	if !*f.art.sawDeadline {
+		t.Error("the artifact read ran without a call deadline")
+	}
 }
 
 func TestNoConfigSucceeds(t *testing.T) {

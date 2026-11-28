@@ -267,6 +267,8 @@ Copies go to Yumdrake's artifact bucket, encrypted. The manifest's identity is a
 
 The same runner task then checks, without changing anything: that the deployment role can be assumed, each ECS service exists, each image digest exists, every config source was readable, and no freeze blocks the run. Permissions that cannot be proven without writing are reported as "not verified", not as passed.
 
+The run waits in `planned` until a person starts it, unless it was created with auto-start; a planned run nobody starts expires after 1 hour. Nothing past planning proceeds before that.
+
 The user sees a diff before starting, and an approver sees the same one:
 
 - Per service: current version and task definition against the requested version.
@@ -291,7 +293,7 @@ A failed preflight ends the run as `failed` before anything was touched.
 
 ### 7.6 States
 
-- Run: `resolving`, `waiting_approval`, `queued`, `running`, `cancelling`, then one of `succeeded`, `partially_succeeded`, `failed`, `cancelled`, `rejected`, `expired`, `invalidated`. `needs_reconciliation` is not final: it holds locks until resolved.
+- Run: `resolving`, `planned`, `waiting_approval`, `queued`, `running`, `cancelling`, then one of `succeeded`, `partially_succeeded`, `failed`, `cancelled`, `rejected`, `expired`, `invalidated`. `needs_reconciliation` is not final: it holds locks until resolved.
 - Leg: `pending`, `queued`, `claimed`, `running`, `succeeded`, `failed`, `skipped`, `cancelled`, `unknown`.
 - Result precedence: any `unknown` leg gives `needs_reconciliation`. Otherwise a cancelled run is `cancelled`. Otherwise all legs succeeded gives `succeeded`, some succeeded gives `partially_succeeded`, none gives `failed`.
 - The CLI exits with zero only for `succeeded`.

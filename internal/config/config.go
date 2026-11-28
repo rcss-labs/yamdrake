@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,6 +41,18 @@ type Orchestrator struct {
 	// counters. Empty by default; set it to tell apart services (or test runs)
 	// that share one Valkey.
 	ValkeyKeyPrefix string
+	// LogArchiveDir is the directory settled legs' logs are archived to. Empty
+	// means archiving is off (until object storage arrives in Plan 5).
+	LogArchiveDir string
+	// LogArchiveInterval is how often settled legs are archived, and
+	// LogArchiveAfter how long a leg must have been settled first. Both apply
+	// only when LogArchiveDir is set.
+	LogArchiveInterval, LogArchiveAfter time.Duration
+	// SweepInterval is how often the engine loop sweeps expired leases and
+	// advances every active run, whether or not a wake-up arrived.
+	SweepInterval time.Duration
+	// LimitPerEnvironment and LimitPerAccount cap the legs running at once.
+	LimitPerEnvironment, LimitPerAccount int
 	// TokenSSOMaxAge is how old the last SSO sign-in of a SAML user may be for
 	// their CLI tokens to keep working (YUMDRAKE_TOKEN_SSO_MAX_AGE, default 168h,
 	// at least 1h).
@@ -53,6 +66,19 @@ type Runner struct {
 	Common
 	HealthAddr string
 	RunnerID   string
+	// ValkeyKeyPrefix goes in front of the Valkey channels; it must equal the
+	// orchestrator's so that wake-ups reach each other.
+	ValkeyKeyPrefix string
+	// Env is "dev" or "prod". Fake steps are allowed only in dev.
+	Env string
+	// FakeSteps registers the fake step executors instead of real ones.
+	FakeSteps bool
+	// Concurrency is how many legs one runner executes at once.
+	Concurrency int
+	// Lease is how long a claimed leg stays with its runner without a
+	// heartbeat. Heartbeat is how often the runner renews it (shorter than
+	// Lease) and Poll how often it looks for queued legs on its own.
+	Lease, Heartbeat, Poll time.Duration
 }
 
 const redactedPassword = "REDACTED"
@@ -116,10 +142,16 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	}
 
 	cfg.PublicURL = l.publicURL("YUMDRAKE_PUBLIC_URL")
-	cfg.ValkeyKeyPrefix = l.getenv("YUMDRAKE_VALKEY_KEY_PREFIX")
-	if !keyPrefixPattern.MatchString(cfg.ValkeyKeyPrefix) {
-		l.fail("YUMDRAKE_VALKEY_KEY_PREFIX", "must be at most 64 letters, digits, '-', '_' or ':'")
+	cfg.ValkeyKeyPrefix = l.keyPrefix()
+	cfg.LogArchiveDir = l.getenv("YUMDRAKE_LOG_ARCHIVE_DIR")
+	if cfg.LogArchiveDir != "" && !filepath.IsAbs(cfg.LogArchiveDir) {
+		l.fail("YUMDRAKE_LOG_ARCHIVE_DIR", "must be an absolute path")
 	}
+	cfg.LogArchiveInterval = l.duration("YUMDRAKE_LOG_ARCHIVE_INTERVAL", "1m")
+	cfg.LogArchiveAfter = l.duration("YUMDRAKE_LOG_ARCHIVE_AFTER", "1h")
+	cfg.SweepInterval = l.duration("YUMDRAKE_SWEEP_INTERVAL", "2s")
+	cfg.LimitPerEnvironment = l.positiveInt("YUMDRAKE_LIMIT_PER_ENVIRONMENT", "10")
+	cfg.LimitPerAccount = l.positiveInt("YUMDRAKE_LIMIT_PER_ACCOUNT", "20")
 	cfg.TokenSSOMaxAge = l.duration("YUMDRAKE_TOKEN_SSO_MAX_AGE", "168h")
 	if cfg.TokenSSOMaxAge > 0 && cfg.TokenSSOMaxAge < minTokenSSOMaxAge {
 		l.fail("YUMDRAKE_TOKEN_SSO_MAX_AGE", "must be at least 1h")
@@ -138,6 +170,7 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 	var cfg Runner
 	cfg.Common = l.loadCommon()
 	cfg.HealthAddr = l.hostPort("YUMDRAKE_HEALTH_ADDR", "127.0.0.1:8081")
+	cfg.ValkeyKeyPrefix = l.keyPrefix()
 
 	cfg.RunnerID = getenv("YUMDRAKE_RUNNER_ID")
 	if cfg.RunnerID == "" {
@@ -146,6 +179,29 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 			l.fail("YUMDRAKE_RUNNER_ID", "is not set and the host name could not be determined")
 		}
 		cfg.RunnerID = hostname
+	}
+
+	switch cfg.Env = l.valueOr("YUMDRAKE_ENV", "prod"); cfg.Env {
+	case "dev", "prod":
+	default:
+		l.fail("YUMDRAKE_ENV", `must be "dev" or "prod"`)
+	}
+	switch raw := l.valueOr("YUMDRAKE_FAKE_STEPS", "false"); raw {
+	case "true":
+		cfg.FakeSteps = true
+	case "false":
+	default:
+		l.fail("YUMDRAKE_FAKE_STEPS", `must be "true" or "false"`)
+	}
+	if cfg.FakeSteps && cfg.Env != "dev" {
+		l.fail("YUMDRAKE_FAKE_STEPS", `is allowed only with YUMDRAKE_ENV=dev`)
+	}
+	cfg.Concurrency = l.positiveInt("YUMDRAKE_RUNNER_CONCURRENCY", "8")
+	cfg.Lease = l.duration("YUMDRAKE_LEASE", "30s")
+	cfg.Heartbeat = l.duration("YUMDRAKE_HEARTBEAT", "10s")
+	cfg.Poll = l.duration("YUMDRAKE_RUNNER_POLL", "2s")
+	if cfg.Lease > 0 && cfg.Heartbeat >= cfg.Lease {
+		l.fail("YUMDRAKE_HEARTBEAT", "must be shorter than YUMDRAKE_LEASE")
 	}
 
 	if err := l.err(); err != nil {
@@ -214,6 +270,24 @@ func (l *loader) duration(variable, fallback string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// keyPrefix reads YUMDRAKE_VALKEY_KEY_PREFIX, shared by both services.
+func (l *loader) keyPrefix() string {
+	prefix := l.getenv("YUMDRAKE_VALKEY_KEY_PREFIX")
+	if !keyPrefixPattern.MatchString(prefix) {
+		l.fail("YUMDRAKE_VALKEY_KEY_PREFIX", "must be at most 64 letters, digits, '-', '_' or ':'")
+	}
+	return prefix
+}
+
+func (l *loader) positiveInt(variable, fallback string) int {
+	n, err := strconv.Atoi(l.valueOr(variable, fallback))
+	if err != nil || n < 1 {
+		l.fail(variable, "must be a whole number of at least 1")
+		return 0
+	}
+	return n
 }
 
 func (l *loader) hostPort(variable, fallback string) string {

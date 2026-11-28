@@ -453,7 +453,16 @@ func TestLeaseLostCancelsExecutorAndDropsItsResult(t *testing.T) {
 	}})
 	<-started
 	h.expireAndSweep()
-	fresh, err := h.q.Claim(context.Background(), "fresh")
+	// An in-flight heartbeat of the stale runner can hold the row lock for a
+	// moment, and Claim skips locked rows, so it may come back empty once.
+	var fresh *queue.Claimed
+	var err error
+	for range 200 {
+		if fresh, err = h.q.Claim(context.Background(), "fresh"); err != nil || fresh != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil || fresh == nil || fresh.Leg.Generation != 2 {
 		t.Fatalf("Claim by fresh = %+v, %v", fresh, err)
 	}

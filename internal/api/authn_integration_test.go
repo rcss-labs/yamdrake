@@ -380,6 +380,9 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		"POST /api/v1/runs/{id}/legs/{leg}/reconcile":   auth.View,
 		"POST /api/v1/runs/{id}/legs/{leg}/check-again": auth.View,
 		"POST /api/v1/admin/runs/{id}/release-locks":    auth.ManageAccess,
+		"GET /api/v1/freezes":                           auth.View,
+		"POST /api/v1/admin/freezes":                    auth.ManageAccess,
+		"DELETE /api/v1/admin/freezes/{id}":             auth.ManageAccess,
 	}
 	if len(routes) != len(expected) {
 		t.Fatalf("routes() has %d routes, the expected table %d", len(routes), len(expected))

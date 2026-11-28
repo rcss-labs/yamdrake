@@ -179,6 +179,11 @@ func (e *Engine) advanceLocked(ctx context.Context, tx pgx.Tx, run store.Run, o 
 			return err
 		}
 	}
+	if run.State == "queued" {
+		if err := e.checkQueuedRun(ctx, tx, &view); err != nil {
+			return err
+		}
+	}
 	return e.apply(ctx, tx, run, legs, Decide(view), o)
 }
 
@@ -284,6 +289,11 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 		}
 	}
 
+	if d.FailUnauthorized {
+		if err := e.recordUnauthorizedEnd(ctx, tx, run, d.Reason); err != nil {
+			return err
+		}
+	}
 	if d.ReleaseLocks || (d.NewState != "" && isFinalRunState(d.NewState)) {
 		if err := store.ReleaseLocks(ctx, tx, run.ID); err != nil {
 			return err

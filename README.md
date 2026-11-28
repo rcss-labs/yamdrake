@@ -227,7 +227,7 @@ make smoke              # builds the images and starts the Compose "app" profile
 
 ## Trying a run with fake steps
 
-The real step executors arrive later; until then a run can be tried end to end with fake steps that change nothing. Start the runner with both of these (it refuses `YUMDRAKE_FAKE_STEPS=true` in any other environment, and production defaults keep them off):
+Resolving and revalidating are real; with fake steps only `copy-config` and `ecs-deploy` pretend, so a dev run still needs AWS access (Floci works), a GitHub connection for the config owner and `YUMDRAKE_ARTIFACT_BUCKET`. Start the runner with both of these (it refuses `YUMDRAKE_FAKE_STEPS=true` in any other environment, and production defaults keep them off):
 
 ```sh
 YUMDRAKE_ENV=dev YUMDRAKE_FAKE_STEPS=true bin/yumdrake-runner

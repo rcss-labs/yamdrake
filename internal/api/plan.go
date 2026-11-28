@@ -85,7 +85,9 @@ func (s *server) getRunPlan(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, fmt.Errorf("run %d has a stored manifest that does not decode: %w", run.ID, err))
 		return
 	}
-	writeJSON(w, http.StatusOK, planOf(m))
+	view := planOf(m)
+	view.ID = run.ManifestID // the identity the engine stored, whatever the manifest's own id field says
+	writeJSON(w, http.StatusOK, view)
 }
 
 // planOf builds the served view; every list is non-nil.

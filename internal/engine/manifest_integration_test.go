@@ -95,3 +95,37 @@ func TestResolveFailedWithoutAResultStoresNoManifest(t *testing.T) {
 		t.Fatalf("manifest %q / %d bytes, want none when the leg produced no result", failed.ManifestID, len(failed.Manifest))
 	}
 }
+
+func TestResolveResultWithWrongIdentityFailsTheRun(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	run := h.create(h.starter, false, "s1")
+	h.advance(run.ID)
+	m := sampleManifest(run.ID)
+	m.ID = "not-the-identity"
+	h.settleResolve(run.ID, "succeeded", m)
+	h.advance(run.ID)
+
+	failed := h.expectState(run.ID, "failed")
+	if failed.EndReason != "the resolve step's plan does not match its identity; nothing was changed" {
+		t.Errorf("end reason = %q", failed.EndReason)
+	}
+	if failed.ManifestID != "" || len(failed.Manifest) != 0 {
+		t.Errorf("manifest %q / %d bytes stored, want none", failed.ManifestID, len(failed.Manifest))
+	}
+}
+
+func TestResolveSucceededWithoutAResultFailsTheRun(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	run := h.create(h.starter, false, "s1")
+	h.advance(run.ID)
+	leg := h.legByKind(run.ID, "resolve")
+	if _, err := h.pool.Exec(context.Background(), `UPDATE legs SET state = 'succeeded', finished_at = now() WHERE id = $1`, leg.ID); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	h.advance(run.ID)
+
+	failed := h.expectState(run.ID, "failed")
+	if failed.EndReason != "the resolve step reported no plan; nothing was changed" || failed.ManifestID != "" {
+		t.Errorf("end reason %q, manifest id %q", failed.EndReason, failed.ManifestID)
+	}
+}

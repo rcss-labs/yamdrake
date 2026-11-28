@@ -254,6 +254,17 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 	}
 
 	if d.NewState != "" || d.WaitReason != "" {
+		// A run leaves resolving only with its plan stored. A result that cannot
+		// be used ends the run instead of leaving it stuck.
+		if run.State == "resolving" && d.NewState != "" {
+			problem, err := copyManifest(ctx, tx, run.ID, legs)
+			if err != nil {
+				return err
+			}
+			if problem != "" {
+				d.NewState, d.Reason = "failed", problem
+			}
+		}
 		newState, wait := run.State, d.WaitReason
 		entersFinal := d.NewState != "" && isFinalRunState(d.NewState)
 		if d.NewState != "" {
@@ -261,11 +272,6 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 		}
 		if entersFinal {
 			wait = "" // a final run waits for nothing; its end reason says why it ended
-		}
-		if run.State == "resolving" && d.NewState != "" {
-			if err := copyManifest(ctx, tx, run.ID, legs); err != nil {
-				return err
-			}
 		}
 		if err := store.UpdateRunState(ctx, tx, run.ID, newState, wait, now); err != nil {
 			return ignoreFinal(err)
@@ -299,28 +305,40 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 // copyManifest stores the resolve leg's result as the run's manifest when the
 // leg settled, failed ones too: a failed plan is shown with its failed checks.
 // The id is the manifest's own identity (a hash over the pinned inputs, see
-// manifest.Identity), recomputed here from the stored bytes rather than taken
-// from the manifest's id field on trust: approvals bind to this value, so it
-// must describe exactly what is stored. A result that is not a manifest on a
-// leg that succeeded is an error (the run cannot be planned without one); on a
-// failed leg it is skipped, because that leg's result is only a diagnostic.
-func copyManifest(ctx context.Context, tx pgx.Tx, runID int64, legs []store.Leg) error {
+// manifest.Identity), recomputed from the result rather than taken from its id
+// field on trust: approvals bind to this value, so it must describe exactly
+// what is stored.
+//
+// A non-empty problem means a succeeded leg left no usable plan; the caller
+// ends the run with it as the reason. On a failed leg an unusable result is
+// only a diagnostic and is skipped.
+func copyManifest(ctx context.Context, tx pgx.Tx, runID int64, legs []store.Leg) (problem string, err error) {
 	resolve, ok := latestLeg(legs, "resolve")
-	if !ok || (resolve.State != legSucceeded && resolve.State != legFailed) || len(resolve.Result) == 0 {
-		return nil
+	if !ok || (resolve.State != legSucceeded && resolve.State != legFailed) {
+		return "", nil
+	}
+	succeeded := resolve.State == legSucceeded
+	if len(resolve.Result) == 0 {
+		if succeeded {
+			return "the resolve step reported no plan; nothing was changed", nil
+		}
+		return "", nil
 	}
 	var m manifest.Manifest
 	if err := json.Unmarshal(resolve.Result, &m); err != nil {
-		if resolve.State == legFailed {
-			return nil
+		if succeeded {
+			return "the resolve step's plan could not be read; nothing was changed", nil
 		}
-		return fmt.Errorf("the resolve result of run %d is not a manifest: %w", runID, err)
+		return "", nil
 	}
 	identity := manifest.Identity(m)
 	if m.ID != "" && m.ID != identity {
-		return fmt.Errorf("the resolve result of run %d carries manifest id %q but its inputs hash to %q", runID, m.ID, identity)
+		if succeeded {
+			return "the resolve step's plan does not match its identity; nothing was changed", nil
+		}
+		return "", nil
 	}
-	return store.SetManifest(ctx, tx, runID, resolve.Result, identity)
+	return "", store.SetManifest(ctx, tx, runID, resolve.Result, identity)
 }
 
 func sortedIDs(ids []int64) []int64 {

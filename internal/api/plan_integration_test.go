@@ -18,18 +18,21 @@ import (
 // one in a manifest; the test plants it in fields the plan must not serve.
 const planFixtureValue = "DB_PASSWORD=hunter2-fixture-value"
 
-func (f *runFixture) storePlan(runID int64, m manifest.Manifest) {
+func (f *runFixture) storePlan(runID int64, m manifest.Manifest) manifest.Manifest {
 	f.t.Helper()
-	m.ID = manifest.Identity(m)
-	if err := store.SetManifest(context.Background(), f.pool, runID, mustMarshal(f.t, m), m.ID); err != nil {
+	identity := manifest.Identity(m)
+	m.ID = "id-field-inside-the-stored-json" // the endpoint must serve the run's stored identity, not this
+	if err := store.SetManifest(context.Background(), f.pool, runID, mustMarshal(f.t, m), identity); err != nil {
 		f.t.Fatalf("SetManifest: %v", err)
 	}
+	m.ID = identity
+	return m
 }
 
 func TestPlanEndpointServesRedactedManifest(t *testing.T) {
 	f := newRunFixture(t)
 	id := f.newRun(f.jobID, devEnvironment, "s1", "s2")
-	f.storePlan(id, manifest.Manifest{
+	stored := f.storePlan(id, manifest.Manifest{
 		RunID: id, Environment: devEnvironment, Label: "dev", AWSAccount: "111122223333",
 		InventoryCommit: "inv-commit", JobCommit: "job-commit",
 		Services: []manifest.Service{
@@ -71,7 +74,7 @@ func TestPlanEndpointServesRedactedManifest(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.ID == "" || got.RunID != id || got.Environment != devEnvironment || got.Label != "dev" {
+	if got.ID != manifest.Identity(stored) || got.RunID != id || got.Environment != devEnvironment || got.Label != "dev" {
 		t.Errorf("plan header = %+v", got)
 	}
 	if len(got.Services) != 2 || got.Services[0].Name != "s1" || got.Services[0].Group != "g" || got.Services[0].Version != "1.0" ||

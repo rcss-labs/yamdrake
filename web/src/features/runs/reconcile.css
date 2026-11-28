@@ -1,0 +1,22 @@
+.reconcile {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.reconcile-service,
+.reconcile-mono {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+}
+.reconcile-service {
+  font-weight: 500;
+}
+.reconcile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.reconcile-release {
+  display: flex;
+  justify-content: flex-end;
+}

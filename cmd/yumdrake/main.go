@@ -76,6 +76,14 @@ func runEnv(args []string, stdout, stderr io.Writer, e env) int {
 		return logout(args[1:], stdout, stderr, e)
 	case "whoami":
 		return whoami(args[1:], stdout, stderr, e)
+	case "jobs":
+		return jobsCmd(args[1:], stdout, stderr, e)
+	case "versions":
+		return versionsCmd(args[1:], stdout, stderr, e)
+	case "runs":
+		return runsCmd(args[1:], stdout, stderr, e)
+	case "approvals":
+		return approvalsCmd(args[1:], stdout, stderr, e)
 	default:
 		_, _ = fmt.Fprintf(stderr, "yumdrake: unknown command %q\n\n%s", args[0], usageText)
 		return exitUsage

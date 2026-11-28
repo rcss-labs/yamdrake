@@ -722,7 +722,7 @@ export function queueFixture(): QueueView {
     runs: [
       {
         id: 41,
-        job_id: 1,
+        job_id: 'deploy-billing',
         job_name: 'Deploy billing',
         environment: 'hetzner-01',
         label: 'dev',
@@ -736,7 +736,7 @@ export function queueFixture(): QueueView {
       },
       {
         id: 42,
-        job_id: 2,
+        job_id: 'deploy-backend',
         job_name: 'Deploy backend',
         environment: 'hetzner-01',
         label: 'dev',
@@ -776,7 +776,7 @@ export function healthFixture(): SystemHealth {
     },
     sync: {
       inventory: { checked_at: '2026-11-28T11:57:00Z', error: '', error_at: null },
-      jobs: [{ id: 1, job_id: 1, title: 'Deploy billing', checked_at: '2026-11-28T11:55:00Z', error: '', error_at: null }],
+      jobs: [{ id: 1, job_id: 'deploy-billing', title: 'Deploy billing', checked_at: '2026-11-28T11:55:00Z', error: '', error_at: null }],
     },
     connections: [
       { kind: 'aws', name: 'homelab', last_ok_at: '2026-11-28T11:59:00Z', last_error_at: null, last_error_code: '', failing: false },
@@ -791,8 +791,8 @@ export function servicePageFixture(service: ServicePage['service']): ServicePage
   return {
     service,
     environments: [
-      { environment: 'hetzner-01', label: 'dev', cell: runningCell('1.4.2'), restore_from_run_id: 12 },
-      { environment: 'prod-01', label: 'prod', cell: runningCell('1.4.1', { by_yumdrake: false, run_id: 0 }), restore_from_run_id: null },
+      { environment: 'hetzner-01', label: 'dev', cell: runningCell('1.4.2'), restore_from_run_id: 12, restore_from_folder_id: 1 },
+      { environment: 'prod-01', label: 'prod', cell: runningCell('1.4.1', { by_yumdrake: false, run_id: 0 }), restore_from_run_id: null, restore_from_folder_id: null },
     ],
     deployments: [
       { run_id: 12, leg_id: 301, environment: 'hetzner-01', version: '1.4.2', state: 'succeeded', at: '2026-11-28T11:00:00Z', by: 'Ada' },

@@ -74,7 +74,7 @@ function Restore({ serviceName, runId }: { serviceName: string; runId: number })
 function EnvironmentCard({ serviceName, item }: { serviceName: string; item: ServiceEnvironmentRunning }) {
   const can = useCan()
   const { cell } = item
-  const mayRestore = item.restore_from_run_id !== null && can('restore', { label: item.label, environment: item.environment })
+  const mayRestore = item.restore_from_run_id !== null && can('restore', { label: item.label, environment: item.environment, folderId: item.restore_from_folder_id ?? undefined })
 
   return (
     <Card>

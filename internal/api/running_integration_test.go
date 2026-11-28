@@ -6,12 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+
+	"github.com/rcss-labs/yamdrake/internal/awsx"
 	"github.com/rcss-labs/yamdrake/internal/running"
 	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
 // fakeRunning answers with a fixed matrix and counts how it was asked.
@@ -38,6 +44,18 @@ func (f *fakeRunning) Matrix(_ context.Context, inv spec.Inventory) (running.Mat
 	defer f.mu.Unlock()
 	f.cached++
 	return f.matrix(inv), nil
+}
+
+func (f *fakeRunning) ForService(_ context.Context, inv spec.Inventory, name string) ([]running.Cell, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cached++
+	for _, row := range f.matrix(inv).Rows {
+		if row.Service == name {
+			return row.Cells, nil
+		}
+	}
+	return nil, running.ErrUnknownService
 }
 
 func (f *fakeRunning) MatrixFresh(_ context.Context, inv spec.Inventory) (running.Matrix, error) {
@@ -137,6 +155,48 @@ func TestRunningEndpointWithTheDefaultReader(t *testing.T) {
 			if c.State == "ok" {
 				t.Errorf("a cell is ok with no AWS account connected: %s", raw)
 			}
+		}
+	}
+}
+
+// A read of running versions tells the connection checks how the account went,
+// so the System health page can say when it last worked.
+func TestRunningReadRecordsTheAWSConnectionCheck(t *testing.T) {
+	h := newHarness(t)
+	h.rebuild(func(d *Deps) {
+		d.Running, d.Discovery = nil, nil
+		d.AWSConfig = aws.Config{Region: "us-east-1", RetryMaxAttempts: 1,
+			Credentials: credentials.NewStaticCredentialsProvider("base", "base", "")}
+		d.AWSOptions = awsx.Options{EndpointURL: "http://127.0.0.1:1"} // nothing listens here: every ECS call fails
+	})
+	h.pushInventory("c1")
+	h.pushJob("j1")
+	h.setInventorySource()
+	h.mustDo("POST", "/api/v1/admin/aws-accounts", map[string]any{
+		"name": "dev-one", "account_id": "111111111111",
+		"discovery": awsKeyCredential("AKIADISCOVERYKEY0001", "discovery-secret-0000"), "deploy": awsKeyCredential("AKIADEPLOYKEY00000002", "deploy-secret-00000"),
+	}, http.StatusCreated)
+
+	if code, raw := h.doRaw("GET", "/api/v1/versions/running", h.adminToken, nil); code != http.StatusOK {
+		t.Fatalf("GET running = %d: %s", code, raw)
+	}
+
+	checks, err := store.ListConnectionChecks(context.Background(), h.pool)
+	if err != nil {
+		t.Fatalf("ListConnectionChecks: %v", err)
+	}
+	var found *store.ConnectionCheck
+	for i := range checks {
+		if checks[i].Kind == "aws" && checks[i].Ref == "111111111111" {
+			found = &checks[i]
+		}
+	}
+	if found == nil || found.LastErrorAt == nil || found.LastErrorCode == "" {
+		t.Fatalf("connection checks = %+v, want an aws check for 111111111111 with the error code of the failed read", checks)
+	}
+	for _, text := range []string{"AKIADISCOVERYKEY0001", "discovery-secret-0000", "127.0.0.1"} {
+		if strings.Contains(found.LastErrorCode, text) {
+			t.Errorf("the recorded code %q carries %q: only the code may be stored", found.LastErrorCode, text)
 		}
 	}
 }

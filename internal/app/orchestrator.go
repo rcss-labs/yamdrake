@@ -128,6 +128,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Logs:                logs.NewReader(pool, archive),
 			Wake:                bus,
 			TokenSSOMaxAge:      cfg.TokenSSOMaxAge,
+			RunnerGoneAfter:     cfg.RunnerGoneAfter,
 			AWSConfig:           awsConfig,
 			AWSOptions:          cfg.AWS,
 			Discovery:           discovery.New(pool, cipher, awsConfig, cfg.AWS).WithLogger(log),

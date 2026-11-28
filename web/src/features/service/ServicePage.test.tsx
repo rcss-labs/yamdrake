@@ -152,9 +152,16 @@ describe('Restore', () => {
     expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument()
   })
 
+  it("shows Restore to a person whose restore grant is scoped to the source run's folder", async () => {
+    show(restorer({ folder_id: 1 }))
+    await screen.findByRole('region', { name: 'Running in hetzner-01' })
+    expect(within(card('hetzner-01')).getByRole('button', { name: 'Restore' })).toBeInTheDocument()
+  })
+
   it('follows the scope of the grant for each environment', async () => {
     answer((page) => {
       page.environments[1]!.restore_from_run_id = 9
+      page.environments[1]!.restore_from_folder_id = 1
     })
     show(restorer({ label: 'prod' }))
     await screen.findByRole('region', { name: 'Running in hetzner-01' })

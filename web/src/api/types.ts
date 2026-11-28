@@ -635,15 +635,15 @@ export interface RunSummaryCounts {
   failures: RunFailure[]
 }
 
-/** One service of a run row (assumed: only on list rows). */
+/** One service of a run row (list rows only). */
 export interface RunServiceChip {
   service: string
   version: string
   state: LegState
 }
 
-/** GET /api/v1/runs rows. */
-export interface RunSummary {
+/** What a run row and the run detail share. */
+export interface RunBase {
   id: number
   kind: RunKind
   job_source_id: number
@@ -660,16 +660,20 @@ export interface RunSummary {
   state_changed_at: string
   started_at: string | null
   finished_at: string | null
-  /** Assumed: the job's title. */
-  job_name?: string
-  /** Assumed: who asked. */
-  requested_by_name?: string
+  /** The job source's title; "" when it has none. */
+  job_name: string
+  /** Who asked: their name, else their email. */
+  requested_by_name: string
   /** Assumed: for a restore run, the run it undoes. */
   restore_of?: number | null
-  /** Assumed (list rows only): the services the run changes and where each stands. */
-  services?: RunServiceChip[]
-  /** Assumed (list rows only): the same shape as the detail's summary. */
-  summary?: RunSummaryCounts
+}
+
+/** GET /api/v1/runs rows. */
+export interface RunSummary extends RunBase {
+  /** One entry per service of the run's step legs, in order of first appearance, and where it stands. */
+  services: RunServiceChip[]
+  /** The same shape as the detail's summary. */
+  summary: RunSummaryCounts
 }
 
 /** The group choice of a run: the same shape as the body of POST /jobs/{id}/runs. */
@@ -698,7 +702,7 @@ export interface Approval {
 }
 
 /** GET /api/v1/runs/{id}, and the answer of every run action. */
-export interface RunDetail extends RunSummary {
+export interface RunDetail extends RunBase {
   aws_account: string
   folder_id: number
   inventory_commit: string

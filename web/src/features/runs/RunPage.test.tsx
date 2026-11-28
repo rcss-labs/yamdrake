@@ -20,15 +20,6 @@ describe('the run page header', () => {
     expect(within(facts).getByRole('img', { name: /services/ })).toBeInTheDocument()
   })
 
-  it('falls back to the person number when the starter has no name', async () => {
-    storedRun(runIds.partiallySucceeded).requested_by_name = undefined
-    storedRun(runIds.partiallySucceeded).requested_by = 42
-    renderRun(runIds.partiallySucceeded)
-    const facts = (await screen.findByText('Started by')).closest('dl') as HTMLElement
-    expect(within(facts).getByText('user #42')).toBeInTheDocument()
-    expect(within(facts).getByText('via web')).toBeInTheDocument()
-  })
-
   it('says "service" in the singular for a run of one service', async () => {
     const run = storedRun(runIds.partiallySucceeded)
     const failedService = run.legs.find((leg) => leg.state === 'failed')?.service

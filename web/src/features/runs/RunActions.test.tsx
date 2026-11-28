@@ -134,6 +134,7 @@ describe('permissions pick the buttons', () => {
     moveStoredRun(runIds.planned, 'planned', { kind: 'restore' })
     renderRun(runIds.planned, grantee(24, 'run'))
     await screen.findByTestId('run-lead')
+    await waitFor(() => expect(requests.find((request) => request.path.endsWith('/plan'))?.status).toBe(200))
     expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
   })
 
@@ -206,6 +207,13 @@ describe('Start', () => {
     expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('button', { name: 'Start' })).toBeInTheDocument()
+  })
+
+  it('a restore-only person sees the plan-failed notice on a restore', async () => {
+    moveStoredRun(runIds.planned, 'planned', { kind: 'restore' })
+    failNext('GET', `/api/v1/runs/${runIds.planned}/plan`, 500, 'internal', 'plan store down')
+    renderRun(runIds.planned, grantee(26, 'restore'))
+    expect(await screen.findByText(/Start is hidden until the plan loads/)).toBeInTheDocument()
   })
 })
 

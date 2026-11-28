@@ -19,9 +19,9 @@ const (
 	maxFreezeLength = 30 * 24 * time.Hour
 	// maxFreezeReasonRunes bounds the reason, which is shown in run wait reasons and messages.
 	maxFreezeReasonRunes = 300
-	// recentFreezeWindow and recentFreezeLimit bound the ended freezes the list shows.
-	recentFreezeWindow = 30 * 24 * time.Hour
-	recentFreezeLimit  = 50
+	// endedFreezeWindow and endedFreezeLimit bound the ended freezes the list shows.
+	endedFreezeWindow = 30 * 24 * time.Hour
+	endedFreezeLimit  = 50
 )
 
 func (s *server) freezeRoutes() []routeDef {
@@ -33,34 +33,50 @@ func (s *server) freezeRoutes() []routeDef {
 }
 
 type freezeResponse struct {
-	ID          int64      `json:"id"`
-	Label       string     `json:"label"`
-	Environment string     `json:"environment"`
-	Reason      string     `json:"reason"`
-	CreatedBy   int64      `json:"created_by"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	LiftedBy    *int64     `json:"lifted_by"`
-	LiftedAt    *time.Time `json:"lifted_at"`
-	Active      bool       `json:"active"`
+	ID            int64      `json:"id"`
+	Label         string     `json:"label"`
+	Environment   string     `json:"environment"`
+	Reason        string     `json:"reason"`
+	CreatedBy     int64      `json:"created_by"`
+	CreatedByName string     `json:"created_by_name"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	EndedAt       *time.Time `json:"ended_at"`
+	// EndedByName is the lifter's name, or their email; "" unless the freeze was lifted.
+	EndedByName string `json:"ended_by_name"`
+	Active      bool   `json:"active"`
 }
 
 type freezeListResponse struct {
 	Active []freezeResponse `json:"active"`
-	Recent []freezeResponse `json:"recent"`
+	Ended  []freezeResponse `json:"ended"`
 }
 
-func freezeResponseOf(f store.Freeze, now time.Time) freezeResponse {
-	r := freezeResponse{
-		ID: f.ID, Label: f.Label, Environment: f.Environment, Reason: f.Reason, CreatedBy: f.CreatedBy,
-		CreatedAt: f.CreatedAt.UTC(), ExpiresAt: f.ExpiresAt.UTC(), LiftedBy: f.LiftedBy,
+// freezeView shapes a freeze for the API. ended_at is null while the freeze
+// is active; names are looked up through names, a cache for one response.
+func (s *server) freezeView(ctx context.Context, names map[int64]string, f store.Freeze, now time.Time) (freezeResponse, error) {
+	creator, err := s.personName(ctx, names, f.CreatedBy)
+	if err != nil {
+		return freezeResponse{}, err
+	}
+	view := freezeResponse{
+		ID: f.ID, Label: f.Label, Environment: f.Environment, Reason: f.Reason,
+		CreatedBy: f.CreatedBy, CreatedByName: creator,
+		CreatedAt: f.CreatedAt.UTC(), ExpiresAt: f.ExpiresAt.UTC(),
 		Active: f.LiftedAt == nil && f.ExpiresAt.After(now),
 	}
-	if f.LiftedAt != nil {
-		at := f.LiftedAt.UTC()
-		r.LiftedAt = &at
+	if !view.Active {
+		at := endedAt(f).UTC()
+		view.EndedAt = &at
 	}
-	return r
+	if f.LiftedBy != nil {
+		lifter, err := s.personName(ctx, names, *f.LiftedBy)
+		if err != nil {
+			return freezeResponse{}, err
+		}
+		view.EndedByName = lifter
+	}
+	return view, nil
 }
 
 // endedAt is when the freeze stopped applying: lifted, or expired, whichever came first.
@@ -78,17 +94,28 @@ func (s *server) listFreezes(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	out := freezeListResponse{Active: []freezeResponse{}, Recent: []freezeResponse{}}
+	out := freezeListResponse{Active: []freezeResponse{}, Ended: []freezeResponse{}}
+	names := map[int64]string{}
 	// ListFreezes is newest first; active ones are shown oldest first.
 	for i := len(all) - 1; i >= 0; i-- {
 		if f := all[i]; f.LiftedAt == nil && f.ExpiresAt.After(now) {
-			out.Active = append(out.Active, freezeResponseOf(f, now))
+			view, err := s.freezeView(r.Context(), names, f, now)
+			if err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			out.Active = append(out.Active, view)
 		}
 	}
 	for _, f := range all {
 		active := f.LiftedAt == nil && f.ExpiresAt.After(now)
-		if !active && endedAt(f).After(now.Add(-recentFreezeWindow)) && len(out.Recent) < recentFreezeLimit {
-			out.Recent = append(out.Recent, freezeResponseOf(f, now))
+		if !active && endedAt(f).After(now.Add(-endedFreezeWindow)) && len(out.Ended) < endedFreezeLimit {
+			view, err := s.freezeView(r.Context(), names, f, now)
+			if err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			out.Ended = append(out.Ended, view)
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -127,7 +154,12 @@ func (s *server) createFreeze(w http.ResponseWriter, r *http.Request) {
 		s.writeAccessError(w, r, err, "freeze")
 		return
 	}
-	writeJSON(w, http.StatusCreated, freezeResponseOf(created, now))
+	view, err := s.freezeView(r.Context(), map[int64]string{}, created, now)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, view)
 }
 
 // validateFreeze returns what is wrong with a create request, or "".

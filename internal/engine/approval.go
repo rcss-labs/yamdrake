@@ -204,3 +204,44 @@ func VersionsSummary(run store.Run) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// VersionEntry is one service a run deploys and the version it gets.
+type VersionEntry struct {
+	Service string `json:"service"`
+	Version string `json:"version"`
+}
+
+// VersionEntries lists what a run deploys, service by service: groups in the
+// job's order, then each group's selected services in the job's order. A
+// service's own override is its version; otherwise it gets its group's. A run
+// whose snapshot or selection cannot be read, or that selects nothing, gives
+// an empty list, never nil.
+func VersionEntries(run store.Run) []VersionEntry {
+	entries := []VersionEntry{}
+	var job spec.Job
+	if err := json.Unmarshal(run.JobSnapshot, &job); err != nil {
+		return entries
+	}
+	var selection Selection
+	if err := json.Unmarshal(run.Selection, &selection); err != nil {
+		return entries
+	}
+	for _, group := range job.Groups {
+		chosen, ok := selection[group.ID]
+		if !ok {
+			continue
+		}
+		for _, service := range group.Services {
+			override, selected := chosen.Services[service]
+			if !selected {
+				continue
+			}
+			version := chosen.Version
+			if override != "" {
+				version = override
+			}
+			entries = append(entries, VersionEntry{Service: service, Version: version})
+		}
+	}
+	return entries
+}

@@ -243,7 +243,10 @@ func (s *server) buildDetail(ctx context.Context, run store.Run) (runDetailView,
 		return runDetailView{}, err
 	}
 	if asked {
-		out.Approval = shapeApproval(approval)
+		out.Approval, err = s.shapeApproval(ctx, map[int64]string{}, approval)
+		if err != nil {
+			return runDetailView{}, err
+		}
 	}
 	return out, nil
 }

@@ -20,19 +20,25 @@ func (h *harness) createFreeze(body map[string]any) map[string]any {
 func TestCreateFreezeReturnsTheFreezeAndAudits(t *testing.T) {
 	h := newHarness(t)
 	created := h.createFreeze(map[string]any{"label": "dev", "reason": "quarter-end", "expires_at": expiryIn(48 * time.Hour)})
-	for _, key := range []string{"id", "label", "environment", "reason", "created_by", "created_at", "expires_at", "lifted_by", "lifted_at", "active"} {
+	for _, key := range []string{"id", "label", "environment", "reason", "created_by", "created_by_name", "created_at", "expires_at", "ended_at", "ended_by_name", "active"} {
 		if _, ok := created[key]; !ok {
 			t.Errorf("freeze response lacks %q: %v", key, created)
 		}
 	}
+	if len(created) != 11 {
+		t.Errorf("freeze response has %d keys, want exactly the 11 the web app reads: %v", len(created), created)
+	}
 	if created["label"] != "dev" || created["environment"] != "" || created["reason"] != "quarter-end" || created["active"] != true {
 		t.Errorf("unexpected freeze %v", created)
 	}
-	if created["lifted_by"] != nil || created["lifted_at"] != nil {
-		t.Errorf("a new freeze is lifted: %v", created)
+	if created["ended_at"] != nil || created["ended_by_name"] != "" {
+		t.Errorf("a new freeze has ended: %v", created)
 	}
 	if got := int64(created["created_by"].(float64)); got != h.admin.ID {
 		t.Errorf("created_by = %d, want %d", got, h.admin.ID)
+	}
+	if created["created_by_name"] != h.admin.Name {
+		t.Errorf("created_by_name = %v, want %q", created["created_by_name"], h.admin.Name)
 	}
 	if !slices.Contains(h.auditActions(), "freeze.create") {
 		t.Errorf("no freeze.create audit entry: %v", h.auditActions())
@@ -95,7 +101,7 @@ func TestLiftFreezeEndsItAndAudits(t *testing.T) {
 func TestListFreezesSplitsActiveAndRecent(t *testing.T) {
 	h := newHarness(t)
 	empty := h.mustDo("GET", "/api/v1/freezes", nil, http.StatusOK)
-	for _, key := range []string{"active", "recent"} {
+	for _, key := range []string{"active", "ended"} {
 		if list, ok := empty[key].([]any); !ok || len(list) != 0 {
 			t.Errorf("empty %s = %v, want []", key, empty[key])
 		}
@@ -106,15 +112,18 @@ func TestListFreezesSplitsActiveAndRecent(t *testing.T) {
 	h.mustDo("DELETE", "/api/v1/admin/freezes/"+strconv.FormatInt(int64(lifted["id"].(float64)), 10), nil, http.StatusNoContent)
 
 	got := h.mustDo("GET", "/api/v1/freezes", nil, http.StatusOK)
-	active, recent := got["active"].([]any), got["recent"].([]any)
+	active, ended := got["active"].([]any), got["ended"].([]any)
 	if len(active) != 1 || active[0].(map[string]any)["id"] != keep["id"] || active[0].(map[string]any)["active"] != true {
 		t.Errorf("active = %v, want only the freeze that stays", active)
 	}
-	if len(recent) != 1 || recent[0].(map[string]any)["id"] != lifted["id"] || recent[0].(map[string]any)["active"] != false {
-		t.Errorf("recent = %v, want only the lifted freeze", recent)
+	if len(ended) != 1 || ended[0].(map[string]any)["id"] != lifted["id"] || ended[0].(map[string]any)["active"] != false {
+		t.Errorf("ended = %v, want only the lifted freeze", ended)
 	}
-	if recent[0].(map[string]any)["lifted_at"] == nil || recent[0].(map[string]any)["lifted_by"] == nil {
-		t.Errorf("a lifted freeze lacks lifted_at or lifted_by: %v", recent[0])
+	if ended[0].(map[string]any)["ended_at"] == nil || ended[0].(map[string]any)["ended_by_name"] != h.admin.Name {
+		t.Errorf("a lifted freeze lacks ended_at or names its lifter: %v", ended[0])
+	}
+	if _, present := got["recent"]; present {
+		t.Errorf("the list still has a recent key: %v", got)
 	}
 }
 

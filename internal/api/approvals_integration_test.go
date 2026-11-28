@@ -81,13 +81,16 @@ func TestApprovalsListShowsCanApproveAndReason(t *testing.T) {
 
 	got := single("approver", list(approver))
 	for key, want := range map[string]any{
-		"run_id": float64(runID), "job_id": "release", "job_title": "release", "environment": prodEnvironment, "label": "prod",
-		"versions": "g 1.0 (1)", "manifest_id": manifestID, "requested_by": float64(starterUser.ID),
+		"run_id": float64(runID), "job_id": "release", "job_name": "release", "environment": prodEnvironment, "label": "prod",
+		"manifest_id": manifestID, "requested_by": float64(starterUser.ID),
 		"requested_by_name": "starter", "can_approve": true, "reason": "",
 	} {
 		if got[key] != want {
 			t.Errorf("approver sees %s = %v, want %v", key, got[key], want)
 		}
+	}
+	if want := []any{map[string]any{"service": "s1", "version": "1.0"}}; !reflect.DeepEqual(got["versions"], want) {
+		t.Errorf("approver sees versions = %v, want %v", got["versions"], want)
 	}
 	// A requester with no name is shown by email.
 	f.exec(`UPDATE users SET name = '' WHERE id = $1`, starterUser.ID)
@@ -98,6 +101,10 @@ func TestApprovalsListShowsCanApproveAndReason(t *testing.T) {
 		if s, _ := got[key].(string); s == "" {
 			t.Errorf("%s = %v, want a time", key, got[key])
 		}
+	}
+	// The run the approval belongs to is named by its source too.
+	if run := f.mustDo("GET", runPath(runID, ""), nil, http.StatusOK); got["job_source_id"] != run["job_source_id"] || got["job_source_id"] == nil {
+		t.Errorf("job_source_id = %v, want the run's %v", got["job_source_id"], run["job_source_id"])
 	}
 
 	ownView := single("the starter", list(own))
@@ -170,6 +177,9 @@ func TestApproveAndRejectEndpoints(t *testing.T) {
 			approval["requested_by"] != float64(starter.ID) || approval["decided_by"] == nil || approval["decided_at"] == nil {
 			t.Errorf("approval = %v, want approved with who, when, comment and manifest", approval)
 		}
+		if approval["requested_by_name"] != starter.Name || approval["decided_by_name"] != "approver" {
+			t.Errorf("approval names = %v and %v, want %q and \"approver\"", approval["requested_by_name"], approval["decided_by_name"], starter.Name)
+		}
 		for _, key := range []string{"requested_at", "expires_at"} {
 			if s, _ := approval[key].(string); s == "" {
 				t.Errorf("approval %s = %v, want a time", key, approval[key])
@@ -240,5 +250,8 @@ func TestRunViewShowsTheApproval(t *testing.T) {
 	if approval["decision"] != "" || approval["decided_by"] != nil || approval["decided_at"] != nil ||
 		approval["manifest_id"] != manifestID || approval["requested_by"] != float64(f.admin.ID) {
 		t.Errorf("open approval = %v, want undecided with null decided_by and decided_at", approval)
+	}
+	if approval["requested_by_name"] != f.admin.Name || approval["decided_by_name"] != nil {
+		t.Errorf("open approval names = %v and %v, want the requester's name and null decided_by_name", approval["requested_by_name"], approval["decided_by_name"])
 	}
 }

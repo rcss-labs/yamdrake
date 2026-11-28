@@ -46,8 +46,12 @@ Commands:
       Plan, ask, start and optionally follow a run.
   runs list | show RUN | log RUN | start RUN | watch RUN | cancel RUN
       List, inspect, start, follow and cancel runs.
-  approvals list
-      List runs waiting for approval.
+  runs rerun-failed RUN | reconcile RUN --leg ID --outcome succeeded|failed | check-again RUN --leg ID
+      Re-run what failed, or settle a service whose outcome is not known.
+  restore RUN [--service NAME]... [--yes] [--watch]
+      Put the services a run changed back as they were.
+  approvals list | approve RUN | reject RUN
+      List runs waiting for approval, approve the plan you saw, or reject it.
   version
       Print the version.
 
@@ -95,6 +99,8 @@ func runEnv(args []string, stdout, stderr io.Writer, e env) int {
 		return planCmd(args[1:], stdout, stderr, e)
 	case "run":
 		return runCmd(args[1:], stdout, stderr, e)
+	case "restore":
+		return restoreCmd(args[1:], stdout, stderr, e)
 	case "jobs":
 		return jobsCmd(args[1:], stdout, stderr, e)
 	case "versions":

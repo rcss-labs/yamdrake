@@ -175,11 +175,16 @@ func (s *session) planRun(jobID string, sf *selectionFlags) (*planned, error) {
 	if err := s.client.Do(s.ctx, http.MethodPost, fmt.Sprintf("/api/v1/jobs/%d/runs", job.ID), body, &created); err != nil {
 		return nil, err
 	}
-	s.textf("Created run %d. Planning...\n", created.ID)
-	run, err := s.waitForPlan(created.ID)
+	return s.planCreated(job, created.ID)
+}
+
+// planCreated waits for a created run to be planned and fetches its plan.
+func (s *session) planCreated(job jobSummary, id int64) (*planned, error) {
+	s.textf("Created run %d. Planning...\n", id)
+	run, err := s.waitForPlan(id)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			s.progressf("Run %d was created and is still being planned: yumdrake runs show %d\n", created.ID, created.ID)
+			s.progressf("Run %d was created and is still being planned: yumdrake runs show %d\n", id, id)
 		}
 		return nil, err
 	}
@@ -407,19 +412,26 @@ func runCmd(args []string, stdout, stderr io.Writer, e env) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	return s.confirmAndStart(p, yes, watch)
+}
+
+// confirmAndStart prints a plan, asks whether to start it (unless yes) and
+// starts and follows the run as asked. A run that failed its checks is not
+// started. Without a terminal and without yes the run is left planned.
+func (s *session) confirmAndStart(p *planned, yes bool, watch watchFlags) int {
 	failed := s.printPlan(p)
 	if code := planExitCode(p, failed); code != cli.ExitOK {
 		if s.json() {
-			_ = cli.WriteJSON(stdout, planResult(p.run, p.planRaw))
+			_ = cli.WriteJSON(s.stdout, planResult(p.run, p.planRaw))
 		}
 		return code
 	}
 	id := p.run.ID
 	if !yes {
-		if !e.StdinIsTerminal {
+		if !s.e.StdinIsTerminal {
 			s.progressf("Run %d is planned and was not started, because there is no terminal to ask and --yes was not given.\nStart it with: yumdrake runs start %d\n%s\n", id, id, s.runLink(id))
 			if s.json() {
-				_ = cli.WriteJSON(stdout, planResult(p.run, p.planRaw))
+				_ = cli.WriteJSON(s.stdout, planResult(p.run, p.planRaw))
 			}
 			return cli.ExitNeedsPerson
 		}

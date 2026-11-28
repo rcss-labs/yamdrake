@@ -18,6 +18,12 @@ Commands:
   list [--job JOB] [--env ENV] [--state STATE]... [--limit N]
   show RUN
   log RUN [--step S] [--service S] [--level L] [--grep TEXT]
+  start RUN [--watch]
+  watch RUN [--logs] [--wait-for-approval]
+  cancel RUN [--yes]
+  rerun-failed RUN [--yes] [--watch]
+  reconcile RUN --leg ID --outcome succeeded|failed [--yes]
+  check-again RUN --leg ID
 
 Example:
   yumdrake runs list --state failed
@@ -58,7 +64,8 @@ func runsCmd(args []string, stdout, stderr io.Writer, e env) int {
 }
 
 func runsCommands() subcommands {
-	return subcommands{"list": runsList, "show": runsShow, "log": runsLog, "start": runsStart, "watch": runsWatch, "cancel": runsCancel}
+	return subcommands{"list": runsList, "show": runsShow, "log": runsLog, "start": runsStart, "watch": runsWatch, "cancel": runsCancel,
+		"rerun-failed": runsRerunFailed, "reconcile": runsReconcile, "check-again": runsCheckAgain}
 }
 
 const maxRunsPerPage = 100

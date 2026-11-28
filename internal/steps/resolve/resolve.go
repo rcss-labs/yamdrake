@@ -84,6 +84,9 @@ type Deps struct {
 	// SourceRun returns a run by id (store.GetRun). A restore run reads the plan
 	// of the run it restores through it.
 	SourceRun func(ctx context.Context, runID int64) (store.Run, error)
+	// Freezes returns the freezes in force now (store.ActiveFreezes). Nil means
+	// none is checked.
+	Freezes func(ctx context.Context) ([]store.Freeze, error)
 	// Options are the deployment-wide AWS settings (emulator endpoint); they
 	// decide how ECR repository URIs are parsed and S3 is addressed.
 	Options awsx.Options
@@ -183,6 +186,19 @@ func (x *executor) Execute(ctx context.Context, env runner.Env, task queue.Claim
 		m.Services = append(m.Services, res.service)
 		m.Checks = append(m.Checks, res.checks...)
 	}
+	// A freeze is a preflight check too (spec 7.3), so people see it while
+	// planning and before approving. The queued-to-running check stays.
+	if x.d.Freezes != nil {
+		active, err := x.d.Freezes(ctx)
+		if err != nil {
+			env.Log("error", "Could not read the freezes: "+err.Error())
+			return failed("could not read the freezes", err.Error())
+		}
+		if reason := store.FrozenReason(run, active); reason != "" {
+			env.Log("error", "Frozen: "+reason)
+			m.Checks = append(m.Checks, manifest.Check{Name: "Frozen", Status: "failed", Detail: reason})
+		}
+	}
 	m.ID = manifest.Identity(m)
 	encoded, err := json.Marshal(m)
 	if err != nil {
@@ -197,6 +213,9 @@ func (x *executor) Execute(ctx context.Context, env runner.Env, task queue.Claim
 	lines := make([]string, len(failedChecks))
 	for i, c := range failedChecks {
 		lines[i] = fmt.Sprintf("%s: %s: %s", c.Service, c.Name, c.Detail)
+		if c.Service == "" { // a check about the run, not a service
+			lines[i] = fmt.Sprintf("%s: %s", c.Name, c.Detail)
+		}
 	}
 	env.Log("error", fmt.Sprintf("Preflight failed: %d checks.", len(failedChecks)))
 	return queue.Outcome{

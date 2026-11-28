@@ -1013,3 +1013,36 @@ func TestThrottlingIsRetriedThenFails(t *testing.T) {
 		t.Errorf("log lacks the throttling code:\n%s", h.env.text())
 	}
 }
+
+func TestFrozenLabelOrEnvironmentIsAFailedPreflightCheck(t *testing.T) {
+	until := time.Date(2026, 12, 1, 9, 0, 0, 0, time.UTC)
+	for name, freeze := range map[string]store.Freeze{
+		"label":       {Label: "prod", Reason: "release freeze", ExpiresAt: until},
+		"environment": {Environment: "prod-1", Reason: "release freeze", ExpiresAt: until},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness()
+			h.deps.Freezes = func(context.Context) ([]store.Freeze, error) { return []store.Freeze{freeze}, nil }
+			out, m := h.run(t, claimed(t, "prod", defaultSelection()))
+
+			c, ok := check(m, "", "Frozen")
+			if !ok || c.Status != "failed" || c.Detail != "release freeze, until 2026-12-01 09:00 UTC" {
+				t.Fatalf("freeze check = %+v, %v; want a failed Frozen check worded with the reason and the end", c, ok)
+			}
+			if out.State != "failed" || out.FailureShort != "preflight failed: 1 checks" {
+				t.Errorf("outcome = %q %q, want a failed preflight with that one check", out.State, out.FailureShort)
+			}
+		})
+	}
+
+	t.Run("another label is not frozen", func(t *testing.T) {
+		h := newHarness()
+		h.deps.Freezes = func(context.Context) ([]store.Freeze, error) {
+			return []store.Freeze{{Label: "dev", Reason: "x", ExpiresAt: until}}, nil
+		}
+		out, m := h.run(t, claimed(t, "prod", defaultSelection()))
+		if _, ok := check(m, "", "Frozen"); ok || out.State != "succeeded" {
+			t.Errorf("a freeze on another label changed the outcome: %q, %+v", out.State, m.Checks)
+		}
+	})
+}

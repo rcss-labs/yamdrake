@@ -143,9 +143,6 @@ func Serve(ctx context.Context, log *slog.Logger, shutdownTimeout time.Duration,
 	return errors.Join(errs...)
 }
 
-// newHTTPServer returns the server with the shared timeouts. It deliberately
-// sets no WriteTimeout: a server-wide write deadline would cut off long-lived
-// responses such as Server-Sent Events streams.
 // CacheOptions builds the Valkey client options from the configuration: the
 // address, the optional password and, when ValkeyTLS is set, TLS verified
 // against the system roots.
@@ -157,6 +154,9 @@ func CacheOptions(c config.Common) cache.Options {
 	return o
 }
 
+// newHTTPServer returns the server with the shared timeouts. It deliberately
+// sets no WriteTimeout: a server-wide write deadline would cut off long-lived
+// responses such as Server-Sent Events streams.
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,

@@ -242,10 +242,10 @@ func (s *Sender) deliver(ctx context.Context, token string, n store.Notification
 	attempt := n.Attempts + 1
 	if permanent || attempt >= maxAttempts {
 		s.log.Warn("notification given up", "id", n.ID, "run_id", n.RunID, "kind", n.Kind, "attempts", attempt, "error", code)
-		s.recordSlackError(ctx, code)
+		s.recordPostFailure(ctx, postErr, code)
 		return s.record(ctx, n, store.MarkNotificationRetry(ctx, s.pool, n.ID, code, s.now(), true), deliveryResultFailed)
 	}
-	s.recordSlackError(ctx, code)
+	s.recordPostFailure(ctx, postErr, code)
 	wait := max(backoff(attempt), retryAfter)
 	return s.record(ctx, n, store.MarkNotificationRetry(ctx, s.pool, n.ID, code, s.now().Add(wait), false), deliveryResultRetry)
 }
@@ -292,6 +292,22 @@ func (s *Sender) recordSlackOK(ctx context.Context) {
 	if err := store.RecordConnectionOK(ctx, s.pool, "slack", "slack", s.now()); err != nil {
 		s.log.Warn("could not record connection check", "kind", "slack", "error", err.Error())
 	}
+}
+
+// messageRefused reports whether Slack answered normally and refused only this message.
+func messageRefused(err error) bool {
+	var se *SlackError
+	return errors.As(err, &se) && se.Status == http.StatusOK && se.Code != "invalid_response"
+}
+
+// recordPostFailure marks the connection OK when Slack refused only this message,
+// and failed otherwise.
+func (s *Sender) recordPostFailure(ctx context.Context, postErr error, code string) {
+	if messageRefused(postErr) {
+		s.recordSlackOK(ctx)
+		return
+	}
+	s.recordSlackError(ctx, code)
 }
 
 // recordSlackError stores that a post failed, with its safe code. Failing to record is logged only.

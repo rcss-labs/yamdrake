@@ -313,7 +313,9 @@ describe('useRunLive on an active run', () => {
       expect(first.closed).toBe(false)
       await advance(1000)
       expect(first.closed).toBe(true)
-      // The existing reconnect path: a pause, then the run is read and a new stream opens; reload() read it too.
+      // The watchdog itself reads the run (reload) before it schedules the reopen.
+      await vi.waitFor(() => expect(runFetches()).toBe(fetchesBefore + 1))
+      // The existing reconnect path: a pause, then the run is read again and a new stream opens.
       await advance(REOPEN_DELAY_MS)
       await vi.waitFor(() => expect(eventSources.all).toHaveLength(2))
       expect(runFetches()).toBeGreaterThan(fetchesBefore)

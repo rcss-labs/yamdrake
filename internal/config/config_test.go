@@ -439,3 +439,74 @@ func TestValkeyKeyPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestFakeStepsRefusedOutsideDev(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       map[string]string
+		wantError string // substring; empty means the load must succeed
+	}{
+		{"prod with fakes", map[string]string{"YUMDRAKE_ENV": "prod", "YUMDRAKE_FAKE_STEPS": "true"}, "YUMDRAKE_FAKE_STEPS"},
+		{"default env with fakes", map[string]string{"YUMDRAKE_FAKE_STEPS": "true"}, "YUMDRAKE_FAKE_STEPS"},
+		{"dev with fakes", map[string]string{"YUMDRAKE_ENV": "dev", "YUMDRAKE_FAKE_STEPS": "true"}, ""},
+		{"prod without fakes", map[string]string{"YUMDRAKE_ENV": "prod"}, ""},
+		{"unknown env", map[string]string{"YUMDRAKE_ENV": "staging"}, "YUMDRAKE_ENV"},
+		{"fake flag not a bool", map[string]string{"YUMDRAKE_ENV": "dev", "YUMDRAKE_FAKE_STEPS": "yes"}, "YUMDRAKE_FAKE_STEPS"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := requiredEnv()
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			cfg, err := LoadRunner(envFrom(env))
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("LoadRunner() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("LoadRunner() = %+v, %v; want an error naming %s", cfg, err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestLoadRunnerEngineDefaultsAndOverrides(t *testing.T) {
+	cfg, err := LoadRunner(envFrom(requiredEnv()))
+	if err != nil {
+		t.Fatalf("LoadRunner() error = %v", err)
+	}
+	if cfg.Env != "prod" || cfg.FakeSteps || cfg.Concurrency != 8 ||
+		cfg.Lease != 30*time.Second || cfg.Heartbeat != 10*time.Second || cfg.Poll != 2*time.Second {
+		t.Errorf("defaults = %+v", cfg)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_RUNNER_CONCURRENCY"] = "3"
+	env["YUMDRAKE_LEASE"] = "1m"
+	env["YUMDRAKE_HEARTBEAT"] = "20s"
+	env["YUMDRAKE_RUNNER_POLL"] = "500ms"
+	cfg, err = LoadRunner(envFrom(env))
+	if err != nil {
+		t.Fatalf("LoadRunner() error = %v", err)
+	}
+	if cfg.Concurrency != 3 || cfg.Lease != time.Minute || cfg.Heartbeat != 20*time.Second || cfg.Poll != 500*time.Millisecond {
+		t.Errorf("overrides = %+v", cfg)
+	}
+}
+
+func TestLoadRunnerRefusesHeartbeatNotShorterThanLease(t *testing.T) {
+	for _, heartbeat := range []string{"30s", "45s"} {
+		env := requiredEnv()
+		env["YUMDRAKE_HEARTBEAT"] = heartbeat // the default lease is 30s
+		if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_HEARTBEAT") {
+			t.Errorf("heartbeat %s: error = %v, want one naming YUMDRAKE_HEARTBEAT", heartbeat, err)
+		}
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_RUNNER_CONCURRENCY"] = "0"
+	if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_RUNNER_CONCURRENCY") {
+		t.Errorf("concurrency 0: error = %v", err)
+	}
+}

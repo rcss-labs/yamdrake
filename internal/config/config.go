@@ -49,6 +49,16 @@ type Runner struct {
 	Common
 	HealthAddr string
 	RunnerID   string
+	// Env is "dev" or "prod". Fake steps are allowed only in dev.
+	Env string
+	// FakeSteps registers the fake step executors instead of real ones.
+	FakeSteps bool
+	// Concurrency is how many legs one runner executes at once.
+	Concurrency int
+	// Lease is how long a claimed leg stays with its runner without a
+	// heartbeat. Heartbeat is how often the runner renews it (shorter than
+	// Lease) and Poll how often it looks for queued legs on its own.
+	Lease, Heartbeat, Poll time.Duration
 }
 
 const redactedPassword = "REDACTED"
@@ -138,6 +148,29 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 		cfg.RunnerID = hostname
 	}
 
+	switch cfg.Env = l.valueOr("YUMDRAKE_ENV", "prod"); cfg.Env {
+	case "dev", "prod":
+	default:
+		l.fail("YUMDRAKE_ENV", `must be "dev" or "prod"`)
+	}
+	switch raw := l.valueOr("YUMDRAKE_FAKE_STEPS", "false"); raw {
+	case "true":
+		cfg.FakeSteps = true
+	case "false":
+	default:
+		l.fail("YUMDRAKE_FAKE_STEPS", `must be "true" or "false"`)
+	}
+	if cfg.FakeSteps && cfg.Env != "dev" {
+		l.fail("YUMDRAKE_FAKE_STEPS", `is allowed only with YUMDRAKE_ENV=dev`)
+	}
+	cfg.Concurrency = l.positiveInt("YUMDRAKE_RUNNER_CONCURRENCY", "8")
+	cfg.Lease = l.duration("YUMDRAKE_LEASE", "30s")
+	cfg.Heartbeat = l.duration("YUMDRAKE_HEARTBEAT", "10s")
+	cfg.Poll = l.duration("YUMDRAKE_RUNNER_POLL", "2s")
+	if cfg.Lease > 0 && cfg.Heartbeat >= cfg.Lease {
+		l.fail("YUMDRAKE_HEARTBEAT", "must be shorter than YUMDRAKE_LEASE")
+	}
+
 	if err := l.err(); err != nil {
 		return Runner{}, err
 	}
@@ -204,6 +237,15 @@ func (l *loader) duration(variable, fallback string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+func (l *loader) positiveInt(variable, fallback string) int {
+	n, err := strconv.Atoi(l.valueOr(variable, fallback))
+	if err != nil || n < 1 {
+		l.fail(variable, "must be a whole number of at least 1")
+		return 0
+	}
+	return n
 }
 
 func (l *loader) hostPort(variable, fallback string) string {

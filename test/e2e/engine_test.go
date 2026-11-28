@@ -55,7 +55,11 @@ const (
 // services with three steps (config, roll, smoke) and a "micro" group of three
 // services with two (config, roll). smokeScope is the scope of smoke's
 // dependency on roll: "service" or "step".
-func writeEngineFixture(t *testing.T, smokeScope string) string {
+//
+// With governance the inventory also holds environment env-prod (label prod),
+// and the job targets labels dev and prod, needs approval for prod and posts
+// to Slack channel #deploys.
+func writeEngineFixture(t *testing.T, smokeScope string, governance bool) string {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name, content string) {
@@ -69,14 +73,22 @@ func writeEngineFixture(t *testing.T, smokeScope string) string {
 	}
 	var environments strings.Builder
 	environments.WriteString("apiVersion: yumdrake/v1\nkind: Environments\nenvironments:\n")
-	for _, name := range []string{"env-a", "env-b", "env-c"} {
+	envNames := []string{"env-a", "env-b", "env-c"}
+	for _, name := range envNames {
 		fmt.Fprintf(&environments, "  - name: %s\n    label: dev\n    aws_account: \"111111111111\"\n", name)
+	}
+	jobLabels, jobGovernance := "[dev]", ""
+	if governance {
+		envNames = append(envNames, "env-prod")
+		environments.WriteString("  - name: env-prod\n    label: prod\n    aws_account: \"111111111111\"\n")
+		jobLabels = "[dev, prod]"
+		jobGovernance = "approval:\n  when:\n    labels: [prod]\nnotify:\n  slack: \"#deploys\"\n"
 	}
 	write("environments.yaml", environments.String())
 	for _, service := range strings.Fields(backendServices + " " + microServices) {
 		var b strings.Builder
 		fmt.Fprintf(&b, "apiVersion: yumdrake/v1\nkind: Service\nname: %s\nenvironments:\n", service)
-		for _, env := range []string{"env-a", "env-b", "env-c"} {
+		for _, env := range envNames {
 			fmt.Fprintf(&b, "  %s:\n    ecs_service: arn:aws:ecs:eu-central-1:111111111111:service/%s/%s\n", env, env, service)
 			fmt.Fprintf(&b, "    ecr_repository: 111111111111.dkr.ecr.eu-central-1.amazonaws.com/%s\n", service)
 		}
@@ -87,8 +99,8 @@ kind: Job
 job: deploy-all
 title: "Backends and microservices"
 environment:
-  labels: [dev]
-groups:
+  labels: %s
+%sgroups:
   backends:
     label: Backend services
     services: [%s]
@@ -120,7 +132,7 @@ steps:
     needs:
       - step: config-micro
         scope: service
-`, strings.Join(strings.Fields(backendServices), ", "), strings.Join(strings.Fields(microServices), ", "), smokeScope))
+`, jobLabels, jobGovernance, strings.Join(strings.Fields(backendServices), ", "), strings.Join(strings.Fields(microServices), ", "), smokeScope))
 	return dir
 }
 
@@ -134,6 +146,10 @@ type engineOpts struct {
 	lease         time.Duration
 	heartbeat     time.Duration
 	smokeScope    string
+	// governance adds the prod environment, approval and Slack notify to the
+	// job; orchestratorEnv adds environment variables to every orchestrator.
+	governance      bool
+	orchestratorEnv map[string]string
 }
 
 func (o engineOpts) withDefaults() engineOpts {
@@ -184,17 +200,17 @@ func startEngine(t *testing.T, opts engineOpts) *engineStack {
 
 	gh := fakegithub.New(githubToken)
 	t.Cleanup(gh.Close)
-	if err := gh.LoadDir(repo, engineCommit, writeEngineFixture(t, opts.smokeScope)); err != nil {
+	if err := gh.LoadDir(repo, engineCommit, writeEngineFixture(t, opts.smokeScope, opts.governance)); err != nil {
 		t.Fatalf("load fixture: %v", err)
 	}
 	gh.SetHead(repo, branch, engineCommit)
 
 	s := &engineStack{t: t, opts: opts, databaseURL: testdb.New(t), keyPrefix: randomKeyPrefix(t), world: fake.NewWorld()}
-	base := startEngineOrchestrator(t, s.databaseURL, s.keyPrefix, valkeyAddr, gh.URL(), true)
+	base := startEngineOrchestrator(t, s.databaseURL, s.keyPrefix, valkeyAddr, gh.URL(), true, opts.orchestratorEnv)
 	s.api = signIn(t, base, s.databaseURL)
 	// More orchestrators share the database and Valkey; the first one migrated.
 	for i := 1; i < opts.orchestrators; i++ {
-		startEngineOrchestrator(t, s.databaseURL, s.keyPrefix, valkeyAddr, gh.URL(), false)
+		startEngineOrchestrator(t, s.databaseURL, s.keyPrefix, valkeyAddr, gh.URL(), false, opts.orchestratorEnv)
 	}
 
 	var err error
@@ -230,7 +246,7 @@ func startEngine(t *testing.T, opts engineOpts) *engineStack {
 // startEngineOrchestrator runs one orchestrator through app.Run, as
 // cmd/orchestrator does. Orchestrators started against one database share a
 // Valkey key prefix (and so their sessions and wake-ups) like replicas would.
-func startEngineOrchestrator(t *testing.T, databaseURL, keyPrefix, valkeyAddr, githubURL string, migrate bool) (base string) {
+func startEngineOrchestrator(t *testing.T, databaseURL, keyPrefix, valkeyAddr, githubURL string, migrate bool, extraEnv map[string]string) (base string) {
 	t.Helper()
 	addr := freeAddr(t)
 	env := map[string]string{
@@ -244,6 +260,9 @@ func startEngineOrchestrator(t *testing.T, databaseURL, keyPrefix, valkeyAddr, g
 		"YUMDRAKE_GITHUB_API_URL":    githubURL,
 		"YUMDRAKE_LOG_LEVEL":         "error",
 		"YUMDRAKE_SWEEP_INTERVAL":    "300ms",
+	}
+	for key, value := range extraEnv {
+		env[key] = value
 	}
 	if !migrate {
 		env["YUMDRAKE_MIGRATE_ON_START"] = "false"

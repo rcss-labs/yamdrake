@@ -11,8 +11,10 @@
 #
 # or `make demo`. See README.md, "Try the demo".
 #
-# Floci is published on no host port (4566 and 4577 belong to other tools). Its
-# ECS tasks and its image registry are sibling containers started through the
+# Floci is published on 127.0.0.1:18566 (demo-check: 18666), on loopback only,
+# because the Docker daemon must pull the task images through it (4566 and 4577
+# belong to other tools). It is an unauthenticated emulator with the Docker
+# socket mounted: never expose it beyond loopback. Its ECS tasks and its image registry are sibling containers started through the
 # Docker socket. The tasks are named floci-aws-ecs-* like the development
 # Floci's, so the name cannot tell them apart; they sit on this project's
 # Compose network, which is how `make demo-down` and demo-check find and remove

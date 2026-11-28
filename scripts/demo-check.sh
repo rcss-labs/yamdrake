@@ -159,8 +159,6 @@ cleanup() {
 	# registry) are not Compose's: they are removed first, by this project's network and the registry's own name.
 	"$repo_root/scripts/floci-clean.sh" --network "$network" >/dev/null 2>&1 || true
 	docker rm -f "$registry_name" >/dev/null 2>&1 || true
-	local tasks_left
-	tasks_left="$(docker ps -a --filter "name=floci-aws-" --filter "network=$network" -q 2>/dev/null | wc -l | tr -d ' ')"
 	compose down -v --remove-orphans >/dev/null 2>&1 || true
 	# The images carry this check's own tags (set in the env file), so `make demo`
 	# images are never touched.
@@ -168,13 +166,17 @@ cleanup() {
 	rm -rf "$work_dir"
 	local left
 	left="$(docker ps -a --filter "label=com.docker.compose.project=$project" -q 2>/dev/null | wc -l | tr -d ' ')"
-	# What Floci started: the tasks were counted on the project's network before `down` removed it.
-	left=$((left + $(docker ps -a --filter "name=$registry_name" -q 2>/dev/null | wc -l | tr -d ' ')))
-	left=$((left + tasks_left))
-	if [ "$left" = "0" ]; then
+	# What Floci started, counted without the network filter that removed it, so that a task which never joined
+	# the network is still found: by the demo accounts' io.floci.account labels and by the registry's exact name.
+	local floci_left=0 account
+	for account in 111111111111 222222222222 333333333333; do
+		floci_left=$((floci_left + $(docker ps -a --filter "label=io.floci.account=$account" -q 2>/dev/null | wc -l | tr -d ' ')))
+	done
+	floci_left=$((floci_left + $(docker ps -a --filter "name=^${registry_name}\$" -q 2>/dev/null | wc -l | tr -d ' ')))
+	if [ "$left" = "0" ] && [ "$floci_left" = "0" ]; then
 		echo "demo-check: PASS: no container of project $project remains"
 	else
-		echo "demo-check: FAIL: $left container(s) of project $project remain" >&2
+		echo "demo-check: FAIL: $left Compose container(s) of project $project and $floci_left Floci container(s) (demo accounts or $registry_name) remain after teardown" >&2
 		status=1
 	fi
 	exit "$status"
@@ -212,16 +214,18 @@ published_host_ip() {
 	YUMDRAKE_HTTP_BIND=0.0.0.0 compose config --format json |
 		python3 -c 'import json,sys
 cfg=json.load(sys.stdin)
-for port in cfg["services"]["orchestrator"].get("ports", []):
-    print(port.get("host_ip", ""))'
+for port in cfg["services"][sys.argv[1]].get("ports", []):
+    print(port.get("host_ip", ""))' "$1"
 }
-host_ips="$(published_host_ip 2>/dev/null)" || host_ips=""
-if [ "$host_ips" = "127.0.0.1" ]; then
-	pass "the orchestrator publishes only on 127.0.0.1, even with YUMDRAKE_HTTP_BIND=0.0.0.0"
-else
-	fail "the orchestrator's published host_ip is '$(echo "$host_ips" | tr '\n' ' ')' with YUMDRAKE_HTTP_BIND=0.0.0.0, want only 127.0.0.1"
-	exit 1
-fi
+for published_service in orchestrator floci; do
+	host_ips="$(published_host_ip "$published_service" 2>/dev/null)" || host_ips=""
+	if [ "$host_ips" = "127.0.0.1" ]; then
+		pass "$published_service publishes only on 127.0.0.1, even with YUMDRAKE_HTTP_BIND=0.0.0.0"
+	else
+		fail "the $published_service's published host_ip is '$(echo "$host_ips" | tr '\n' ' ')' with YUMDRAKE_HTTP_BIND=0.0.0.0, want only 127.0.0.1"
+		exit 1
+	fi
+done
 
 # --- start ------------------------------------------------------------------
 echo "demo-check: building and starting the demo (project $project, port $port)"
@@ -388,7 +392,7 @@ else
 	else
 		fail "the restore run is '$restore_state', want succeeded"
 	fi
-	for service in web worker; do
+	for service in web api worker; do
 		if [ "$(running_version dev "$service" 2>/dev/null)" = "1.4.1" ]; then
 			pass "$service is back on 1.4.1 in dev in the local AWS"
 		else

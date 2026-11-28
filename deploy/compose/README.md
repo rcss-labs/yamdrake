@@ -215,7 +215,10 @@ bin/yumdrake run deploy-all --env dev --set all=1.4.2 --watch
 ```
 
 Starting the demo seeds the local AWS and takes a few minutes after the images
-are built. Floci is not published on any host port. Its ECS tasks and image
+are built. The demo's Floci is published on `127.0.0.1:18566` (loopback only),
+because the Docker daemon must pull the task images through it; demo-check uses
+`127.0.0.1:18666`. It is an unauthenticated emulator with the Docker socket
+mounted, so never expose it beyond loopback. Its ECS tasks and image
 registry are containers Compose does not know about (named `floci-aws-*`); they
 are on the demo's Compose network, so `make demo-down` removes exactly those and
 the development Floci's are never touched.

@@ -9,7 +9,9 @@
 # are not a marker (both Flocis use the same name) and are ignored.
 #
 # With --network NAME the Floci is the one of that Compose network instead (the
-# demo's Floci publishes no port, so it cannot be found by port): only the
+# demo's Floci is published on 127.0.0.1:18566, 18666 in demo-check, so the port
+# above does not find it; it is loopback only, an unauthenticated emulator with
+# the Docker socket, never to be exposed further): only the
 # floci-aws-* containers attached to exactly that network are removed.
 set -euo pipefail
 

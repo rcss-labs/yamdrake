@@ -734,3 +734,37 @@ func TestOrchestratorLogArchiveSchedule(t *testing.T) {
 		}
 	}
 }
+
+func TestSlackAndNotifySettings(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil {
+		t.Fatalf("LoadOrchestrator() error = %v", err)
+	}
+	if cfg.SlackAPIURL != "https://slack.com/api" || cfg.NotifyInterval != 5*time.Second {
+		t.Errorf("defaults: SlackAPIURL = %q, NotifyInterval = %v", cfg.SlackAPIURL, cfg.NotifyInterval)
+	}
+
+	env := requiredEnv()
+	env["YUMDRAKE_SLACK_API_URL"] = "http://127.0.0.1:9999/api"
+	env["YUMDRAKE_NOTIFY_INTERVAL"] = "30s"
+	cfg, err = LoadOrchestrator(envFrom(env))
+	if err != nil {
+		t.Fatalf("LoadOrchestrator() with overrides: %v", err)
+	}
+	if cfg.SlackAPIURL != "http://127.0.0.1:9999/api" || cfg.NotifyInterval != 30*time.Second {
+		t.Errorf("overrides: SlackAPIURL = %q, NotifyInterval = %v", cfg.SlackAPIURL, cfg.NotifyInterval)
+	}
+
+	for name, set := range map[string]map[string]string{
+		"YUMDRAKE_SLACK_API_URL":   {"YUMDRAKE_SLACK_API_URL": "ftp://example.com"},
+		"YUMDRAKE_NOTIFY_INTERVAL": {"YUMDRAKE_NOTIFY_INTERVAL": "0s"},
+	} {
+		env := requiredEnv()
+		for k, v := range set {
+			env[k] = v
+		}
+		if _, err := LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s: error = %v, want it to name the variable", name, err)
+		}
+	}
+}

@@ -382,9 +382,18 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		"GET /api/v1/runs/{id}/events":                  auth.View,
 		"POST /api/v1/runs/{id}/start":                  auth.View,
 		"POST /api/v1/runs/{id}/cancel":                 auth.View,
+		"GET /api/v1/approvals":                         auth.View,
+		"POST /api/v1/runs/{id}/approve":                auth.View,
+		"POST /api/v1/runs/{id}/reject":                 auth.View,
 		"POST /api/v1/runs/{id}/legs/{leg}/reconcile":   auth.View,
 		"POST /api/v1/runs/{id}/legs/{leg}/check-again": auth.View,
 		"POST /api/v1/admin/runs/{id}/release-locks":    auth.ManageAccess,
+		"GET /api/v1/freezes":                           auth.View,
+		"POST /api/v1/admin/freezes":                    auth.ManageAccess,
+		"DELETE /api/v1/admin/freezes/{id}":             auth.ManageAccess,
+		"GET /api/v1/admin/slack":                       auth.ManageConnections,
+		"PUT /api/v1/admin/slack":                       auth.ManageConnections,
+		"POST /api/v1/admin/slack/test":                 auth.ManageConnections,
 	}
 	if len(routes) != len(expected) {
 		t.Fatalf("routes() has %d routes, the expected table %d", len(routes), len(expected))

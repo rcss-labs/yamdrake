@@ -212,6 +212,8 @@ type Extension struct {
 	// Background functions run in their own goroutines until the context they
 	// receive is cancelled; Run waits for them before it closes the pool.
 	Background []func(ctx context.Context)
+	// Health adds fields to the /readyz response (see health.WithDetail).
+	Health []health.Option
 }
 
 // Run executes the shared start-up sequence and serves until ctx is cancelled.
@@ -271,7 +273,7 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 
 	healthHandler := health.Handler(
 		[]health.Check{PostgresCheck(pool, svc.Common.DatabaseURL), ValkeyCheck(client)},
-		health.WithLogger(log),
+		append([]health.Option{health.WithLogger(log)}, ext.Health...)...,
 	)
 	handler := serviceHandler(healthHandler, ext, svc.Web)
 

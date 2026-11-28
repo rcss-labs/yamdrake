@@ -20,10 +20,13 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/engine"
+	"github.com/rcss-labs/yamdrake/internal/health"
 	"github.com/rcss-labs/yamdrake/internal/logs"
+	"github.com/rcss-labs/yamdrake/internal/notify"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
+	"github.com/rcss-labs/yamdrake/internal/store"
 	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
 	"github.com/rcss-labs/yamdrake/internal/wake"
 	"github.com/rcss-labs/yamdrake/internal/webui"
@@ -83,6 +86,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Log:       log,
 			Publisher: bus,
 			AWS:       cfg.AWS,
+			PublicURL: cfg.PublicURL,
 		})
 		// Archived legs are read back from the bucket or directory they were written to.
 		var archive logs.Archive
@@ -99,10 +103,13 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 		if archive != nil {
 			archiver = logs.NewArchiver(pool, archive, cfg.LogArchiveAfter, nil, log)
 		}
+		slack := notify.NewSlack(cfg.SlackAPIURL, nil)
+		sender := notify.NewSender(pool, slack, notify.SlackTokenSource(pool, cipher), time.Now, log)
 		handler := api.New(api.Deps{
 			Pool:                pool,
 			Engine:              syncEngine,
 			Cipher:              cipher,
+			Slack:               slack,
 			Log:                 log,
 			OnConnectionCreated: sources.Forget,
 			Sessions:            session.NewManager(client, time.Now, session.WithKeyPrefix(cfg.ValkeyKeyPrefix)),
@@ -126,8 +133,12 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			log.Info("sync loop stopped")
 		}, func(ctx context.Context) {
 			log.Info("engine loop started", "sweep_interval", cfg.SweepInterval.String())
-			runEngine.Loop(ctx, bus.Subscribe(ctx, wake.TopicRuns), cfg.SweepInterval, sweepQueue, nil)
+			runEngine.Loop(ctx, bus.Subscribe(ctx, wake.TopicRuns), cfg.SweepInterval, sweepQueue)
 			log.Info("engine loop stopped")
+		}, func(ctx context.Context) {
+			log.Info("notification sender started", "interval", cfg.NotifyInterval.String(), "slack_api_url", cfg.SlackAPIURL)
+			sender.Run(ctx, cfg.NotifyInterval)
+			log.Info("notification sender stopped")
 		}}
 		if archiver != nil {
 			background = append(background, func(ctx context.Context) {
@@ -139,6 +150,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 		return Extension{
 			Handlers:   map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},
 			Background: background,
+			Health:     []health.Option{health.WithDetail("notifications", notificationStats(pool))},
 		}, nil
 	}
 }
@@ -158,6 +170,33 @@ func NewCipher(cfg config.Common, awsConfig aws.Config) (secrets.Cipher, error) 
 		return nil, fmt.Errorf("secret cipher: %w", err)
 	}
 	return cipher, nil
+}
+
+// notificationStats reports the Slack outbox for /readyz: how many messages
+// are pending and failed, when the oldest pending one was created (null when
+// none is) and whether Slack refused the stored token.
+func notificationStats(pool *pgxpool.Pool) func(context.Context) (any, error) {
+	return func(ctx context.Context) (any, error) {
+		pending, failed, oldest, err := store.NotificationStats(ctx, pool)
+		if err != nil {
+			return nil, err
+		}
+		slackStatus, err := notify.LoadSlackStatus(ctx, pool)
+		if err != nil {
+			return nil, err
+		}
+		var oldestAt *time.Time
+		if oldest != nil {
+			at := oldest.UTC()
+			oldestAt = &at
+		}
+		return struct {
+			Pending         int        `json:"pending"`
+			Failed          int        `json:"failed"`
+			OldestPendingAt *time.Time `json:"oldest_pending_at"`
+			TokenInvalid    bool       `json:"token_invalid"`
+		}{pending, failed, oldestAt, slackStatus.InvalidSince != nil}, nil
+	}
 }
 
 // settledLegArchiver is what archiveLoop drives; *logs.Archiver satisfies it.

@@ -19,9 +19,12 @@ type View struct {
 	// IntendedLegs holds the ids of legs that have an operation in the intended
 	// state: a change may have been made and its outcome is not recorded.
 	IntendedLegs map[int64]bool
-	// Frozen is a non-empty reason when a freeze blocks the environment
-	// (always "" until Plan 7).
+	// Frozen is a non-empty reason when a freeze blocks the run's label or
+	// environment. Only filled for queued runs.
 	Frozen string
+	// RequesterProblem is non-empty when a queued run's requester may no
+	// longer run it (permission removed, or disabled): the reason to end it with.
+	RequesterProblem string
 	// RunningInEnv and RunningInAccount count legs of OTHER runs that are
 	// queued, claimed or running.
 	RunningInEnv, RunningInAccount int
@@ -57,6 +60,8 @@ type Decision struct {
 	// state that needs explaining (for example a resolve that ended unknown).
 	Reason       string
 	ReleaseLocks bool
+	// FailUnauthorized asks Advance to audit the failure as run.fail_unauthorized.
+	FailUnauthorized bool
 }
 
 const (
@@ -114,6 +119,9 @@ func Decide(v View) Decision {
 	case state == "queued":
 		if cancelRequested {
 			return cancelBeforeStart(v)
+		}
+		if v.RequesterProblem != "" {
+			return Decision{NewState: "failed", Reason: v.RequesterProblem, FailUnauthorized: true, ReleaseLocks: v.LocksHeld}
 		}
 		if v.Frozen != "" {
 			var d Decision

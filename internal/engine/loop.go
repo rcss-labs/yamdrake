@@ -14,17 +14,14 @@ const defaultSweepEvery = 2 * time.Second
 
 // Loop keeps runs moving until ctx ends. A run id arriving on wakeRuns (may be
 // nil) advances that run at once. Every sweepEvery it also sweeps expired
-// leases (q may be nil), expires planned runs and approvals nobody acted on,
-// and advances every active run, so progress never depends on a wake-up having
-// arrived: the timer alone is enough when Valkey is down. expireApprovalsAfter
-// says how long a run may wait for approval; nil means ApprovalExpiry. A failure
-// for one run is logged and the others carry on.
-func (e *Engine) Loop(ctx context.Context, wakeRuns <-chan int64, sweepEvery time.Duration, q *queue.Queue, expireApprovalsAfter func(store.Run) time.Duration) {
+// leases (q may be nil), expires planned runs and runs whose approval request
+// has expired (the approval row's expiry decides), and advances every active
+// run, so progress never depends on a wake-up having arrived: the timer alone
+// is enough when Valkey is down. A failure for one run is logged and the
+// others carry on.
+func (e *Engine) Loop(ctx context.Context, wakeRuns <-chan int64, sweepEvery time.Duration, q *queue.Queue) {
 	if sweepEvery <= 0 {
 		sweepEvery = defaultSweepEvery
-	}
-	if expireApprovalsAfter == nil {
-		expireApprovalsAfter = ApprovalExpiry
 	}
 	ticker := time.NewTicker(sweepEvery)
 	defer ticker.Stop()
@@ -39,7 +36,7 @@ func (e *Engine) Loop(ctx context.Context, wakeRuns <-chan int64, sweepEvery tim
 			}
 			e.advanceLogged(ctx, id)
 		case <-ticker.C:
-			e.sweepTick(ctx, q, expireApprovalsAfter)
+			e.sweepTick(ctx, q)
 		}
 	}
 }
@@ -68,15 +65,16 @@ func (e *Engine) advanceOrLog(ctx context.Context, runID int64) {
 }
 
 // sweepTick is one pass of the fallback timer.
-func (e *Engine) sweepTick(ctx context.Context, q *queue.Queue, approvalAfter func(store.Run) time.Duration) {
+func (e *Engine) sweepTick(ctx context.Context, q *queue.Queue) {
 	e.guard("sweeping leases", 0, func() { e.sweepLeases(ctx, q) })
+	e.guard("expiring approvals", 0, func() { e.expireDueApprovals(ctx) })
 	var ids []int64
 	e.guard("listing active runs", 0, func() { ids = e.activeRunIDs(ctx) })
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			return
 		}
-		e.guard("expiring", id, func() { e.expireIfDue(ctx, id, approvalAfter) })
+		e.guard("expiring", id, func() { e.expirePlannedIfDue(ctx, id) })
 		e.advanceLogged(ctx, id)
 	}
 }
@@ -105,8 +103,29 @@ func (e *Engine) activeRunIDs(ctx context.Context) []int64 {
 	return ids
 }
 
-// expireIfDue expires a planned or approval-waiting run that has waited too long.
-func (e *Engine) expireIfDue(ctx context.Context, runID int64, approvalAfter func(store.Run) time.Duration) {
+// expireDueApprovals expires the waiting runs whose approval request has run out.
+func (e *Engine) expireDueApprovals(ctx context.Context) {
+	due, err := store.ExpiredApprovals(ctx, e.db, e.now())
+	if err != nil {
+		if ctx.Err() == nil {
+			e.log.Error("could not list expired approvals", "error", err.Error())
+		}
+		return
+	}
+	for _, a := range due {
+		if ctx.Err() != nil {
+			return
+		}
+		e.guard("expiring approval", a.RunID, func() {
+			if err := e.Expire(ctx, a.RunID); err != nil && ctx.Err() == nil {
+				e.log.Error("could not expire run", "run_id", a.RunID, "error", err.Error())
+			}
+		})
+	}
+}
+
+// expirePlannedIfDue expires a planned run that nobody started in time.
+func (e *Engine) expirePlannedIfDue(ctx context.Context, runID int64) {
 	run, err := store.GetRun(ctx, e.db, runID)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -114,10 +133,10 @@ func (e *Engine) expireIfDue(ctx context.Context, runID int64, approvalAfter fun
 		}
 		return
 	}
-	if run.State != "planned" && run.State != "waiting_approval" {
+	if run.State != "planned" {
 		return
 	}
-	if err := e.expire(ctx, runID, approvalAfter); err != nil && ctx.Err() == nil {
+	if err := e.Expire(ctx, runID); err != nil && ctx.Err() == nil {
 		e.log.Error("could not expire run", "run_id", runID, "error", err.Error())
 	}
 }

@@ -738,6 +738,54 @@ func TestArchiveThenReadIsIdenticalToBefore(t *testing.T) {
 	}
 }
 
+func TestArchiveWithoutFirstAtReadsLikeBefore(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 3)
+	ctx := context.Background()
+	seedForArchive(t, e)
+	settle(t, e, "succeeded")
+	archive := newDirArchiveT(t)
+	r := NewReader(e.pool, archive)
+	before := readEverything(t, r, e.runID)
+	if len(before.Lines) == 0 {
+		t.Fatal("before: no lines")
+	}
+
+	now := baseTime.Add(48 * time.Hour)
+	n, err := NewArchiver(e.pool, archive, time.Hour, func() time.Time { return now }, nil).ArchiveSettledLegs(ctx)
+	if err != nil || n != 2 {
+		t.Fatalf("ArchiveSettledLegs = %d, %v; want 2 legs", n, err)
+	}
+	tag, err := e.pool.Exec(ctx, `UPDATE log_archives SET first_at = NULL WHERE run_id = $1`, e.runID)
+	if err != nil || tag.RowsAffected() != 2 {
+		t.Fatalf("clearing first_at = %d rows, %v; want 2", tag.RowsAffected(), err)
+	}
+
+	r2 := NewReader(e.pool, archive)
+	after := readEverything(t, r2, e.runID)
+	if !reflect.DeepEqual(normalize(after.Lines), normalize(before.Lines)) || len(after.Gaps) != 0 {
+		t.Fatalf("read without first_at differs:\nbefore %+v\nafter  %+v", before.Lines, after.Lines)
+	}
+
+	session := r2.NewSession(e.runID)
+	var cursor Cursor
+	var sessionLines []Line
+	for {
+		page, err := session.Read(ctx, Filter{}, cursor, 2)
+		if err != nil {
+			t.Fatalf("session Read: %v", err)
+		}
+		if len(page.Lines) == 0 {
+			break
+		}
+		sessionLines = append(sessionLines, page.Lines...)
+		cursor = page.Next
+	}
+	if !reflect.DeepEqual(normalize(sessionLines), normalize(before.Lines)) {
+		t.Fatalf("session read without first_at differs from the full read:\n%+v\nvs\n%+v", sessionLines, before.Lines)
+	}
+}
+
 type failingArchive struct{ Archive }
 
 func (failingArchive) Put(context.Context, string, []byte) error { return errors.New("storage down") }

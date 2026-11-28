@@ -13,6 +13,7 @@ yumdrake_runner_task_role_arn       = "arn:aws:iam::YUMDRAKE-ACCOUNT-ID:role/REP
 ecs_cluster_names        = ["REPLACE-ME-cluster"]
 ecr_repository_arns      = ["arn:aws:ecr:REGION:TARGET-ACCOUNT-ID:repository/REPLACE-ME"]
 config_bucket_names      = ["REPLACE-ME-config-bucket"]
+# config_bucket_kms_key_arns = ["arn:aws:kms:REGION:TARGET-ACCOUNT-ID:key/REPLACE-ME"] # only when the buckets use SSE-KMS
 task_definition_families = ["REPLACE-ME-family"]
 passable_role_arns = [
   "arn:aws:iam::TARGET-ACCOUNT-ID:role/REPLACE-ME-task-role",

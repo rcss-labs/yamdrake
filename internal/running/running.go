@@ -37,7 +37,8 @@ const (
 	// describeImagesBatch is the most image ids DescribeImages takes.
 	describeImagesBatch = 100
 	// cacheTTL keeps an environment that read cleanly; failedTTL keeps one
-	// with an error, so it is retried soon.
+	// with a transient error, so it is retried soon. A service that is merely
+	// not found is a stable answer and does not shorten the TTL.
 	cacheTTL  = 2 * time.Minute
 	failedTTL = 20 * time.Second
 	// valkeyTimeout bounds each Valkey call: against a dead server valkey-go
@@ -355,7 +356,7 @@ func (s *Service) cacheSet(ctx context.Context, key string, facts []fact) {
 	}
 	ttl := cacheTTL
 	for _, f := range facts {
-		if f.State == StateError {
+		if f.State == StateError && f.Error != codeServiceNotFound {
 			ttl = failedTTL
 			break
 		}

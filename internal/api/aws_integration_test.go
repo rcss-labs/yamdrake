@@ -55,10 +55,11 @@ func TestCreateAccountNeverReturnsSecretAndAudits(t *testing.T) {
 	// No response and no audit detail holds a secret, or more of a key id than its last 4.
 	var searched []string
 	searched = append(searched, h.bodies...)
+	searched = append(searched, h.logs.String())
 	for _, e := range h.auditEntries() {
 		searched = append(searched, e.Action+" "+e.TargetType+" "+e.TargetID+" "+string(e.Detail))
 	}
-	if len(h.bodies) != 2 || len(searched) < 3 {
+	if len(h.bodies) != 2 || len(searched) < 4 {
 		t.Fatalf("searched %d responses and %d texts, want 2 and at least 3", len(h.bodies), len(searched))
 	}
 	forbidden := []string{discoverySecret, deploySecret, discoveryKeyID, deployKeyID,
@@ -214,7 +215,7 @@ func TestTestConnectionFailureReportsACodeNotTheSecret(t *testing.T) {
 	if result["ok"] != false || result["error_code"] == "" || result["error_code"] == nil {
 		t.Fatalf("result = %v, want ok false with an error code", result)
 	}
-	texts := append([]string{}, h.bodies...)
+	texts := append([]string{h.logs.String()}, h.bodies...)
 	for _, e := range h.auditEntries() {
 		texts = append(texts, string(e.Detail))
 	}
@@ -227,5 +228,15 @@ func TestTestConnectionFailureReportsACodeNotTheSecret(t *testing.T) {
 	}
 	if h.auditCount("aws_account.test") != 1 {
 		t.Errorf("audit actions = %v, want one aws_account.test", h.auditActions())
+	}
+}
+
+func TestAccountIDAndNameAreTrimmed(t *testing.T) {
+	h := newHarness(t)
+	body := awsRoleBody("  padded  ", "111111111111")
+	body["account_id"] = " 111111111111 "
+	got := h.mustDo("POST", "/api/v1/admin/aws-accounts", body, http.StatusCreated)
+	if got["name"] != "padded" || got["account_id"] != "111111111111" {
+		t.Errorf("created = %v, want trimmed name and account id", got)
 	}
 }

@@ -35,7 +35,7 @@ var (
 	awsAccountIDPattern = regexp.MustCompile(`^[0-9]{12}$`)
 	awsRoleARNPattern   = regexp.MustCompile(`^arn:aws(?:-[a-z]+)*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$`)
 	awsExternalIDRegexp = regexp.MustCompile(`^[A-Za-z0-9+=,.@:/_-]+$`)
-	awsAccessKeyPattern = regexp.MustCompile(`^[A-Za-z0-9]{1,128}$`)
+	awsAccessKeyPattern = regexp.MustCompile(`^[A-Za-z0-9]{12,128}$`)
 )
 
 // awsCredentialRequest is what an administrator submits for one credential.
@@ -72,7 +72,7 @@ func (c awsCredentialRequest) check(label string) ([]byte, string) {
 	case "key":
 		switch {
 		case !awsAccessKeyPattern.MatchString(c.AccessKeyID):
-			return nil, label + " needs access_key_id (letters and digits only)"
+			return nil, label + " needs access_key_id (12 to 128 letters and digits)"
 		case c.SecretAccessKey == "" || utf8.RuneCountInString(c.SecretAccessKey) > 512 || strings.ContainsAny(c.SecretAccessKey, " \t\r\n"):
 			return nil, label + " needs secret_access_key (no spaces, at most 512 characters)"
 		case c.RoleARN != "" || c.ExternalID != "":
@@ -159,6 +159,7 @@ func (s *server) createAWSAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
+	req.AccountID = strings.TrimSpace(req.AccountID)
 	switch {
 	case req.Name == "" || utf8.RuneCountInString(req.Name) > 100:
 		invalid(w, "name is required and at most 100 characters")

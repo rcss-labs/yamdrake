@@ -11,7 +11,7 @@ export const useStartRun = (runId: number) => useApiMutation<RunDetail, StartRun
 export const useCancelRun = (runId: number) => useApiMutation<RunDetail, void>('POST', runPath(runId, 'cancel'), { invalidate })
 export const useApproveRun = (runId: number) => useApiMutation<RunDetail, ApproveRequest>('POST', runPath(runId, 'approve'), { invalidate })
 export const useRejectRun = (runId: number) => useApiMutation<RunDetail, { comment?: string }>('POST', runPath(runId, 'reject'), { invalidate })
-export const useRerunFailed = (runId: number) => useApiMutation<RunDetail, void>('POST', runPath(runId, 'rerun-failed'), { invalidate })
+export const useRerunFailed = (runId: number) => useApiMutation<RunDetail, Record<string, never>>('POST', runPath(runId, 'rerun-failed'), { invalidate })
 export const useRestoreRun = (runId: number) => useApiMutation<RunDetail, RestoreRequest>('POST', runPath(runId, 'restore'), { invalidate })
 export const usePlanAgain = (jobSourceId: number) =>
   useApiMutation<RunDetail, CreateRunRequest>('POST', `/api/v1/jobs/${jobSourceId}/runs`, { invalidate })

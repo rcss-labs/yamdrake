@@ -10,17 +10,23 @@ import './approvals.css'
 
 function ApprovalCard({ item, onReject }: { item: ApprovalItem; onReject: (item: ApprovalItem) => void }) {
   const titleId = `approval-${item.run_id}`
-  const versions = item.services.map((service) => `${service.service} ${service.version}`).join(', ')
+  const versions = (item.versions ?? []).map((service) => `${service.service} ${service.version}`).join(', ')
   return (
     <Card className="approvals-card" role="article" aria-labelledby={titleId}>
       <div className="approvals-text">
         <div id={titleId} className="approvals-title">
-          {item.requested_by_name} wants to run {item.job_name} in <span className="mono">{item.environment}</span> <Tag>{item.label}</Tag>
+          {item.requested_by_name} wants to run {item.job_name || item.job_id} in <span className="mono">{item.environment}</span>
+          {item.label && (
+            <>
+              {' '}
+              <Tag>{item.label}</Tag>
+            </>
+          )}
         </div>
         <div className="approvals-sub">
           {versions ? `${versions}. ` : ''}Requested <Time iso={item.requested_at} />. Expires <Time iso={item.expires_at} />.
         </div>
-        <div className="approvals-sub">{item.can_approve ? 'You can approve this run.' : item.cannot_approve_reason}</div>
+        <div className="approvals-sub">{item.can_approve ? 'You can approve this run.' : item.reason}</div>
       </div>
       <div className="approvals-actions">
         <Link className="ui-btn ui-btn-default" to={`/runs/${item.run_id}`}>

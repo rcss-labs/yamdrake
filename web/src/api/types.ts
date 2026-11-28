@@ -682,17 +682,19 @@ export type Selection = Record<string, GroupSelection>
 
 export type ApprovalDecision = 'pending' | 'approved' | 'rejected' | 'expired'
 
-/** Assumed: the open or last approval of a run (Plan 7 Task 2). */
+/**
+ * The open or last approval of a run. The first five fields are the command-line tool's shape (`runApproval`);
+ * the optional ones are web extras. Whether the viewer may decide it comes from GET /approvals, not from here.
+ */
 export interface Approval {
-  requested_by_name: string
+  requested_by: number
   requested_at: string
   expires_at: string
   decision: ApprovalDecision
-  decided_by_name: string | null
-  decided_at: string | null
   comment: string
-  can_approve: boolean
-  cannot_approve_reason: string
+  requested_by_name?: string
+  decided_by_name?: string | null
+  decided_at?: string | null
 }
 
 /** GET /api/v1/runs/{id}, and the answer of every run action. */
@@ -934,20 +936,21 @@ export interface Plan {
 
 // ---- Approvals (Plan 7 Task 2, assumed) -----------------------------------------------------
 
+/** A row of GET /approvals. The names follow the command-line tool (`approvalItem`); the optional ones are web extras. */
 export interface ApprovalItem {
   run_id: number
-  job_source_id: number
   job_id: string
-  job_name: string
   environment: string
-  label: string
-  manifest_id: string
   requested_by_name: string
   requested_at: string
   expires_at: string
-  services: { service: string; version: string }[]
+  versions: { service: string; version: string }[]
   can_approve: boolean
-  cannot_approve_reason: string
+  reason: string
+  job_source_id?: number
+  job_name?: string
+  label?: string
+  manifest_id?: string
 }
 
 export interface ApprovalsResponse {

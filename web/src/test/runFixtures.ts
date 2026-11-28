@@ -484,6 +484,7 @@ function runsFixture(): { runs: RunDetail[]; plans: Record<number, Plan> } {
     waitReason: 'Waiting for someone with approval rights in prod',
     selection: { backends: { version: '1.9.4' } },
     approval: {
+      requested_by: yael.id,
       requested_by_name: yael.name,
       requested_at: '2026-11-27T11:20:00Z',
       expires_at: '2026-11-27T15:20:00Z',
@@ -491,8 +492,6 @@ function runsFixture(): { runs: RunDetail[]; plans: Record<number, Plan> } {
       decided_by_name: null,
       decided_at: null,
       comment: '',
-      can_approve: true,
-      cannot_approve_reason: '',
     },
   })
   add(waiting, buildPlan(waiting, [{ name: 'backend-api', version: '1.9.4', previous: '1.9.3', config: [envItem('backend-api', 'prod-01', 'unchanged')] }]))

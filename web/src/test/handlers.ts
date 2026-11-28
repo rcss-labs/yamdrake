@@ -342,14 +342,9 @@ function findRun(idText: string): RunDetail | undefined {
   return state.runs.find((run) => String(run.id) === idText)
 }
 
-/** The run as the signed-in person sees it: the approval says whether this person may decide it. */
-function runView(run: RunDetail, me: Me | null): RunDetail {
+/** The run as the server sends it. Whether this person may decide the approval is in GET /approvals, not here. */
+function runView(run: RunDetail): RunDetail {
   const view = structuredClone(run)
-  if (view.approval && me) {
-    const ability = view.approval.decision === 'pending' ? approvalAbility(me, run) : { can: false, reason: '' }
-    view.approval.can_approve = ability.can
-    view.approval.cannot_approve_reason = ability.reason
-  }
   // Go sends null for a run that holds no locks (the list is a nil slice there); the client turns it into [].
   if (view.locks.length === 0) {
     ;(view as unknown as { locks: null }).locks = null
@@ -408,17 +403,16 @@ function runJobInfo(job: StoredJob): RunJob {
   }
 }
 
-function approvalFor(requestedBy: string, expiresInMs: number): Approval {
+function approvalFor(requestedBy: Me, expiresInMs: number): Approval {
   return {
-    requested_by_name: requestedBy,
+    requested_by: requestedBy.id,
+    requested_by_name: requestedBy.name,
     requested_at: now(),
     expires_at: new Date(Date.parse(now()) + expiresInMs).toISOString(),
     decision: 'pending',
     decided_by_name: null,
     decided_at: null,
     comment: '',
-    can_approve: false,
-    cannot_approve_reason: '',
   }
 }
 
@@ -427,7 +421,7 @@ function startRun(run: RunDetail, me: Me): void {
   if (run.approval_required) {
     const job = state.jobs.find((candidate) => candidate.id === run.job_source_id)
     const expires = job?.definition?.approval?.expires ? job.definition.approval.expires / 1e6 : 4 * 3600 * 1000
-    run.approval = approvalFor(me.name, expires)
+    run.approval = approvalFor(me, expires)
     moveRun(run, 'waiting_approval', 'Waiting for someone with approval rights in ' + run.label)
   } else {
     moveRun(run, 'queued', 'Waiting for its turn')
@@ -1274,10 +1268,10 @@ export const handlers: HttpHandler[] = [
       run.auto_start = true
       startRun(run, me as Me)
     }
-    return json(runView(run, me), 201)
+    return json(runView(run), 201)
   }),
 
-  runRoute('GET', '/api/v1/runs/:id', 'view', (_ctx, run, me) => json(runView(run, me))),
+  runRoute('GET', '/api/v1/runs/:id', 'view', (_ctx, run) => json(runView(run))),
 
   runRoute('GET', '/api/v1/runs/:id/plan', 'view', (_ctx, run) => {
     const plan = state.plans[run.id]
@@ -1328,7 +1322,7 @@ export const handlers: HttpHandler[] = [
     }
     startRun(run, me)
     recordAudit('run.start', 'run', run.id, { manifest_id: run.manifest_id, next_state: run.state })
-    return json(runView(run, me))
+    return json(runView(run))
   }),
 
   runRoute('POST', '/api/v1/runs/:id/cancel', 'cancel', (_ctx, run, me) => {
@@ -1349,7 +1343,7 @@ export const handlers: HttpHandler[] = [
     }
     refreshSummary(run)
     recordAudit('run.cancel', 'run', run.id, { state: wasState })
-    return json(runView(run, me))
+    return json(runView(run))
   }),
 
   runRoute('POST', '/api/v1/runs/:id/legs/:leg/reconcile', 'restore', ({ params, body }, run, me) => {
@@ -1373,7 +1367,7 @@ export const handlers: HttpHandler[] = [
     settleReconciledRun(run)
     refreshSummary(run)
     recordAudit('run.reconcile', 'run', run.id, { leg: leg.id, outcome })
-    return json(runView(run, me))
+    return json(runView(run))
   }),
 
   runRoute('POST', '/api/v1/runs/:id/legs/:leg/check-again', 'restore', ({ params }, run, me) => {
@@ -1392,7 +1386,7 @@ export const handlers: HttpHandler[] = [
     refreshSummary(run)
     appendRunLine(run, 'info', `${me.name} asked to check ${leg.step} for ${leg.service} again.`)
     recordAudit('run.check_again', 'run', run.id, { leg: leg.id })
-    return json(runView(run, me))
+    return json(runView(run))
   }),
 
   // The route needs manage_access; the engine then wants an administrator.
@@ -1415,7 +1409,7 @@ export const handlers: HttpHandler[] = [
     moveRun(run, 'failed', `locks released by ${me.name} without reconciliation`)
     appendRunLine(run, 'warn', `Locks released by ${me.name} without reconciliation.`)
     recordAudit('run.release_locks', 'run', run.id)
-    return json(runView(run, me))
+    return json(runView(run))
   }),
 
   runRoute('POST', '/api/v1/runs/:id/restore', 'restore', ({ body }, run, me) => {
@@ -1446,7 +1440,7 @@ export const handlers: HttpHandler[] = [
       me,
     })
     recordAudit('run.restore', 'run', restore.id, { source: run.id })
-    return json(runView(restore, me), 201)
+    return json(runView(restore), 201)
   }),
 
   runRoute('POST', '/api/v1/runs/:id/rerun-failed', 'run', (_ctx, run, me) => {
@@ -1462,7 +1456,7 @@ export const handlers: HttpHandler[] = [
     const services = Object.fromEntries(broken.map((service) => [service, versions[service] ?? '']))
     const rerun = createPlannedRun({ job, environment: run.environment, services, selection: selectionOfServices(job, services), me })
     recordAudit('run.rerun_failed', 'run', rerun.id, { source: run.id })
-    return json(runView(rerun, me), 201)
+    return json(runView(rerun), 201)
   }),
 
   runRoute('POST', '/api/v1/runs/:id/approve', 'approve', ({ body }, run, me) => {
@@ -1480,7 +1474,7 @@ export const handlers: HttpHandler[] = [
     moveRun(run, 'queued', 'Waiting for its turn')
     appendRunLine(run, 'ok', `Approved by ${me.name}.`)
     recordAudit('run.approve', 'run', run.id, { manifest_id: run.manifest_id })
-    return json(runView(run, me))
+    return json(runView(run))
   }),
 
   runRoute('POST', '/api/v1/runs/:id/reject', 'approve', ({ body }, run, me) => {
@@ -1494,7 +1488,7 @@ export const handlers: HttpHandler[] = [
     moveRun(run, 'rejected', `Rejected by ${me.name}`)
     appendRunLine(run, 'warn', `Rejected by ${me.name}.`)
     recordAudit('run.reject', 'run', run.id)
-    return json(runView(run, me))
+    return json(runView(run))
   }),
 
   route('GET', '/api/v1/approvals', view, ({ me }) => {
@@ -1514,9 +1508,9 @@ export const handlers: HttpHandler[] = [
           requested_by_name: run.approval?.requested_by_name ?? run.requested_by_name ?? '',
           requested_at: run.approval?.requested_at ?? run.created_at,
           expires_at: run.approval?.expires_at ?? '',
-          services: Object.entries(serviceVersionsOf(run)).map(([service, version]) => ({ service, version })),
+          versions: Object.entries(serviceVersionsOf(run)).map(([service, version]) => ({ service, version })),
           can_approve: ability.can,
-          cannot_approve_reason: ability.reason,
+          reason: ability.reason,
         }
       })
     return json({ approvals })

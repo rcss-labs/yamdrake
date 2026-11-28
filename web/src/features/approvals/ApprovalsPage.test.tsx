@@ -1,9 +1,10 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { App } from '../../App'
 import { renderApp } from '../../test/render'
-import { adminMe, failNext, jobManagerMe, mockState, requests } from '../../test/server'
+import { adminMe, failNext, jobManagerMe, mockState, requests, server } from '../../test/server'
 
 const route = '/approvals'
 
@@ -33,6 +34,45 @@ describe('the approvals page', () => {
     const approver = { ...jobManagerMe, grants: [{ action: 'approve' as const, label: '', environment: '', folder_id: 0 }] }
     renderApp(<App />, { route, me: approver })
     expect(await screen.findByText('You started this run, so someone else has to approve it.')).toBeInTheDocument()
+  })
+
+  it('renders the versions and the reason from the command-line tool\'s field names', async () => {
+    server.use(
+      http.get('/api/v1/approvals', () =>
+        HttpResponse.json({
+          approvals: [
+            {
+              run_id: 103,
+              job_id: 'deploy-backends',
+              environment: 'prod-01',
+              requested_by_name: 'Yael Barak',
+              requested_at: '2026-11-27T11:20:00Z',
+              expires_at: '2026-11-27T15:20:00Z',
+              versions: [{ service: 'backend-api', version: '1.9.4' }],
+              can_approve: false,
+              reason: 'You asked for this run.',
+            },
+          ],
+        }),
+      ),
+    )
+    renderApp(<App />, { route, me: adminMe })
+    const card = await screen.findByRole('article', { name: /Yael Barak wants to run deploy-backends/ })
+    expect(within(card).getByText(/backend-api 1\.9\.4/)).toBeInTheDocument()
+    expect(within(card).getByText('You asked for this run.')).toBeInTheDocument()
+  })
+
+  it('still renders a row that has none of the web-only fields', async () => {
+    server.use(
+      http.get('/api/v1/approvals', () =>
+        HttpResponse.json({
+          approvals: [{ run_id: 103, job_id: 'deploy-backends', environment: 'prod-01', requested_by_name: 'Yael Barak', requested_at: '', expires_at: '', versions: [], can_approve: true, reason: '' }],
+        }),
+      ),
+    )
+    renderApp(<App />, { route, me: adminMe })
+    const card = await screen.findByRole('article', { name: /Yael Barak wants to run deploy-backends/ })
+    expect(within(card).getByRole('link', { name: 'Review and approve' })).toHaveAttribute('href', '/runs/103')
   })
 
   it('shows an empty state when nothing is waiting', async () => {

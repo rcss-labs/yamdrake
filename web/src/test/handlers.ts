@@ -351,12 +351,7 @@ function findRun(idText: string): RunDetail | undefined {
 
 /** The run as the server sends it. Whether this person may decide the approval is in GET /approvals, not here. */
 function runView(run: RunDetail): RunDetail {
-  const view = structuredClone(run)
-  // Go sends null for a run that holds no locks (the list is a nil slice there); the client turns it into [].
-  if (view.locks.length === 0) {
-    ;(view as unknown as { locks: null }).locks = null
-  }
-  return view
+  return structuredClone(run)
 }
 
 /** Who may approve: the grant in the run's label, and not the person who started it (an admin may). */
@@ -416,7 +411,7 @@ function approvalFor(requestedBy: Me, expiresInMs: number): Approval {
     requested_by_name: requestedBy.name,
     requested_at: now(),
     expires_at: new Date(Date.parse(now()) + expiresInMs).toISOString(),
-    decision: 'pending',
+    decision: '',
     decided_by_name: null,
     decided_at: null,
     comment: '',
@@ -669,7 +664,7 @@ export function overviewFixture(days: number, label = ''): Overview {
     ],
     environments: [
       { environment: 'hetzner-01', label: 'dev', run_id: 41, state: 'failed', job: 'deploy-billing', at: '2026-11-28T09:00:00Z' },
-      { environment: 'preprod-01', label: 'preprod', run_id: null, state: 'failed', job: '', at: null },
+      { environment: 'preprod-01', label: 'preprod', run_id: null, state: '', job: '', at: null },
     ],
   }
 }
@@ -1656,7 +1651,7 @@ export const handlers: HttpHandler[] = [
     if (!approvalAbility(me, run).can) {
       return forbiddenResponse()
     }
-    if (run.state !== 'waiting_approval' || run.approval?.decision !== 'pending') {
+    if (run.state !== 'waiting_approval' || run.approval?.decision !== '') {
       return conflict('This run was already decided.')
     }
     const request = fields(body)
@@ -1674,7 +1669,7 @@ export const handlers: HttpHandler[] = [
     if (!approvalAbility(me, run).can) {
       return forbiddenResponse()
     }
-    if (run.state !== 'waiting_approval' || run.approval?.decision !== 'pending') {
+    if (run.state !== 'waiting_approval' || run.approval?.decision !== '') {
       return conflict('This run was already decided.')
     }
     run.approval = { ...run.approval, decision: 'rejected', decided_by_name: me.name, decided_at: now(), comment: text(fields(body).comment) }

@@ -482,7 +482,7 @@ function runsFixture(): { runs: RunDetail[]; plans: Record<number, Plan> } {
       requested_by_name: yael.name,
       requested_at: '2026-11-27T11:20:00Z',
       expires_at: '2026-11-27T15:20:00Z',
-      decision: 'pending',
+      decision: '',
       decided_by_name: null,
       decided_at: null,
       comment: '',

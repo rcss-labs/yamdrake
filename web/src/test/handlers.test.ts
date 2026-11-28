@@ -183,15 +183,21 @@ describe('the mock API', () => {
     expect(last.next_before).toBeNull()
   })
 
-  it('sends null on the wire for the lists the Go server leaves nil (needs, env_files, tomls)', async () => {
-    // Raw fetch: api() turns these nulls into [], and this guards that the mock still exercises that.
+  it('sends [] on the wire for the lists of a parsed service and job that hold nothing, as the Go server does', async () => {
+    // Raw fetch, so that nothing between the mock and the test turns a null into [].
     const wire = async <T,>(path: string): Promise<T> => (await fetch(path)).json() as Promise<T>
     const service = await wire<Service>('/api/v1/inventory/services/billing')
-    expect(service.environments['hetzner-01']?.env_files).toBeNull()
+    expect(service.environments['hetzner-01']?.env_files).toEqual([])
     const backend = await wire<Service>('/api/v1/inventory/services/backend-api')
-    expect(backend.environments['hetzner-01']?.tomls).toBeNull()
+    expect(backend.environments['hetzner-01']?.tomls).toEqual([])
     const job = await wire<JobDetail>('/api/v1/jobs/1')
-    expect(job.definition?.steps?.[0]?.needs).toBeNull()
+    expect(job.definition?.steps[0]?.needs).toEqual([])
+  })
+
+  it('sends an environment that never had a run with no run id and an empty state, as the Go server does', async () => {
+    const wire = (await (await fetch('/api/v1/analytics/overview')).json()) as { environments: { run_id: number | null; state: string }[] }
+    const never = wire.environments.find((environment) => environment.run_id === null)
+    expect(never?.state).toBe('')
   })
 
   it('answers the single IdP mapping and 404 for an unknown one', async () => {
@@ -223,9 +229,9 @@ describe('the mock API', () => {
     expect(byId(4)).toMatchObject({ services: 0, approval_labels: [] })
   })
 
-  it('sends null on the wire for the locks of a run that holds none', async () => {
+  it('sends [] on the wire for the locks of a run that holds none, as the Go server does', async () => {
     const run = (await (await fetch('/api/v1/runs/109')).json()) as { locks: unknown }
-    expect(run.locks).toBeNull()
+    expect(run.locks).toEqual([])
   })
 })
 
@@ -239,11 +245,11 @@ describe('the mock run routes keep state and answer like the server', () => {
     await expect(api('POST', `/api/v1/runs/${runIds.planned}/start`)).rejects.toMatchObject({ status: 409, code: 'conflict' })
   })
 
-  it('sends a started run of an approval label to waiting_approval with a pending approval', async () => {
+  it('sends a started run of an approval label to waiting_approval with an open approval (decision "", as the Go server sends)', async () => {
     signInAs(adminMe)
     const created = await api<RunDetail>('POST', '/api/v1/jobs/1/runs', { environment: 'prod-01', selection: { backends: { version: '1.9.4', services: { 'backend-api': '' } } }, start: true })
     expect(created).toMatchObject({ state: 'waiting_approval', approval_required: true, kind: 'deploy', requested_by: 1 })
-    expect(created.approval?.decision).toBe('pending')
+    expect(created.approval?.decision).toBe('')
     expect(created.legs.map((leg) => leg.state)).toEqual(['succeeded', 'pending', 'pending', 'pending'])
   })
 

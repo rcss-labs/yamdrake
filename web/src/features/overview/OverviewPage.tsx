@@ -133,7 +133,7 @@ const environmentColumns: DataColumn<OverviewEnvironment>[] = [
     render: (row) =>
       row.run_id === null ? <span className="ov-sub">No runs yet</span> : <Link to={`/runs/${row.run_id}`}>#{row.run_id}</Link>,
   },
-  { key: 'state', header: 'State', render: (row) => (row.run_id === null ? null : <StatusPill status={row.state} />) },
+  { key: 'state', header: 'State', render: (row) => (row.run_id === null || row.state === '' ? null : <StatusPill status={row.state} />) },
   { key: 'job', header: 'Job', render: (row) => row.job },
   { key: 'at', header: 'When', className: 'ov-nowrap', render: (row) => (row.at ? <Time iso={row.at} /> : null) },
 ]

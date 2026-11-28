@@ -43,6 +43,9 @@ const (
 	// valkeyTimeout bounds each Valkey call: against a dead server valkey-go
 	// keeps redialling until its context ends.
 	valkeyTimeout = 2 * time.Second
+	// envReadTimeout bounds one environment's whole read, so one account that
+	// does not answer cannot hold the call slots or fail the page.
+	envReadTimeout = 10 * time.Second
 	// sessionName names the assumed-role session in AWS's logs.
 	sessionName = "yumdrake-orchestrator-running"
 
@@ -111,6 +114,10 @@ type Config struct {
 	Checks Checks
 	// Now is the clock; the default is time.Now.
 	Now func() time.Time
+	// EnvTimeout bounds one environment's whole read (credentials, waiting for
+	// a call slot, every AWS call); the default is 10 seconds. Cells still
+	// unread when it ends become error Timeout and the others are untouched.
+	EnvTimeout time.Duration
 }
 
 // Cell is one service in one environment. Error is an AWS error code, never
@@ -294,8 +301,14 @@ func (s *Service) environmentFacts(ctx context.Context, sem chan struct{}, inv s
 			return cached
 		}
 	}
-	facts := (&reader{s: s, sem: sem, env: env}).read(ctx, inv)
-	if ctx.Err() != nil {
+	timeout := s.cfg.EnvTimeout
+	if timeout <= 0 {
+		timeout = envReadTimeout
+	}
+	envCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	facts := (&reader{s: s, sem: sem, env: env}).read(envCtx, inv)
+	if ctx.Err() != nil { // the request, not the environment's own deadline
 		return facts // cancelled: never cache or report half a read
 	}
 	s.cacheSet(ctx, key, facts)

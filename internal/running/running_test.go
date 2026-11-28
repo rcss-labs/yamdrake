@@ -45,6 +45,7 @@ type world struct {
 	images      map[string][]ecrtypes.ImageDetail
 	failAccount map[string]error // discovery fails for the account
 	failCluster map[string]error // DescribeServices fails for account|cluster
+	hangAccount map[string]bool  // DescribeServices blocks until its context ends
 	inactive    map[string]bool  // account|cluster|name reports INACTIVE
 	delay       time.Duration
 
@@ -61,7 +62,7 @@ func newWorld() *world {
 	return &world{
 		services: map[string]ecstypes.Service{}, taskdefs: map[string]taskdef{},
 		images: map[string][]ecrtypes.ImageDetail{}, failAccount: map[string]error{},
-		failCluster: map[string]error{}, inactive: map[string]bool{},
+		failCluster: map[string]error{}, inactive: map[string]bool{}, hangAccount: map[string]bool{},
 	}
 }
 
@@ -140,7 +141,11 @@ type acctECS struct {
 	account string
 }
 
-func (a acctECS) DescribeServices(_ context.Context, in *ecs.DescribeServicesInput, _ ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error) {
+func (a acctECS) DescribeServices(ctx context.Context, in *ecs.DescribeServicesInput, _ ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error) {
+	if a.w.hangAccount[a.account] {
+		<-ctx.Done() // a blackholed endpoint: only the deadline ends the call
+		return nil, ctx.Err()
+	}
 	defer a.w.enter()()
 	a.w.ecsCalls.Add(1)
 	cluster := aws.ToString(in.Cluster)
@@ -539,5 +544,36 @@ func TestForServiceReturnsTheRowsCells(t *testing.T) {
 	}
 	if _, err := svc.ForService(context.Background(), inv, "nope"); err == nil || !strings.Contains(err.Error(), "unknown service") {
 		t.Errorf("unknown service error = %v", err)
+	}
+}
+
+func TestHangingEnvironmentTimesOutAloneAndPageStillRenders(t *testing.T) {
+	w := newWorld()
+	envs := []spec.Environment{envEU, envUS}
+	w.run(acctEU, "main", "api", repoURI(acctEU, "api")+":1.0.0", nil)
+	w.run(acctUS, "main", "api", repoURI(acctUS, "api")+":1.0.0", nil)
+	w.hangAccount[acctUS] = true
+
+	svc := newService(t, w, Config{EnvTimeout: 200 * time.Millisecond})
+	start := time.Now()
+	m, err := svc.Matrix(context.Background(), inventoryOf(envs, serviceSpec("api", "semver", envs...)))
+	if err != nil {
+		t.Fatalf("Matrix: %v, want the page to render with the hanging environment marked", err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("Matrix took %v, want it bounded by the environment timeout", took)
+	}
+	if c := cellOf(t, m, "api", "prod-us"); c.State != "error" || c.Error != "Timeout" {
+		t.Errorf("hanging environment cell = %+v, want error Timeout", c)
+	}
+	if c := cellOf(t, m, "api", "prod-eu"); c.State != "ok" || c.Version != "1.0.0" {
+		t.Errorf("healthy environment cell = %+v, want ok 1.0.0", c)
+	}
+
+	// A cancelled request is still an error, not a page of timeouts.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := svc.Matrix(ctx, inventoryOf(envs, serviceSpec("api", "semver", envs...))); err == nil {
+		t.Errorf("Matrix with a cancelled request context returned no error")
 	}
 }

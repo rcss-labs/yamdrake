@@ -638,7 +638,7 @@ func TestSSOUnavailable(t *testing.T) {
 	h.handler.ServeHTTP(rec, httptest.NewRequest("POST", "/saml/acs", strings.NewReader("SAMLResponse=x")))
 	expectSignInRedirect(t, rec, "unavailable")
 
-	// Valkey down at the assertion consumer: 503, never an accepted response.
+	// Valkey down at the assertion consumer: a redirect to sign-in with sso_error=unavailable, never an accepted response.
 	idp := h.newIDP()
 	h.configureSSO(idp)
 	idp.signIn(uniqueEmail(t, "erin"), "Erin")
@@ -911,7 +911,7 @@ func TestUnsignedResponseWithSignedAssertionIsAccepted(t *testing.T) {
 	expectSignedIn(t, h.postACS(idp.begin().withoutResponseSignature(t), true), "/")
 }
 
-func TestValkeyFailingOnlyAtTheReplayCheckIsA503AndCreatesNothing(t *testing.T) {
+func TestValkeyFailingOnlyAtTheReplayCheckRedirectsToSignInAndCreatesNothing(t *testing.T) {
 	h, idp, _ := ssoSetup(t)
 	email := uniqueEmail(t, "hank")
 	idp.signIn(email, "Hank", "eng-devops")
@@ -1134,7 +1134,7 @@ func TestOneRequestAnswersOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestValkeyFailingAtTheRequestIDCheckIsA503(t *testing.T) {
+func TestValkeyFailingAtTheRequestIDCheckRedirectsToSignIn(t *testing.T) {
 	h, idp, _ := ssoSetup(t)
 	idp.signIn(uniqueEmail(t, "nina"), "Nina", "eng-devops")
 	flow := idp.begin()

@@ -67,8 +67,12 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatalf("CreateJobSource: %v", err)
 	}
+	snapshot, err := store.ActivateSnapshot(ctx, pool, "queue-inventory", []byte(`{}`), time.Now())
+	if err != nil {
+		t.Fatalf("ActivateSnapshot: %v", err)
+	}
 	run, err := store.InsertRun(ctx, pool, store.Run{
-		Kind: "deploy", JobSourceID: source.ID, JobID: "deploy-api", JobSnapshot: []byte(`{"id":"deploy-api"}`),
+		Kind: "deploy", InventorySnapshotID: snapshot.ID, JobSourceID: source.ID, JobID: "deploy-api", JobSnapshot: []byte(`{"id":"deploy-api"}`),
 		Environment: "prod-eu", AWSAccount: "111122223333", FolderID: folder.ID, Selection: []byte(`{}`),
 		State: "running", RequestedBy: user.ID, Via: "web",
 	}, []store.RunStep{{Name: "deploy", Use: "ecs-deploy", Position: 0, Needs: []byte(`[]`)}}, nil)

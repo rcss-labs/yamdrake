@@ -1,0 +1,65 @@
+.jobs-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.jobs-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: var(--ink2);
+}
+.jobs-count,
+.jobs-quiet,
+.jobs-sub {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ink3);
+}
+.jobs-count {
+  font-weight: 400;
+}
+.jobs-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+.jobs-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.jobs-move-error {
+  margin: 4px 0 0;
+  max-width: 240px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--bad-t);
+}
+.jobs-no-match {
+  padding: 24px 16px;
+  text-align: center;
+}
+.jobs-no-match p {
+  margin: 0 0 4px;
+}
+.jobs-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.jobs-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+.jobs-narrow {
+  max-width: 320px;
+}
+.jobs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

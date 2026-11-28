@@ -149,7 +149,7 @@ func TestJobSourceLifecycle(t *testing.T) {
 
 	at := time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.UTC)
 	good := []byte(`{"name": "deploy"}`) // jsonb normalises spacing to this form
-	if err := SaveJobGood(ctx, pool, created.ID, good, "deploy-backend", "Deploy backend", "c1", at); err != nil {
+	if err := SaveJobGood(ctx, pool, created.ID, good, "", "deploy-backend", "Deploy backend", "c1", at); err != nil {
 		t.Fatalf("SaveJobGood: %v", err)
 	}
 	got, err := GetJobSource(ctx, pool, created.ID)
@@ -181,7 +181,7 @@ func TestJobSourceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	if err := SaveJobGood(ctx, tx, created.ID, good, "deploy-backend", "Deploy backend", "c3", later); err != nil {
+	if err := SaveJobGood(ctx, tx, created.ID, good, "", "deploy-backend", "Deploy backend", "c3", later); err != nil {
 		t.Fatalf("SaveJobGood in tx: %v", err)
 	}
 	if err := SaveJobProblems(ctx, tx, created.ID, nil, "c3", true, later); err != nil {
@@ -231,14 +231,14 @@ func TestJobIDIsUniqueAcrossSources(t *testing.T) {
 	a, _ := CreateJobSource(ctx, pool, JobSource{FolderID: folder.ID, Repo: "acme/ops", Branch: "main", Path: "a.yaml"})
 	b, _ := CreateJobSource(ctx, pool, JobSource{FolderID: folder.ID, Repo: "acme/ops", Branch: "main", Path: "b.yaml"})
 	at := nanosecondNow()
-	if err := SaveJobGood(ctx, pool, a.ID, []byte(`{}`), "same-id", "A", "c1", at); err != nil {
+	if err := SaveJobGood(ctx, pool, a.ID, []byte(`{}`), "", "same-id", "A", "c1", at); err != nil {
 		t.Fatalf("SaveJobGood a: %v", err)
 	}
-	if err := SaveJobGood(ctx, pool, b.ID, []byte(`{}`), "same-id", "B", "c1", at); !errors.Is(err, ErrDuplicate) {
+	if err := SaveJobGood(ctx, pool, b.ID, []byte(`{}`), "", "same-id", "B", "c1", at); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("SaveJobGood b error = %v, want ErrDuplicate", err)
 	}
 	// Re-saving the same id on the same source is fine.
-	if err := SaveJobGood(ctx, pool, a.ID, []byte(`{}`), "same-id", "A2", "c2", at); err != nil {
+	if err := SaveJobGood(ctx, pool, a.ID, []byte(`{}`), "", "same-id", "A2", "c2", at); err != nil {
 		t.Fatalf("SaveJobGood a again: %v", err)
 	}
 }
@@ -251,10 +251,10 @@ func TestActivateSnapshotKeepsOneActive(t *testing.T) {
 		t.Fatalf("ActiveSnapshot on empty = %v, %v", ok, err)
 	}
 	at := nanosecondNow()
-	if _, err := ActivateSnapshot(ctx, pool, "A", []byte(`{"v":"a"}`), at); err != nil {
+	if _, err := ActivateSnapshot(ctx, pool, "A", []byte(`{"v":"a"}`), nil, at); err != nil {
 		t.Fatalf("activate A: %v", err)
 	}
-	if _, err := ActivateSnapshot(ctx, pool, "B", []byte(`{"v":"b"}`), at.Add(time.Second)); err != nil {
+	if _, err := ActivateSnapshot(ctx, pool, "B", []byte(`{"v":"b"}`), nil, at.Add(time.Second)); err != nil {
 		t.Fatalf("activate B: %v", err)
 	}
 	active, ok, err := ActiveSnapshot(ctx, pool)
@@ -282,11 +282,11 @@ func TestActivateSameCommitTwiceIsNoOp(t *testing.T) {
 	ctx := context.Background()
 	pool := newPool(t)
 	at := nanosecondNow()
-	first, err := ActivateSnapshot(ctx, pool, "A", []byte(`{"v":1}`), at)
+	first, err := ActivateSnapshot(ctx, pool, "A", []byte(`{"v":1}`), nil, at)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	second, err := ActivateSnapshot(ctx, pool, "A", []byte(`{"v":2}`), at.Add(time.Hour))
+	second, err := ActivateSnapshot(ctx, pool, "A", []byte(`{"v":2}`), nil, at.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestActivateSnapshotConcurrentlyKeepsOneActive(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := ActivateSnapshot(ctx, pool, fmt.Sprintf("commit-%d", i), []byte(`{}`), nanosecondNow())
+			_, err := ActivateSnapshot(ctx, pool, fmt.Sprintf("commit-%d", i), []byte(`{}`), nil, nanosecondNow())
 			errs <- err
 		}()
 	}
@@ -372,7 +372,7 @@ func TestSyncErrorsAreRecordedAndClearedWithoutTouchingDefinitions(t *testing.T)
 	if err != nil {
 		t.Fatalf("CreateJobSource: %v", err)
 	}
-	if err := SaveJobGood(ctx, pool, js.ID, []byte(`{"id":"a"}`), "a", "A", "c1", at); err != nil {
+	if err := SaveJobGood(ctx, pool, js.ID, []byte(`{"id":"a"}`), "", "a", "A", "c1", at); err != nil {
 		t.Fatalf("SaveJobGood: %v", err)
 	}
 	if err := SaveInventoryStatus(ctx, pool, InventoryStatus{CheckedAt: &at}); err != nil {

@@ -1,0 +1,13 @@
+.ui-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--bad-b);
+  color: var(--bad-t);
+}
+.ui-error p {
+  margin: 0;
+}

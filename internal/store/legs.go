@@ -170,6 +170,24 @@ func FlagLegCancel(ctx context.Context, tx DBTX, legID int64) error {
 	return nil
 }
 
+// ActiveLegsOfOtherRuns counts the queued, claimed and running legs of runs
+// other than runID: in the same environment and in the same AWS account (an
+// empty account never matches). The scheduler uses it to stay under the
+// concurrency limits.
+func ActiveLegsOfOtherRuns(ctx context.Context, db DBTX, runID int64, environment, awsAccount string) (inEnvironment, inAccount int, err error) {
+	err = db.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE r.environment = $2),
+		        count(*) FILTER (WHERE $3 <> '' AND r.aws_account = $3)
+		 FROM legs l JOIN runs r ON r.id = l.run_id
+		 WHERE l.run_id <> $1 AND l.state IN ('queued', 'claimed', 'running')
+		   AND (r.environment = $2 OR ($3 <> '' AND r.aws_account = $3))`,
+		runID, environment, awsAccount).Scan(&inEnvironment, &inAccount)
+	if err != nil {
+		return 0, 0, fmt.Errorf("active legs of other runs: %w", mapError(err))
+	}
+	return inEnvironment, inAccount, nil
+}
+
 // GetLeg returns ErrNotFound for an unknown id.
 func GetLeg(ctx context.Context, db DBTX, id int64) (Leg, error) {
 	l, err := scanLeg(db.QueryRow(ctx, "SELECT "+legColumns+" FROM legs WHERE id = $1", id))

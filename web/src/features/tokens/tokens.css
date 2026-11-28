@@ -1,0 +1,99 @@
+.tokens-head {
+  padding: 20px 20px 12px;
+}
+.tokens-head h2 {
+  margin: 0;
+}
+.tokens-sub {
+  color: var(--ink3);
+  font-size: 13px;
+}
+.tokens-nowrap {
+  white-space: nowrap;
+}
+.tokens-actions {
+  text-align: right;
+}
+.tokens-revoke {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 20px 16px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--bad-b);
+  color: var(--bad-t);
+  font-size: 14px;
+}
+.tokens-revoke p {
+  margin: 0;
+  flex: 1 1 240px;
+}
+.tokens-create {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.tokens-create h2 {
+  margin: 0;
+}
+.tokens-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.tokens-form .ui-field {
+  flex: 1 1 200px;
+}
+.tokens-new {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--raised);
+}
+.tokens-new p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink2);
+}
+.tokens-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tokens-value {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.tokens-copy-note {
+  font-size: 13px;
+  color: var(--ink2);
+}
+.tokens-code {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.confirm-code {
+  font-size: 24px;
+  line-height: 32px;
+  letter-spacing: 0.08em;
+  font-weight: 500;
+}
+.confirm-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+.confirm-box p {
+  margin: 0;
+  color: var(--ink2);
+}

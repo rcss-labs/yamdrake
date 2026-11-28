@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	gosync "sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -44,11 +45,27 @@ type Engine struct {
 	// any of them takes a pool connection, so at most one connection per
 	// process waits on or holds the advisory lock; see withLock.
 	local chan struct{}
+	// backfilled holds the rows whose missing file text was already attempted
+	// in this process. A row that cannot be filled (old commit gone, files
+	// changed) would otherwise be read from GitHub again on every poll.
+	backfillMu gosync.Mutex
+	backfilled map[string]bool
+}
+
+// firstBackfill reports true once per key for the life of the engine.
+func (e *Engine) firstBackfill(key string) bool {
+	e.backfillMu.Lock()
+	defer e.backfillMu.Unlock()
+	if e.backfilled[key] {
+		return false
+	}
+	e.backfilled[key] = true
+	return true
 }
 
 // NewEngine builds an engine. now supplies every stored timestamp.
 func NewEngine(pool *pgxpool.Pool, sources SourceFor, log *slog.Logger, now func() time.Time) *Engine {
-	return &Engine{pool: pool, sources: sources, log: log, now: now, local: make(chan struct{}, 1)}
+	return &Engine{pool: pool, sources: sources, log: log, now: now, local: make(chan struct{}, 1), backfilled: map[string]bool{}}
 }
 
 const noInventoryMessage = "no active inventory yet"
@@ -103,6 +120,20 @@ func (e *Engine) syncJob(ctx context.Context, jobSourceID int64) error {
 		return err
 	}
 
+	// A row written before the text was kept gets it from the last good commit
+	// (never from the head, which may be a rejected one).
+	if job.LastGood != nil && job.LastGoodSource == "" && job.LastGoodCommit != "" &&
+		e.firstBackfill(fmt.Sprintf("job:%d:%s", job.ID, job.LastGoodCommit)) {
+		// Best effort: a failure is logged and the sync goes on.
+		text, err := source.ReadFile(ctx, job.Repo, job.LastGoodCommit, job.Path)
+		if err == nil {
+			err = store.FillJobSource(ctx, e.pool, job.ID, job.LastGoodCommit, string(text))
+		}
+		if err != nil {
+			e.log.Warn("skipped filling job file text", "job_source_id", job.ID, "commit", job.LastGoodCommit, "error", err.Error())
+		}
+	}
+
 	// Unchanged means: nothing new at the head and the file was last checked
 	// against the inventory that is active now. A job re-validated at
 	// activation, or read since, has checked_at at or after ActivatedAt.
@@ -133,7 +164,7 @@ func (e *Engine) syncJob(ctx context.Context, jobSourceID int64) error {
 		return fmt.Errorf("begin job save: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	err = store.SaveJobGood(ctx, tx, job.ID, definition, parsed.ID, parsed.Title, head, at)
+	err = store.SaveJobGood(ctx, tx, job.ID, definition, string(data), parsed.ID, parsed.Title, head, at)
 	if err == nil {
 		err = store.SaveJobProblems(ctx, tx, job.ID, nil, head, true, at)
 	}

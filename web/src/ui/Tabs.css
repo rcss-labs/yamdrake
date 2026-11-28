@@ -1,0 +1,23 @@
+.ui-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.ui-tab {
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--ink3);
+  font-weight: 500;
+}
+.ui-tab:hover {
+  color: var(--ink);
+}
+.ui-tab-on {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}

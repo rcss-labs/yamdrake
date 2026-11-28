@@ -1,0 +1,58 @@
+.ui-strip {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 16px;
+  vertical-align: middle;
+}
+.ui-strip-cell {
+  display: block;
+  width: 5px;
+  height: 10px;
+  border-radius: 1.5px;
+  background: var(--mute);
+}
+/* Colour follows the status tone, so leg-only statuses (claimed, unknown, ...) are covered. */
+.ui-strip-cell[data-tone='ok'] {
+  background: color-mix(in srgb, var(--ok) 75%, Canvas);
+}
+.ui-strip-cell[data-tone='bad'] {
+  background: var(--bad);
+}
+.ui-strip-cell[data-tone='run'] {
+  background: var(--run);
+}
+.ui-strip-cell[data-tone='wait'] {
+  background: var(--wait);
+}
+.ui-strip-cell[data-status='failed'],
+.ui-strip-cell[data-status='unknown'] {
+  height: 16px;
+}
+.ui-strip-cell[data-status='pending'],
+.ui-strip-cell[data-status='queued'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--mute);
+}
+.ui-strip-cell[data-status='skipped'] {
+  height: 3px;
+}
+.ui-strip-cell[data-gap='true'] {
+  margin-left: 5px;
+}
+.ui-strip-lg {
+  height: 24px;
+  gap: 3px;
+}
+.ui-strip-lg .ui-strip-cell {
+  width: 8px;
+  height: 14px;
+  border-radius: 2px;
+}
+.ui-strip-lg .ui-strip-cell[data-status='failed'],
+.ui-strip-lg .ui-strip-cell[data-status='unknown'] {
+  height: 24px;
+}
+.ui-strip-lg .ui-strip-cell[data-status='skipped'] {
+  height: 4px;
+}

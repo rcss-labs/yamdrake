@@ -1,0 +1,21 @@
+.ui-problems {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ui-problems li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.ui-problems li:last-child {
+  border-bottom: 0;
+}
+.ui-problem-where {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--bad-t);
+  overflow-wrap: anywhere;
+}

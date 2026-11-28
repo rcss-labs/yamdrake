@@ -21,20 +21,26 @@ type Run struct {
 	JobID                      string
 	JobSnapshot                []byte // JSON spec.Job
 	InventoryCommit, JobCommit string
-	Environment, Label         string
-	AWSAccount                 string
-	FolderID                   int64
-	Selection                  []byte // JSON engine.Selection
-	Manifest                   []byte // JSON, nil until resolved
-	ManifestID                 string
-	ApprovalRequired           bool
-	AutoStart                  bool
-	State, WaitReason          string
-	RequestedBy                int64
-	Via                        string // "web" | "cli"
-	ParentRunID                *int64
-	CancelRequestedBy          *int64
-	CreatedAt                  time.Time
+	// InventorySnapshotID is the inventory snapshot the run was planned against.
+	InventorySnapshotID int64
+	Environment, Label  string
+	AWSAccount          string
+	FolderID            int64
+	Selection           []byte // JSON engine.Selection
+	// LockResources are the resources the run locks when it starts.
+	LockResources     []string
+	Manifest          []byte // JSON, nil until resolved
+	ManifestID        string
+	ApprovalRequired  bool
+	AutoStart         bool
+	State, WaitReason string
+	// EndReason says in plain words why the run ended; empty until it is final.
+	EndReason         string
+	RequestedBy       int64
+	Via               string // "web" | "cli"
+	ParentRunID       *int64
+	CancelRequestedBy *int64
+	CreatedAt         time.Time
 	// StateChangedAt is when the run last went through UpdateRunState (or was
 	// inserted). Planned and approval expiry measure from it.
 	StateChangedAt                           time.Time
@@ -74,15 +80,15 @@ const (
 const finalRunStatesSQL = `('succeeded', 'partially_succeeded', 'failed', 'cancelled', 'rejected', 'expired', 'invalidated')`
 
 const runColumns = `id, kind, job_source_id, job_id, job_snapshot, inventory_commit, job_commit,
-	environment, label, aws_account, folder_id, selection, manifest, manifest_id,
-	approval_required, auto_start, state, wait_reason, requested_by, via, parent_run_id,
+	inventory_snapshot_id, environment, label, aws_account, folder_id, selection, lock_resources, manifest, manifest_id,
+	approval_required, auto_start, state, wait_reason, end_reason, requested_by, via, parent_run_id,
 	cancel_requested_by, cancel_requested_at, created_at, state_changed_at, started_at, finished_at`
 
 func scanRun(r rowScanner) (Run, error) {
 	var x Run
 	err := r.Scan(&x.ID, &x.Kind, &x.JobSourceID, &x.JobID, &x.JobSnapshot, &x.InventoryCommit, &x.JobCommit,
-		&x.Environment, &x.Label, &x.AWSAccount, &x.FolderID, &x.Selection, &x.Manifest, &x.ManifestID,
-		&x.ApprovalRequired, &x.AutoStart, &x.State, &x.WaitReason, &x.RequestedBy, &x.Via, &x.ParentRunID,
+		&x.InventorySnapshotID, &x.Environment, &x.Label, &x.AWSAccount, &x.FolderID, &x.Selection, &x.LockResources, &x.Manifest, &x.ManifestID,
+		&x.ApprovalRequired, &x.AutoStart, &x.State, &x.WaitReason, &x.EndReason, &x.RequestedBy, &x.Via, &x.ParentRunID,
 		&x.CancelRequestedBy, &x.CancelRequestedAt, &x.CreatedAt, &x.StateChangedAt, &x.StartedAt, &x.FinishedAt)
 	return x, err
 }
@@ -106,17 +112,22 @@ func InsertRun(ctx context.Context, db DBTX, r Run, steps []RunStep, legs []Leg)
 	if !r.CreatedAt.IsZero() {
 		created = dbTime(r.CreatedAt)
 	}
+	lockResources := r.LockResources
+	if lockResources == nil {
+		lockResources = []string{} // a nil slice would be written as NULL
+	}
 	row := tx.QueryRow(ctx,
 		`INSERT INTO runs (kind, job_source_id, job_id, job_snapshot, inventory_commit, job_commit,
-			environment, label, aws_account, folder_id, selection, manifest, manifest_id,
-			approval_required, auto_start, state, wait_reason, requested_by, via, parent_run_id,
-			created_at, state_changed_at)
+			inventory_snapshot_id, environment, label, aws_account, folder_id, selection, lock_resources,
+			manifest, manifest_id, approval_required, auto_start, state, wait_reason, requested_by, via,
+			parent_run_id, created_at, state_changed_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-			coalesce($21::timestamptz, now()), coalesce($21::timestamptz, now()))
+			$21, $22, coalesce($23::timestamptz, now()), coalesce($23::timestamptz, now()))
 		 RETURNING `+runColumns,
 		r.Kind, r.JobSourceID, r.JobID, r.JobSnapshot, r.InventoryCommit, r.JobCommit,
-		r.Environment, r.Label, r.AWSAccount, r.FolderID, r.Selection, r.Manifest, r.ManifestID,
-		r.ApprovalRequired, r.AutoStart, r.State, r.WaitReason, r.RequestedBy, r.Via, r.ParentRunID, created)
+		r.InventorySnapshotID, r.Environment, r.Label, r.AWSAccount, r.FolderID, r.Selection, lockResources,
+		r.Manifest, r.ManifestID, r.ApprovalRequired, r.AutoStart, r.State, r.WaitReason, r.RequestedBy, r.Via,
+		r.ParentRunID, created)
 	run, err := scanRun(row)
 	if err != nil {
 		return Run{}, fmt.Errorf("insert run: %w", mapError(err))
@@ -162,11 +173,12 @@ func GetRun(ctx context.Context, db DBTX, id int64) (Run, error) {
 }
 
 // LockRun reads a run and locks its row until the transaction ends (SELECT ...
-// FOR UPDATE). Every state change of a run starts with this, so two
+// FOR NO KEY UPDATE, which unlike FOR UPDATE does not block inserts that only
+// reference the run, such as log lines). Every state change of a run starts with this, so two
 // orchestrators never advance one run at the same time. ErrNotFound for an
 // unknown id.
 func LockRun(ctx context.Context, tx DBTX, id int64) (Run, error) {
-	r, err := scanRun(tx.QueryRow(ctx, "SELECT "+runColumns+" FROM runs WHERE id = $1 FOR UPDATE", id))
+	r, err := scanRun(tx.QueryRow(ctx, "SELECT "+runColumns+" FROM runs WHERE id = $1 FOR NO KEY UPDATE", id))
 	if err != nil {
 		return Run{}, fmt.Errorf("lock run: %w", mapError(err))
 	}
@@ -285,6 +297,19 @@ func UpdateRunState(ctx context.Context, tx DBTX, id int64, state, waitReason st
 		return fmt.Errorf("update run state: %w", ErrNotFound)
 	}
 	return fmt.Errorf("update run state: %w", ErrRunFinal)
+}
+
+// SetEndReason records why a run ended. The caller holds the run lock and sets
+// it together with the move to a final state.
+func SetEndReason(ctx context.Context, tx DBTX, id int64, reason string) error {
+	tag, err := tx.Exec(ctx, "UPDATE runs SET end_reason = $2 WHERE id = $1", id, reason)
+	if err != nil {
+		return fmt.Errorf("set end reason: %w", mapError(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("set end reason: %w", ErrNotFound)
+	}
+	return nil
 }
 
 // SetManifest stores the resolved plan and its id.

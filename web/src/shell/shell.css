@@ -1,0 +1,131 @@
+.shell {
+  flex-grow: 1;
+  display: flex;
+  flex-wrap: wrap;
+  min-height: 100vh;
+}
+
+/* Wraps above the content when there is no room for both: the sidebar stacks above the page. */
+.shell-side {
+  flex: 1 1 232px;
+  background: var(--raised);
+  border-right: 1px solid var(--line);
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.shell-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 24px;
+  padding: 4px 10px 16px;
+}
+.shell-logo {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 16px;
+}
+.shell-logo span {
+  width: 4px;
+  border-radius: 1px;
+  background: var(--ink);
+}
+.shell-navlist {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.shell-navgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.shell-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--ink2);
+  font-weight: 500;
+  text-decoration: none;
+  transition: background-color 0.15s var(--ease), color 0.15s var(--ease);
+}
+.shell-nav:hover {
+  background: var(--line);
+  color: var(--ink);
+}
+.shell-nav[aria-current='page'] {
+  background: Canvas;
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px var(--line);
+}
+.shell-me {
+  margin-top: 24px;
+  padding: 16px 10px 4px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.shell-me-name {
+  font-weight: 500;
+}
+.shell-me-email {
+  color: var(--ink3);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.shell-signout {
+  align-self: flex-start;
+  min-height: 36px;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--ink);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--line2);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.shell-signout:disabled {
+  color: var(--ink3);
+  cursor: not-allowed;
+}
+.shell-signout-error {
+  margin: 0;
+  color: var(--bad-t);
+  font-size: 13px;
+}
+
+.shell-main {
+  flex: 999 1 560px;
+  min-width: 0;
+  padding: 28px clamp(16px, 3vw, 32px) 64px;
+}
+.shell-page {
+  max-width: 1320px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-nav {
+    transition: none;
+  }
+}
+
+.shell-crash {
+  max-width: 480px;
+  margin: 15vh auto 0;
+  padding: 0 16px;
+}

@@ -1,0 +1,12 @@
+.ui-code {
+  margin: 0;
+  background: var(--con);
+  color: var(--raised);
+  border-radius: 12px;
+  padding: 16px;
+  overflow: auto;
+  font: 12.5px/20px 'IBM Plex Mono', ui-monospace, monospace;
+}
+.ui-code code {
+  font: inherit;
+}

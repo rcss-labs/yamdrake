@@ -1,0 +1,10 @@
+.ui-tag {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--ink2);
+  white-space: nowrap;
+}

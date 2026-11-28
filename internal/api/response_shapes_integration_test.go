@@ -13,6 +13,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/internal/versions"
 )
 
 // nullSlices returns the JSON paths in raw where the Go type t declares a slice
@@ -107,9 +108,12 @@ var notAListResponse = map[string]bool{
 	// The run routes need runs, so TestGetRunIncludesFailureSummary,
 	// TestListRunsFilters and TestLogEndpointFiltersPagesAndNeedsViewLogs check
 	// their lists with nullSlices; the event stream is not JSON.
-	"GET /api/v1/runs":             true,
-	"GET /api/v1/runs/{id}":        true,
-	"GET /api/v1/runs/{id}/log":    true,
+	"GET /api/v1/runs":          true,
+	"GET /api/v1/runs/{id}":     true,
+	"GET /api/v1/runs/{id}/log": true,
+	// The plan needs a stored manifest; TestPlanEndpointServesRedactedManifest
+	// checks its lists with nullSlices.
+	"GET /api/v1/runs/{id}/plan":   true,
 	"GET /api/v1/runs/{id}/events": true,
 }
 
@@ -129,6 +133,9 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 		}]()),
 		list("GET /api/v1/admin/github-connections", "/api/v1/admin/github-connections", reflect.TypeFor[struct {
 			Connections []connectionResponse `json:"connections"`
+		}]()),
+		list("GET /api/v1/admin/aws-accounts", "/api/v1/admin/aws-accounts", reflect.TypeFor[struct {
+			Accounts []awsAccountResponse `json:"accounts"`
 		}]()),
 		list("GET /api/v1/admin/users", "/api/v1/admin/users", reflect.TypeFor[struct {
 			Users []userResponse `json:"users"`
@@ -179,6 +186,7 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 		listed[r.pattern] = true
 	}
 	listed["GET /api/v1/jobs/{id}"] = true // checked below with the id of the registered job
+	listed["GET /api/v1/jobs/{id}/versions"] = true
 	for _, route := range (&server{}).routes() {
 		if strings.HasPrefix(route.pattern, "GET ") && !listed[route.pattern] && !notAListResponse[route.pattern] {
 			t.Errorf("%s is neither in the list-shape table nor in notAListResponse", route.pattern)
@@ -193,6 +201,7 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 	created := h.registerJob(folder)
 	jobID := itoa(int64(created["id"].(float64)))
 	h.mustDo("POST", "/api/v1/admin/github-connections", map[string]any{"owner": "acme", "method": "token", "token": "ghp_x"}, http.StatusCreated)
+	h.mustDo("POST", "/api/v1/admin/aws-accounts", awsRoleBody("empty-env", "999999999999"), http.StatusCreated)
 	h.newUser("nogroups") // a user who belongs to no group
 	group := h.createGroupVia("Operators", false)
 	if err := store.SetIDPMapping(ctx, h.pool, "idp-operators", group); err != nil {
@@ -203,6 +212,9 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 	}
 	populated := append(append([]listRoute{}, empty...), populatedOnly...)
 	populated = append(populated, list("GET /api/v1/jobs/{id}", "/api/v1/jobs/"+jobID, reflect.TypeFor[jobDetail]()))
+	// No AWS account is connected here, so every service is "unavailable":
+	// the empty and unavailable shapes must still be lists and maps, never null.
+	populated = append(populated, list("GET /api/v1/jobs/{id}/versions", "/api/v1/jobs/"+jobID+"/versions?environment=prod-01", reflect.TypeFor[versions.JobVersions]()))
 	check("populated database", populated)
 
 	// The stored job definition is raw JSON in the response type; walk it as a spec.Job.

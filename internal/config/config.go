@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rcss-labs/yamdrake/internal/awsx"
 )
 
 // Common holds the settings shared by both service binaries.
@@ -23,6 +25,8 @@ type Common struct {
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	StartupTimeout  time.Duration
+	// AWS holds the deployment-wide AWS settings (YUMDRAKE_AWS_ENDPOINT_URL).
+	AWS awsx.Options
 
 	SecretSettings
 }
@@ -42,8 +46,11 @@ type Orchestrator struct {
 	// that share one Valkey.
 	ValkeyKeyPrefix string
 	// LogArchiveDir is the directory settled legs' logs are archived to. Empty
-	// means archiving is off (until object storage arrives in Plan 5).
+	// means no directory archive (see LogBucket).
 	LogArchiveDir string
+	// LogBucket (YUMDRAKE_LOG_BUCKET) is the S3 bucket settled legs' logs are
+	// archived to instead of LogArchiveDir; setting both is a config error.
+	LogBucket string
 	// LogArchiveInterval is how often settled legs are archived, and
 	// LogArchiveAfter how long a leg must have been settled first. Both apply
 	// only when LogArchiveDir is set.
@@ -71,6 +78,15 @@ type Runner struct {
 	Common
 	HealthAddr string
 	RunnerID   string
+
+	// ArtifactBucket (YUMDRAKE_ARTIFACT_BUCKET, required) holds config copies;
+	// ArtifactKMSKeyID (YUMDRAKE_ARTIFACT_KMS_KEY_ID, optional) selects KMS
+	// encryption instead of S3-managed keys.
+	ArtifactBucket   string
+	ArtifactKMSKeyID string
+	// GitHubAPIURL (YUMDRAKE_GITHUB_API_URL, default https://api.github.com)
+	// is where resolving reads env files from.
+	GitHubAPIURL string
 	// ValkeyKeyPrefix goes in front of the Valkey channels; it must equal the
 	// orchestrator's so that wake-ups reach each other.
 	ValkeyKeyPrefix string
@@ -89,6 +105,11 @@ type Runner struct {
 const redactedPassword = "REDACTED"
 
 const minTokenSSOMaxAge = time.Hour
+
+var (
+	bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+	kmsKeyIDPattern   = regexp.MustCompile(`^[A-Za-z0-9:/_+=,.@-]{1,1000}$`)
+)
 
 var keyPrefixPattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{0,64}$`)
 
@@ -125,6 +146,13 @@ func (l *loader) loadCommon() Common {
 	c.ShutdownTimeout = l.duration("YUMDRAKE_SHUTDOWN_TIMEOUT", "20s")
 	c.StartupTimeout = l.duration("YUMDRAKE_STARTUP_TIMEOUT", "60s")
 	c.SecretSettings = l.loadSecretSettings()
+
+	c.AWS.EndpointURL = l.getenv("YUMDRAKE_AWS_ENDPOINT_URL")
+	if c.AWS.EndpointURL != "" {
+		if reason := validateHTTPURL(c.AWS.EndpointURL); reason != "" {
+			l.fail("YUMDRAKE_AWS_ENDPOINT_URL", reason)
+		}
+	}
 	return c
 }
 
@@ -151,6 +179,15 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	cfg.LogArchiveDir = l.getenv("YUMDRAKE_LOG_ARCHIVE_DIR")
 	if cfg.LogArchiveDir != "" && !filepath.IsAbs(cfg.LogArchiveDir) {
 		l.fail("YUMDRAKE_LOG_ARCHIVE_DIR", "must be an absolute path")
+	}
+	cfg.LogBucket = l.getenv("YUMDRAKE_LOG_BUCKET")
+	if cfg.LogBucket != "" {
+		if !bucketNamePattern.MatchString(cfg.LogBucket) || strings.Contains(cfg.LogBucket, "..") {
+			l.fail("YUMDRAKE_LOG_BUCKET", "must be a valid S3 bucket name (3 to 63 lowercase letters, digits, '-' or '.')")
+		}
+		if cfg.LogArchiveDir != "" {
+			l.fail("YUMDRAKE_LOG_BUCKET", "cannot be combined with YUMDRAKE_LOG_ARCHIVE_DIR; set only one of them")
+		}
 	}
 	cfg.LogArchiveInterval = l.duration("YUMDRAKE_LOG_ARCHIVE_INTERVAL", "1m")
 	cfg.LogArchiveAfter = l.duration("YUMDRAKE_LOG_ARCHIVE_AFTER", "1h")
@@ -191,6 +228,17 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 		cfg.RunnerID = hostname
 	}
 
+	cfg.ArtifactBucket = l.getenv("YUMDRAKE_ARTIFACT_BUCKET")
+	if cfg.ArtifactBucket == "" {
+		l.fail("YUMDRAKE_ARTIFACT_BUCKET", "is required")
+	} else if !bucketNamePattern.MatchString(cfg.ArtifactBucket) || strings.Contains(cfg.ArtifactBucket, "..") {
+		l.fail("YUMDRAKE_ARTIFACT_BUCKET", "must be a valid S3 bucket name (3 to 63 lowercase letters, digits, '-' or '.')")
+	}
+	cfg.ArtifactKMSKeyID = l.getenv("YUMDRAKE_ARTIFACT_KMS_KEY_ID")
+	if cfg.ArtifactKMSKeyID != "" && !kmsKeyIDPattern.MatchString(cfg.ArtifactKMSKeyID) {
+		l.fail("YUMDRAKE_ARTIFACT_KMS_KEY_ID", "must be a KMS key id, key ARN or alias without spaces")
+	}
+	cfg.GitHubAPIURL = l.githubAPIURL()
 	switch cfg.Env = l.valueOr("YUMDRAKE_ENV", "prod"); cfg.Env {
 	case "dev", "prod":
 	default:

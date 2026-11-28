@@ -15,6 +15,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/internal/testutil/awsseed"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
 )
 
@@ -187,6 +188,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		h.snapshot = snapshot
 	}
 
+	awsseed.Connect(t, pool, testAWSAccount)
 	h.eng = New(Deps{DB: pool, Limits: opts.limits, Now: h.clock.Now, Publisher: h.pub, PublicURL: "https://yum.example"})
 	return h
 }
@@ -298,15 +300,20 @@ func (h *harness) setLeg(legID int64, state string) {
 	}
 }
 
+// failRevalidateWithDrift fails a revalidate leg the way the runner does when
+// the targets changed since planning.
+func (h *harness) failRevalidateWithDrift(legID int64) {
+	h.t.Helper()
+	h.setLeg(legID, "failed")
+	if _, err := h.pool.Exec(context.Background(), `UPDATE legs SET failure_short = $2 WHERE id = $1`, legID, RevalidateDriftReason); err != nil {
+		h.t.Fatalf("set the failure reason of leg %d: %v", legID, err)
+	}
+}
+
 // resolved settles the run's resolve leg as succeeded with a plan result.
 func (h *harness) resolved(runID int64) {
 	h.t.Helper()
-	leg := h.legByKind(runID, "resolve")
-	_, err := h.pool.Exec(context.Background(),
-		`UPDATE legs SET state = 'succeeded', result = '{"services":{"plan":"ready"}}'::jsonb, finished_at = now() WHERE id = $1`, leg.ID)
-	if err != nil {
-		h.t.Fatalf("settle resolve leg: %v", err)
-	}
+	h.settleResolve(runID, "succeeded", sampleManifest(runID))
 }
 
 // planned creates a run, lets it resolve and returns it in state planned.

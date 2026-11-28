@@ -15,11 +15,22 @@ See the [design spec](docs/superpowers/specs/2026-11-27-yumdrake-design.md).
 ## Local services
 
 ```sh
-make dev-up     # start PostgreSQL 17 and Valkey 8 and wait until healthy
+make dev-up     # start PostgreSQL 17, Valkey 8 and Floci and wait until healthy
 make dev-down   # stop them and delete their volumes
 ```
 
-PostgreSQL listens on `localhost:5432` (database, user and password `yumdrake`). Valkey listens on `localhost:6379`.
+PostgreSQL listens on `localhost:5432` (database, user and password `yumdrake`). Valkey listens on `localhost:6379`. Floci listens on `localhost:4577`.
+
+### Floci (local AWS)
+
+[Floci](https://floci.io) emulates AWS (STS, IAM, ECR, ECS, S3, KMS) for the tests that need it. It runs as the `floci` Compose service on `127.0.0.1:4577` (port 4566 is deliberately not published, because another Floci may own it). It mounts the Docker socket: ECS tasks and the ECR registry run as sibling containers named `floci-aws-*`, and they are not removed when Floci stops.
+
+```sh
+make test-floci    # run every test, including the ones tagged floci (needs make dev-up first)
+make floci-clean   # remove the floci-aws-* containers that our Floci created
+```
+
+`make test-floci` points the tests at `YUMDRAKE_TEST_AWS_ENDPOINT` (default `http://localhost:4577`). The helpers in `test/awstest` seed accounts, roles, buckets, images and services, and offer a proxy that records calls and injects failures. `make floci-clean` only removes containers attached to the network of the Floci that publishes the endpoint port, never another Floci's. Floci keeps its state in memory: restart it for a clean slate.
 
 ## Running the services locally
 
@@ -216,7 +227,7 @@ make smoke              # builds the images and starts the Compose "app" profile
 
 ## Trying a run with fake steps
 
-The real step executors arrive later; until then a run can be tried end to end with fake steps that change nothing. Start the runner with both of these (it refuses `YUMDRAKE_FAKE_STEPS=true` in any other environment, and production defaults keep them off):
+Resolving and revalidating are real; with fake steps only `copy-config` and `ecs-deploy` pretend, so a dev run still needs AWS access (Floci works), a GitHub connection for the config owner and `YUMDRAKE_ARTIFACT_BUCKET`. Start the runner with both of these (it refuses `YUMDRAKE_FAKE_STEPS=true` in any other environment, and production defaults keep them off):
 
 ```sh
 YUMDRAKE_ENV=dev YUMDRAKE_FAKE_STEPS=true bin/yumdrake-runner
@@ -260,19 +271,24 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_MIGRATE_ON_START` | orchestrator | `true` | Must be `true` or `false`. |
 | `YUMDRAKE_HEALTH_ADDR` | runner | `127.0.0.1:8081` | `host:port`, with a port from 1 to 65535. Also read by `healthcheck`. |
 | `YUMDRAKE_RUNNER_ID` | runner | the host name | Identifies the runner in its logs. If unset and the host name cannot be determined, startup fails. |
-| `YUMDRAKE_SECRETS_MODE` | orchestrator, runner | `local` | Only `local` is supported in this release; any other value is a config error. |
+| `YUMDRAKE_ARTIFACT_BUCKET` | runner | none, required | S3 bucket (3 to 63 lowercase letters, digits, `-`, `.`) that holds encrypted copies of the config files a run touches, under `manifests/<run>/<service>/<kind>/`. |
+| `YUMDRAKE_ARTIFACT_KMS_KEY_ID` | runner | empty (S3-managed encryption) | KMS key id, ARN or alias used to encrypt those copies instead of S3-managed keys. |
+| `YUMDRAKE_SECRETS_MODE` | orchestrator, runner | `local` | `local` or `kms`. With `kms` the secrets are encrypted by an AWS KMS key (`YUMDRAKE_KMS_KEY_ID`) using the default AWS credential chain and region (`AWS_REGION`); the purpose of each secret is the KMS encryption context. Any other value is a config error. |
 | `YUMDRAKE_LOCAL_SECRET_KEY` | orchestrator, runner | none (required when the mode is `local`) | Base64 of exactly 32 bytes (for example `openssl rand -base64 32`). Encrypts stored GitHub credentials. For development and tests only; never printed. |
+| `YUMDRAKE_KMS_KEY_ID` | orchestrator, runner | none (required when the mode is `kms`) | Id, ARN or alias of the KMS key that encrypts stored secrets (GitHub and AWS credentials). In `kms` mode the orchestrator role's `kms:Decrypt` grant must carry a condition on `kms:EncryptionContext:purpose` that excludes `aws-deploy`; only the runner's grant may decrypt `aws-deploy`. |
 | `YUMDRAKE_PUBLIC_URL` | orchestrator | none (required) | Address users reach the service at, such as `https://yumdrake.example.com`: scheme, host and optional port only. Must be `https://`, except `http://` for `localhost` and `127.0.0.1`. Requests that carry a session cookie and change state must come from this origin. |
 | `YUMDRAKE_VALKEY_KEY_PREFIX` | orchestrator | empty | At most 64 of letters, digits, `-`, `_`, `:`. Put in front of the Valkey keys of sessions and sign-in counters; set it only to separate services (or test runs) that share one Valkey. |
 | `YUMDRAKE_TOKEN_SSO_MAX_AGE` | orchestrator | `168h` | Go duration of at least `1h`. How recent a SAML user's last SSO sign-in must be for their CLI tokens to work. |
 | `YUMDRAKE_SYNC_INTERVAL` | orchestrator | `60s` | Go duration of at least `10s`. |
-| `YUMDRAKE_GITHUB_API_URL` | orchestrator | `https://api.github.com` | An `http://` or `https://` URL. Overridden in tests. |
+| `YUMDRAKE_GITHUB_API_URL` | orchestrator, runner | `https://api.github.com` | An `http://` or `https://` URL. Overridden in tests. |
+| `YUMDRAKE_AWS_ENDPOINT_URL` | orchestrator, runner | empty (real AWS) | An `http://` or `https://` URL that all AWS calls go to, for a local emulator such as Floci. |
 | `YUMDRAKE_SWEEP_INTERVAL` | orchestrator | `2s` | Go duration greater than zero. How often the run engine's fallback timer gives expired leases to another runner, expires waiting runs and advances every active run. Wake-ups through Valkey make runs move sooner; the timer alone is enough when Valkey is down. |
 | `YUMDRAKE_LIMIT_PER_ENVIRONMENT` | orchestrator | `10` | Positive integer. At most this many legs of other runs run at once in one environment. A soft limit: orchestrators advancing two runs at the same moment may overshoot it briefly. |
 | `YUMDRAKE_LIMIT_PER_ACCOUNT` | orchestrator | `20` | Positive integer. The same limit for one AWS account. |
 | `YUMDRAKE_LOG_ARCHIVE_DIR` | orchestrator | empty (no archiving) | Absolute path of a directory. When set, the logs of legs settled longer than `YUMDRAKE_LOG_ARCHIVE_AFTER` are moved there from PostgreSQL and are still served by the API. |
-| `YUMDRAKE_LOG_ARCHIVE_INTERVAL` | orchestrator | `1m` | Go duration greater than zero. How often settled legs are archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
-| `YUMDRAKE_LOG_ARCHIVE_AFTER` | orchestrator | `1h` | Go duration. How long a leg must have been settled before its log is archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
+| `YUMDRAKE_LOG_BUCKET` | orchestrator | empty (no S3 archive) | S3 bucket (3 to 63 lowercase letters, digits, `-`, `.`) that settled legs' logs are archived to, under `runs/<run>/legs/<leg>.ndjson.gz`, encrypted with S3-managed keys. Uses Yumdrake's own AWS identity. Replaces `YUMDRAKE_LOG_ARCHIVE_DIR`: setting both is a configuration error. |
+| `YUMDRAKE_LOG_ARCHIVE_INTERVAL` | orchestrator | `1m` | Go duration greater than zero. How often settled legs are archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR` or `YUMDRAKE_LOG_BUCKET`. |
+| `YUMDRAKE_LOG_ARCHIVE_AFTER` | orchestrator | `1h` | Go duration. How long a leg must have been settled before its log is archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR` or `YUMDRAKE_LOG_BUCKET`. |
 | `YUMDRAKE_SLACK_API_URL` | orchestrator | `https://slack.com/api` | An `http://` or `https://` URL with a host. The Slack Web API that notifications are posted to. Overridden in tests. |
 | `YUMDRAKE_NOTIFY_INTERVAL` | orchestrator | `5s` | Go duration greater than zero. How often the sender looks for notifications that are due. |
 | `YUMDRAKE_ENV` | runner | `prod` | `dev` or `prod`. Fake steps are allowed only with `dev`. |
@@ -283,6 +299,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_RUNNER_POLL` | runner | `2s` | Go duration. How often the runner looks for queued legs when no wake-up arrived. |
 | `YUMDRAKE_TEST_DATABASE_URL` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_DATABASE_URL`. Set by `make test-integration` and CI. |
 | `YUMDRAKE_TEST_VALKEY_ADDR` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_VALKEY_ADDR`. Set by `make test-integration` and CI. |
+| `YUMDRAKE_TEST_AWS_ENDPOINT` | Floci tests | none (required with `-tags floci`) | URL of Floci, `http://localhost:4577`. Set by `make test-floci`. |
 
 ## Validating YAML
 
@@ -315,4 +332,4 @@ kind: Service
 
 ## CI
 
-The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration, smoke and web jobs on pull requests and on pushes to `main`.
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration, floci, smoke and web jobs on pull requests and on pushes to `main`.

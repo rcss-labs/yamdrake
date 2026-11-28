@@ -193,6 +193,19 @@ func ActiveSnapshot(ctx context.Context, db DBTX) (Snapshot, bool, error) {
 	return s, true, nil
 }
 
+// SnapshotByID returns the snapshot a run was planned against, active or not.
+// It returns ErrNotFound when there is none.
+func SnapshotByID(ctx context.Context, db DBTX, id int64) (Snapshot, error) {
+	s, err := scanSnapshot(db.QueryRow(ctx, "SELECT "+snapshotColumns+" FROM inventory_snapshots WHERE id = $1", id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Snapshot{}, ErrNotFound
+	}
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("get snapshot %d: %w", id, err)
+	}
+	return s, nil
+}
+
 // InventoryStatus is the outcome of the latest inventory poll.
 type InventoryStatus struct {
 	CheckedAt      *time.Time

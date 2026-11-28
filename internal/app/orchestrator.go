@@ -2,15 +2,21 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/api"
+	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yamdrake/internal/awsx/discovery"
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/engine"
@@ -58,10 +64,18 @@ func NewOrchestratorService(cfg config.Orchestrator) Service {
 // (woken through Valkey, with a timer as fallback) and the /api/v1 API with
 // its sessions. Without an inventory source the loop finds nothing to do.
 func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.Logger, *pgxpool.Pool, valkey.Client) (Extension, error) {
-	return func(_ context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (Extension, error) {
-		cipher, err := secrets.NewLocal([]byte(cfg.LocalSecretKey.Reveal()))
+	return func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (Extension, error) {
+		awsConfig, err := awsx.BaseConfig(ctx, cfg.AWS)
 		if err != nil {
-			return Extension{}, fmt.Errorf("secret cipher: %w", err)
+			if cfg.SecretsMode == "kms" || cfg.LogBucket != "" {
+				return Extension{}, err
+			}
+			// Without KMS the AWS configuration is only for discovery (the connection test).
+			log.Warn("the default AWS configuration could not be loaded; testing AWS accounts will fail", "error", err.Error())
+		}
+		cipher, err := NewCipher(cfg.Common, awsConfig)
+		if err != nil {
+			return Extension{}, err
 		}
 		sources := newGitHubSources(pool, cipher, cfg.GitHubAPIURL, log)
 		syncEngine := yumsync.NewEngine(pool, sources.For, log, time.Now)
@@ -71,15 +85,22 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Limits:    engine.Limits{PerEnvironment: cfg.LimitPerEnvironment, PerAccount: cfg.LimitPerAccount},
 			Log:       log,
 			Publisher: bus,
+			AWS:       cfg.AWS,
 			PublicURL: cfg.PublicURL,
 		})
-		// Archived legs are read back from the same directory they were written to.
+		// Archived legs are read back from the bucket or directory they were written to.
 		var archive logs.Archive
 		var archiver *logs.Archiver
-		if cfg.LogArchiveDir != "" {
+		switch {
+		case cfg.LogBucket != "":
+			// Yumdrake's own account and identity, not a connected account's.
+			archive = logs.NewS3Archive(s3.NewFromConfig(awsConfig, func(o *s3.Options) { o.UsePathStyle = cfg.AWS.UsePathStyleS3() }), cfg.LogBucket)
+		case cfg.LogArchiveDir != "":
 			if archive, err = logs.NewDirArchive(cfg.LogArchiveDir); err != nil {
 				return Extension{}, fmt.Errorf("log archive: %w", err)
 			}
+		}
+		if archive != nil {
 			archiver = logs.NewArchiver(pool, archive, cfg.LogArchiveAfter, nil, log)
 		}
 		slack := notify.NewSlack(cfg.SlackAPIURL, nil)
@@ -99,6 +120,9 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Logs:                logs.NewReader(pool, archive),
 			Wake:                bus,
 			TokenSSOMaxAge:      cfg.TokenSSOMaxAge,
+			AWSConfig:           awsConfig,
+			AWSOptions:          cfg.AWS,
+			Discovery:           discovery.New(pool, cipher, awsConfig, cfg.AWS).WithLogger(log),
 		})
 		// The queue is used only for Sweep, which compares against the database
 		// clock (nil) and does not need a lease length.
@@ -129,6 +153,23 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Health:     []health.Option{health.WithDetail("notifications", notificationStats(pool))},
 		}, nil
 	}
+}
+
+// NewCipher builds the secret cipher of the configured mode. KMS needs a
+// region (from the default AWS chain, for example AWS_REGION) and, when it is
+// used, credentials; the error never carries key material.
+func NewCipher(cfg config.Common, awsConfig aws.Config) (secrets.Cipher, error) {
+	if cfg.SecretsMode == "kms" {
+		if awsConfig.Region == "" {
+			return nil, errors.New("secret cipher: kms mode needs an AWS region (set AWS_REGION)")
+		}
+		return secrets.NewKMS(kms.NewFromConfig(awsConfig), cfg.KMSKeyID), nil
+	}
+	cipher, err := secrets.NewLocal([]byte(cfg.LocalSecretKey.Reveal()))
+	if err != nil {
+		return nil, fmt.Errorf("secret cipher: %w", err)
+	}
+	return cipher, nil
 }
 
 // notificationStats reports the Slack outbox for /readyz: how many messages

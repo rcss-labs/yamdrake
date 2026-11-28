@@ -25,6 +25,26 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+  # One shared emulator for every worktree: start it only as
+  # `docker compose -p plan5 up -d --wait floci`. Host port 4566 is deliberately
+  # not published (another Floci may own it). ECS tasks and the ECR registry run
+  # as sibling containers through the Docker socket.
+  floci:
+    # Its own profile keeps the smoke stack (--profile app) from starting a second
+    # emulator on the same host port; naming the service starts it anyway.
+    profiles: [floci]
+    image: floci/floci:2.5.0
+    ports:
+      - "127.0.0.1:4577:4566"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      FLOCI_HOSTNAME: floci
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
   orchestrator:
     profiles: [app]
     image: yumdrake-orchestrator:dev
@@ -65,6 +85,9 @@ services:
       YUMDRAKE_VALKEY_ADDR: valkey:6379
       # Development only: a fixed, public key. Real deployments must set their own secret.
       YUMDRAKE_LOCAL_SECRET_KEY: ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=
+      # Development only: the runner requires an artifact bucket name; nothing
+      # creates it yet.
+      YUMDRAKE_ARTIFACT_BUCKET: yumdrake-artifacts-dev
       # Fake steps change nothing real. Both default to off; only scripts/smoke.sh
       # turns them on (dev environment, fake steps) for its own project.
       YUMDRAKE_ENV: ${YUMDRAKE_RUNNER_ENV:-prod}

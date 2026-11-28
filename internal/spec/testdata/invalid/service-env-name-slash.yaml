@@ -1,0 +1,15 @@
+apiVersion: yumdrake/v1
+kind: Service
+name: backend-api
+versions:
+  pattern: '^v\d+$'
+  sort: semver
+  limit: 100
+environments:
+  hetzner-01:
+    ecs_service: arn:aws:ecs:eu-central-1:111111111111:service/hetzner-01/backend-api
+    ecr_repository: 111111111111.dkr.ecr.eu-central-1.amazonaws.com/backend-api
+    env_files:
+      - name: conf/backend-api.env
+        source_env_path: example-org/config/backend-api.env
+        destination_env_path: s3://hetzner-01-config/env/backend-api/backend-api.env

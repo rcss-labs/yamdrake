@@ -2,8 +2,6 @@ package engine
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yamdrake/internal/manifest"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/wake"
@@ -57,6 +57,9 @@ type Deps struct {
 	Log    *slog.Logger
 	// Publisher is optional: nil means no wake-ups.
 	Publisher Publisher
+	// AWS carries the deployment's AWS settings; an endpoint override lets
+	// Create read the ECR repository URIs of a local emulator.
+	AWS awsx.Options
 	// PublicURL is the address notifications link to (config.PublicURL).
 	PublicURL string
 }
@@ -69,13 +72,14 @@ type Engine struct {
 	now    func() time.Time
 	log    *slog.Logger
 	pub    Publisher
+	aws    awsx.Options
 	// publicURL is the base of the run links in notifications.
 	publicURL string
 }
 
 // New builds an Engine, filling defaults for the clock, logger and limits.
 func New(deps Deps) *Engine {
-	e := &Engine{db: deps.DB, limits: deps.Limits, now: deps.Now, log: deps.Log, pub: deps.Publisher, publicURL: deps.PublicURL}
+	e := &Engine{db: deps.DB, limits: deps.Limits, now: deps.Now, log: deps.Log, pub: deps.Publisher, aws: deps.AWS, publicURL: deps.PublicURL}
 	if e.limits == (Limits{}) {
 		e.limits = Limits{PerEnvironment: defaultLimitPerEnvironment, PerAccount: defaultLimitPerAccount}
 	}
@@ -263,6 +267,17 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 	}
 
 	if d.NewState != "" || d.WaitReason != "" || d.ClearWaitReason {
+		// A run leaves resolving only with its plan stored. A result that cannot
+		// be used ends the run instead of leaving it stuck.
+		if run.State == "resolving" && d.NewState != "" {
+			problem, err := copyManifest(ctx, tx, run, legs)
+			if err != nil {
+				return err
+			}
+			if problem != "" {
+				d.NewState, d.Reason = "failed", problem
+			}
+		}
 		newState, wait := run.State, d.WaitReason
 		entersFinal := d.NewState != "" && isFinalRunState(d.NewState)
 		if d.NewState != "" {
@@ -270,11 +285,6 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 		}
 		if entersFinal {
 			wait = "" // a final run waits for nothing; its end reason says why it ended
-		}
-		if run.State == "resolving" && d.NewState != "" {
-			if err := copyManifest(ctx, tx, run.ID, legs); err != nil {
-				return err
-			}
 		}
 		if err := store.UpdateRunState(ctx, tx, run.ID, newState, wait, now); err != nil {
 			return ignoreFinal(err)
@@ -313,15 +323,53 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 	return nil
 }
 
-// copyManifest stores the resolve leg's result as the run's manifest, with the
-// hex SHA-256 of the result as its id.
-func copyManifest(ctx context.Context, tx pgx.Tx, runID int64, legs []store.Leg) error {
+// copyManifest stores the resolve leg's result as the run's manifest when the
+// leg settled, failed ones too: a failed plan is shown with its failed checks.
+// The id is the manifest's own identity (a hash over the pinned inputs, see
+// manifest.Identity), recomputed from the result rather than taken from its id
+// field on trust: approvals bind to this value, so it must describe exactly
+// what is stored.
+//
+// The manifest must name this run and its AWS account, and a succeeded leg's
+// must have services; anything else is not this run's plan.
+//
+// A non-empty problem means a succeeded leg left no usable plan; the caller
+// ends the run with it as the reason. On a failed leg an unusable result is
+// only a diagnostic and is skipped.
+func copyManifest(ctx context.Context, tx pgx.Tx, run store.Run, legs []store.Leg) (problem string, err error) {
 	resolve, ok := latestLeg(legs, "resolve")
-	if !ok || resolve.State != legSucceeded || len(resolve.Result) == 0 {
-		return nil
+	if !ok || (resolve.State != legSucceeded && resolve.State != legFailed) {
+		return "", nil
 	}
-	sum := sha256.Sum256(resolve.Result)
-	return store.SetManifest(ctx, tx, runID, resolve.Result, hex.EncodeToString(sum[:]))
+	succeeded := resolve.State == legSucceeded
+	if len(resolve.Result) == 0 {
+		if succeeded {
+			return "the resolve step reported no plan; nothing was changed", nil
+		}
+		return "", nil
+	}
+	var m manifest.Manifest
+	if err := json.Unmarshal(resolve.Result, &m); err != nil {
+		if succeeded {
+			return "the resolve step's plan could not be read; nothing was changed", nil
+		}
+		return "", nil
+	}
+	identity := manifest.Identity(m)
+	if m.ID != "" && m.ID != identity {
+		if succeeded {
+			return "the resolve step's plan does not match its identity; nothing was changed", nil
+		}
+		return "", nil
+	}
+	if m.RunID != run.ID || m.AWSAccount != run.AWSAccount || (succeeded && len(m.Services) == 0) {
+		// Approvals and the writing steps trust this plan to be this run's.
+		if succeeded {
+			return "the resolve step's plan is not for this run; nothing was changed", nil
+		}
+		return "", nil
+	}
+	return "", store.SetManifest(ctx, tx, run.ID, resolve.Result, identity)
 }
 
 func sortedIDs(ids []int64) []int64 {

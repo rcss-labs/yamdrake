@@ -60,7 +60,25 @@ func (h *harness) waitRunState(runID int64, want string) {
 
 // settleQueuedLegs stands in for a runner: every queued leg succeeds.
 func (h *harness) settleQueuedLegs() {
-	_, err := h.pool.Exec(context.Background(),
+	// A resolve leg answers with the plan of its own run.
+	rows, err := h.pool.Query(context.Background(), `SELECT run_id FROM legs WHERE state = 'queued' AND kind = 'resolve'`)
+	if err != nil {
+		h.t.Errorf("list queued resolve legs: %v", err)
+		return
+	}
+	var runIDs []int64
+	for rows.Next() {
+		var runID int64
+		if err := rows.Scan(&runID); err != nil {
+			h.t.Errorf("scan: %v", err)
+		}
+		runIDs = append(runIDs, runID)
+	}
+	rows.Close()
+	for _, runID := range runIDs {
+		h.settleResolve(runID, "succeeded", sampleManifest(runID))
+	}
+	_, err = h.pool.Exec(context.Background(),
 		`UPDATE legs SET state = 'succeeded', result = '{"ok":true}'::jsonb, finished_at = now() WHERE state = 'queued'`)
 	if err != nil {
 		h.t.Errorf("settle queued legs: %v", err)

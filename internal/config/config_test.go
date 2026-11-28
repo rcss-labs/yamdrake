@@ -27,6 +27,57 @@ func requiredEnv() map[string]string {
 
 		"YUMDRAKE_LOCAL_SECRET_KEY": validSecretKey,
 		"YUMDRAKE_PUBLIC_URL":       "https://yumdrake.example.com",
+
+		"YUMDRAKE_ARTIFACT_BUCKET": "yumdrake-artifacts-test",
+	}
+}
+
+func TestLoadRunnerArtifactStore(t *testing.T) {
+	env := requiredEnv()
+	cfg, err := LoadRunner(envFrom(env))
+	if err != nil {
+		t.Fatalf("LoadRunner() error = %v", err)
+	}
+	if cfg.ArtifactBucket != "yumdrake-artifacts-test" || cfg.ArtifactKMSKeyID != "" {
+		t.Errorf("bucket, key = %q, %q", cfg.ArtifactBucket, cfg.ArtifactKMSKeyID)
+	}
+	env["YUMDRAKE_ARTIFACT_KMS_KEY_ID"] = "alias/yumdrake-artifacts"
+	cfg, err = LoadRunner(envFrom(env))
+	if err != nil || cfg.ArtifactKMSKeyID != "alias/yumdrake-artifacts" {
+		t.Errorf("kms key = %q, err = %v", cfg.ArtifactKMSKeyID, err)
+	}
+
+	delete(env, "YUMDRAKE_ARTIFACT_BUCKET")
+	if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_ARTIFACT_BUCKET") {
+		t.Errorf("missing bucket error = %v", err)
+	}
+	for _, bad := range []string{"ab", "Upper-Case", "has_underscore", "-leading", "trailing-", "a/b", "has space", "double..dot", strings.Repeat("a", 64)} {
+		env["YUMDRAKE_ARTIFACT_BUCKET"] = bad
+		if _, err := LoadRunner(envFrom(env)); err == nil {
+			t.Errorf("bucket %q accepted", bad)
+		}
+	}
+	env["YUMDRAKE_ARTIFACT_BUCKET"] = "yumdrake-artifacts-test"
+	env["YUMDRAKE_ARTIFACT_KMS_KEY_ID"] = "has space"
+	if _, err := LoadRunner(envFrom(env)); err == nil {
+		t.Error("kms key id with a space accepted")
+	}
+}
+
+func TestLoadRunnerGitHubAPIURL(t *testing.T) {
+	env := requiredEnv()
+	cfg, err := LoadRunner(envFrom(env))
+	if err != nil || cfg.GitHubAPIURL != "https://api.github.com" {
+		t.Fatalf("default GitHub API URL = %q, err = %v", cfg.GitHubAPIURL, err)
+	}
+	env["YUMDRAKE_GITHUB_API_URL"] = "https://github.example.com/api/v3"
+	cfg, err = LoadRunner(envFrom(env))
+	if err != nil || cfg.GitHubAPIURL != "https://github.example.com/api/v3" {
+		t.Errorf("GitHub API URL = %q, err = %v", cfg.GitHubAPIURL, err)
+	}
+	env["YUMDRAKE_GITHUB_API_URL"] = "ftp://nope"
+	if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_GITHUB_API_URL") {
+		t.Errorf("bad GitHub API URL error = %v", err)
 	}
 }
 
@@ -326,7 +377,10 @@ func TestSecretAndSyncRules(t *testing.T) {
 		{"key missing", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": ""}, "YUMDRAKE_LOCAL_SECRET_KEY"},
 		{"key not base64", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": "not base64 !!"}, "YUMDRAKE_LOCAL_SECRET_KEY"},
 		{"key wrong length", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": "c2hvcnQ="}, "YUMDRAKE_LOCAL_SECRET_KEY"}, //nolint:gosec // test value
-		{"mode not local", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms"}, "YUMDRAKE_SECRETS_MODE"},
+		{"mode unknown", map[string]string{"YUMDRAKE_SECRETS_MODE": "vault"}, "YUMDRAKE_SECRETS_MODE"},
+		{"kms without key id", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms", "YUMDRAKE_LOCAL_SECRET_KEY": ""}, "YUMDRAKE_KMS_KEY_ID"},
+		{"kms key id with spaces", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms", "YUMDRAKE_KMS_KEY_ID": "a b"}, "YUMDRAKE_KMS_KEY_ID"},
+		{"kms needs no local key", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms", "YUMDRAKE_KMS_KEY_ID": "alias/yumdrake", "YUMDRAKE_LOCAL_SECRET_KEY": ""}, ""},
 		{"interval too short", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "9s"}, "YUMDRAKE_SYNC_INTERVAL"},
 		{"interval minimum", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "10s"}, ""},
 		{"interval not duration", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "soon"}, "YUMDRAKE_SYNC_INTERVAL"},
@@ -462,6 +516,43 @@ func TestValkeyKeyPrefix(t *testing.T) {
 	}
 }
 
+func TestAWSEndpointURLRules(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantVar bool // true means the value is rejected
+	}{
+		{"unset", "", false},
+		{"http", "http://localhost:4577", false},
+		{"https", "https://aws.example.com", false},
+		{"ftp", "ftp://example.com", true},
+		{"no host", "http://", true},
+		{"not a url", "::::", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := requiredEnv()
+			env["YUMDRAKE_AWS_ENDPOINT_URL"] = tc.value
+			orch, orchErr := LoadOrchestrator(envFrom(env))
+			run, runErr := LoadRunner(envFrom(env))
+			if tc.wantVar {
+				for _, err := range []error{orchErr, runErr} {
+					if err == nil || !strings.Contains(err.Error(), "YUMDRAKE_AWS_ENDPOINT_URL") {
+						t.Fatalf("error = %v, want it to name YUMDRAKE_AWS_ENDPOINT_URL", err)
+					}
+				}
+				return
+			}
+			if orchErr != nil || runErr != nil {
+				t.Fatalf("errors = %v, %v", orchErr, runErr)
+			}
+			if orch.AWS.EndpointURL != tc.value || run.AWS.EndpointURL != tc.value {
+				t.Errorf("AWS.EndpointURL = %q and %q, want %q", orch.AWS.EndpointURL, run.AWS.EndpointURL, tc.value)
+			}
+		})
+	}
+}
+
 func TestFakeStepsRefusedOutsideDev(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -492,6 +583,28 @@ func TestFakeStepsRefusedOutsideDev(t *testing.T) {
 				t.Fatalf("LoadRunner() = %+v, %v; want an error naming %s", cfg, err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestKMSModeCarriesTheKeyIDAndNeverEchoesBadValues(t *testing.T) {
+	env := requiredEnv()
+	delete(env, "YUMDRAKE_LOCAL_SECRET_KEY")
+	env["YUMDRAKE_SECRETS_MODE"] = "kms"
+	env["YUMDRAKE_KMS_KEY_ID"] = "arn:aws:kms:eu-west-1:123456789012:key/abcd"
+	cfg, err := LoadOrchestrator(envFrom(env))
+	if err != nil {
+		t.Fatalf("LoadOrchestrator() error = %v", err)
+	}
+	if cfg.SecretsMode != "kms" || cfg.KMSKeyID != env["YUMDRAKE_KMS_KEY_ID"] {
+		t.Errorf("SecretsMode = %q, KMSKeyID = %q", cfg.SecretsMode, cfg.KMSKeyID)
+	}
+	if runner, err := LoadRunner(envFrom(env)); err != nil || runner.KMSKeyID != cfg.KMSKeyID {
+		t.Errorf("runner KMS settings = %q, %v", runner.KMSKeyID, err)
+	}
+
+	env["YUMDRAKE_SECRETS_MODE"] = "hunter2-mode"
+	if _, err := LoadOrchestrator(envFrom(env)); err == nil || strings.Contains(err.Error(), "hunter2-mode") {
+		t.Errorf("an unknown mode error = %v; it must exist and not echo the value", err)
 	}
 }
 
@@ -546,6 +659,28 @@ func TestLoadOrchestratorLogArchiveDir(t *testing.T) {
 	env["YUMDRAKE_LOG_ARCHIVE_DIR"] = "relative/dir"
 	if _, err = LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_LOG_ARCHIVE_DIR") {
 		t.Fatalf("relative path: err = %v, want a complaint naming the variable", err)
+	}
+}
+
+func TestLoadOrchestratorLogBucket(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.LogBucket != "" {
+		t.Fatalf("default: bucket = %q, err = %v; want none", cfg.LogBucket, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_LOG_BUCKET"] = "yumdrake-logs"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.LogBucket != "yumdrake-logs" {
+		t.Fatalf("bucket = %q, err = %v", cfg.LogBucket, err)
+	}
+	env["YUMDRAKE_LOG_BUCKET"] = "Not_A_Bucket"
+	if _, err = LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_LOG_BUCKET") {
+		t.Fatalf("invalid name: err = %v, want a complaint naming the variable", err)
+	}
+	env["YUMDRAKE_LOG_BUCKET"] = "yumdrake-logs"
+	env["YUMDRAKE_LOG_ARCHIVE_DIR"] = "/var/lib/yumdrake/logs"
+	if _, err = LoadOrchestrator(envFrom(env)); err == nil ||
+		!strings.Contains(err.Error(), "YUMDRAKE_LOG_BUCKET") || !strings.Contains(err.Error(), "YUMDRAKE_LOG_ARCHIVE_DIR") {
+		t.Fatalf("bucket and directory together: err = %v, want a complaint naming both variables", err)
 	}
 }
 

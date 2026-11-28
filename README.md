@@ -364,3 +364,7 @@ kind: Service
 ## CI
 
 The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration, floci, smoke and web jobs on pull requests and on pushes to `main`.
+
+## License
+
+Yumdrake is free software, licensed under the GNU Affero General Public License v3.0 only. See [LICENSE](LICENSE).

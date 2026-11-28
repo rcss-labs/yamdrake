@@ -228,6 +228,11 @@ func (f *fakes) change(ctx context.Context, env runner.Env, task queue.Claimed, 
 			return queue.Outcome{State: "unknown", FailureShort: "change not in place", FailureDetail: "the earlier attempt's change is not visible in the system"}
 		}
 		env.Log("info", "the change is already in place")
+	case errors.Is(err, runner.ErrMaybeApplied):
+		// The change may be in place although nothing recorded it: unknown, not
+		// failed, so the run keeps its locks until a person reconciles.
+		env.Log("warn", "the change may have been applied but could not be recorded")
+		return queue.Outcome{State: "unknown", FailureShort: "outcome unknown", FailureDetail: err.Error()}
 	case ctx.Err() != nil:
 		return stopped(env, ctx)
 	default:

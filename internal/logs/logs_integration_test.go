@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -956,5 +957,207 @@ func TestArchiverNeverOverwritesAnArchive(t *testing.T) {
 	page, err := NewReader(e.pool, archive).Read(ctx, e.runID, Filter{}, "", 100)
 	if err != nil || len(page.Lines) != 2 || page.Lines[0].Text != "one" {
 		t.Fatalf("read = %+v, %v; want the two archived lines", page.Lines, err)
+	}
+}
+
+// Two orchestrators archiving at once: the second blocks on the leg row, then
+// finds the archive in place and no rows left. That is not an error.
+func TestArchivingAnAlreadyArchivedLegWithNoRowsIsAQuietNoOp(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 1)
+	ctx := context.Background()
+	e.seed(t, e.line(0, 1, baseTime, "info", "one"))
+	settle(t, e, "succeeded")
+	var logged lockedBuffer
+	log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	now := baseTime.Add(48 * time.Hour)
+	ar := NewArchiver(e.pool, newDirArchiveT(t), time.Hour, func() time.Time { return now }, log)
+	if ok, err := ar.archiveLeg(ctx, e.runID, e.legs[0].ID); err != nil || !ok {
+		t.Fatalf("first archiveLeg = %v, %v", ok, err)
+	}
+	// The other orchestrator picked the same leg before the first one committed.
+	if ok, err := ar.archiveLeg(ctx, e.runID, e.legs[0].ID); err != nil || ok {
+		t.Fatalf("second archiveLeg = %v, %v; want a quiet no-op (false, nil)", ok, err)
+	}
+	if text := logged.String(); strings.Contains(text, "level=ERROR") || strings.Contains(text, "level=WARN") {
+		t.Fatalf("the no-op was logged above debug level: %s", text)
+	}
+}
+
+// lockedBuffer is a bytes buffer that logging goroutines may write to.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// getCountingArchive counts Get calls per key.
+type getCountingArchive struct {
+	Archive
+	mu   sync.Mutex
+	gets map[string]int
+}
+
+func (c *getCountingArchive) Get(ctx context.Context, key string) ([]byte, error) {
+	c.mu.Lock()
+	if c.gets == nil {
+		c.gets = map[string]int{}
+	}
+	c.gets[key]++
+	c.mu.Unlock()
+	return c.Archive.Get(ctx, key)
+}
+
+func (c *getCountingArchive) total() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, v := range c.gets {
+		n += v
+	}
+	return n
+}
+
+// A paged read of archived legs must decompress each archived leg once for the
+// whole read sequence, not once per page.
+func TestPagedReadFetchesEachArchivedLegOnce(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 3)
+	ctx := context.Background()
+	const perLeg = 40
+	for leg := 0; leg < 3; leg++ {
+		for s := int64(1); s <= perLeg; s++ {
+			e.seed(t, e.line(leg, s, baseTime.Add(time.Duration(s)*time.Second+time.Duration(leg)*time.Millisecond), "info", fmt.Sprintf("leg %d line %d", leg, s)))
+		}
+	}
+	settle(t, e, "succeeded")
+	archive := &getCountingArchive{Archive: newDirArchiveT(t)}
+	now := baseTime.Add(48 * time.Hour)
+	if n, err := NewArchiver(e.pool, archive, time.Hour, func() time.Time { return now }, nil).ArchiveSettledLegs(ctx); err != nil || n != 3 {
+		t.Fatalf("ArchiveSettledLegs = %d, %v; want 3", n, err)
+	}
+
+	reader := NewReader(e.pool, archive)
+	session := reader.NewSession(e.runID)
+	var got []Line
+	var cursor Cursor
+	pages := 0
+	for {
+		page, err := session.Read(ctx, Filter{}, cursor, 7)
+		if err != nil {
+			t.Fatalf("session Read: %v", err)
+		}
+		if len(page.Lines) == 0 {
+			break
+		}
+		pages++
+		got = append(got, page.Lines...)
+		cursor = page.Next
+	}
+	if len(got) != 3*perLeg {
+		t.Fatalf("read %d lines, want %d", len(got), 3*perLeg)
+	}
+	if pages < 10 {
+		t.Fatalf("only %d pages: the test needs many pages to show the effect", pages)
+	}
+	if n := archive.total(); n != 3 {
+		t.Fatalf("archive Get called %d times over %d pages, want 3 (once per archived leg)", n, pages)
+	}
+	// The same sequence through the stateless Read is the reference.
+	var want []Line
+	cursor = ""
+	for {
+		page, err := reader.Read(ctx, e.runID, Filter{}, cursor, 7)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if len(page.Lines) == 0 {
+			break
+		}
+		want = append(want, page.Lines...)
+		cursor = page.Next
+	}
+	if !reflect.DeepEqual(normalize(got), normalize(want)) {
+		t.Fatalf("session read differs from stateless read")
+	}
+}
+
+// With PostgreSQL unreachable the writer must not grow without bound: once a
+// leg has maxQueued lines waiting, Write blocks briefly and then refuses.
+func TestWriteRefusesWhenTheLegsQueueIsFullAndTheDatabaseStaysDown(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 1)
+	leg := e.legs[0].ID
+	w := newTestWriter(e, 2, nil).WithQueueLimit(5, 150*time.Millisecond)
+	t.Cleanup(func() { _ = w.Close(context.Background()) })
+	w.beforeInsert = func() error { return errors.New("database unreachable") }
+
+	var refused int
+	var slowest time.Duration
+	for i := 1; i <= 20; i++ {
+		started := time.Now()
+		err := w.Write(e.runID, leg, 0, "info", fmt.Sprintf("line %d", i))
+		if d := time.Since(started); d > slowest {
+			slowest = d
+		}
+		if err != nil {
+			if !errors.Is(err, ErrBufferFull) {
+				t.Fatalf("Write error = %v, want ErrBufferFull", err)
+			}
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Fatalf("no Write was refused although 20 lines went to a queue limited to 5")
+	}
+	if slowest < 100*time.Millisecond {
+		t.Errorf("slowest Write took %v: a full queue should block the executor briefly first", slowest)
+	}
+	w.mu.Lock()
+	queued := len(w.legs[leg].queue)
+	w.mu.Unlock()
+	if queued > 5 {
+		t.Fatalf("%d lines queued, want at most the limit of 5", queued)
+	}
+}
+
+// A queue that is full only for a moment (the database comes back) does not
+// lose the line: Write waits for room.
+func TestWriteWaitsForRoomWhenTheDatabaseComesBack(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 1)
+	leg := e.legs[0].ID
+	w := newTestWriter(e, 2, nil).WithQueueLimit(4, 5*time.Second)
+	t.Cleanup(func() { _ = w.Close(context.Background()) })
+	var down atomic.Bool
+	down.Store(true)
+	w.beforeInsert = func() error {
+		if down.Load() {
+			return errors.New("database unreachable")
+		}
+		return nil
+	}
+	time.AfterFunc(200*time.Millisecond, func() { down.Store(false) })
+	for i := 1; i <= 12; i++ {
+		if err := w.Write(e.runID, leg, 0, "info", fmt.Sprintf("line %d", i)); err != nil {
+			t.Fatalf("Write %d: %v, want it to wait for the database", i, err)
+		}
+	}
+	if err := w.Flush(context.Background(), leg); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got := len(e.stored(t, leg)); got != 12 {
+		t.Fatalf("%d lines stored, want 12", got)
 	}
 }

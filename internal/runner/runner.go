@@ -9,7 +9,11 @@
 //   - Make every external change through Env.Do with a stable key. Do records
 //     the intent before and the result after the change, so a crash in between
 //     is visible to the next attempt as ErrAmbiguous, which the executor must
-//     settle by looking at the real system. See Env and ErrAmbiguous.
+//     settle by looking at the real system. See Env and ErrAmbiguous. An
+//     ErrAmbiguous the executor cannot resolve, and any error wrapping
+//     ErrMaybeApplied (the change was made but its result could not be
+//     recorded), must end the leg as unknown, never failed: unknown keeps the
+//     run's locks until a person reconciles.
 //   - Use Env.Checkpoint after stages that need not be repeated and Env.Resume
 //     at the start to skip them.
 //   - Honour ctx: it ends when the lease is lost (another runner now owns the
@@ -39,9 +43,12 @@ import (
 )
 
 // LineSink takes the log lines of legs. The generation stamps each line so that
-// a runner that lost its leg cannot add lines to the new attempt's log.
+// a runner that lost its leg cannot add lines to the new attempt's log. Write
+// returns an error only when the line was refused for good (the sink's queue
+// for the leg is full and the database is not taking lines): the runner then
+// stops the leg and fails it with a clear reason.
 type LineSink interface {
-	Write(runID, legID, generation int64, level, text string)
+	Write(runID, legID, generation int64, level, text string) error
 	Flush(ctx context.Context, legID int64) error
 }
 
@@ -62,9 +69,14 @@ const (
 	completeRetryWait = 200 * time.Millisecond
 )
 
+// crashedText is all a person reads about an executor's panic.
+const crashedText = "the step crashed; see the service log"
+
 var (
 	errLeaseLost = errors.New("lease lost")
 	errShutdown  = errors.New("runner shutting down")
+	// errLogUnavailable is the cancel cause when the log sink refused lines for good.
+	errLogUnavailable = errors.New("log storage unavailable")
 )
 
 // Runner claims legs and runs them on up to `concurrency` goroutines.
@@ -236,6 +248,7 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 		return
 	}
 	env := newLegEnv(r.q, r.sink, leg, log)
+	env.onLogFailure = func(error) { cancel(errLogUnavailable) }
 	// A leg whose cancel was requested before it started does not run (spec 7.9),
 	// but only a leg on its first attempt with no recorded operation: nothing it
 	// did can be in doubt. Any other leg (requeued after a dead runner, or
@@ -249,7 +262,7 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 		return
 	}
 	if leg.Attempt > 1 {
-		env.Log("warn", fmt.Sprintf("attempt %d: a previous attempt by runner %s did not finish; continuing from its last checkpoint",
+		env.Log("warn", fmt.Sprintf("attempt %d: a previous attempt by runner %s did not finish; continuing from its last checkpoint. Log lines of the previous attempt may be missing.",
 			leg.Attempt, claimed.PreviousRunnerID))
 	}
 
@@ -258,6 +271,9 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 	stopHeartbeat()
 
 	cause := context.Cause(ctx)
+	if errors.Is(cause, errLogUnavailable) && outcome.State != "succeeded" {
+		outcome = r.logUnavailableOutcome(context.WithoutCancel(ctx), leg, log)
+	}
 	settle, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
 	defer cancelSettle()
 
@@ -303,6 +319,29 @@ func (r *Runner) neverAttempted(ctx context.Context, leg store.Leg, log *slog.Lo
 		return false
 	}
 	return len(ops) == 0
+}
+
+// logUnavailableOutcome is how a leg ends when its log could not be stored and
+// the executor was stopped. The leg fails, unless an operation of it is still
+// intended: then the change may have been made and the outcome is unknown.
+func (r *Runner) logUnavailableOutcome(ctx context.Context, leg store.Leg, log *slog.Logger) queue.Outcome {
+	state := "failed"
+	readCtx, cancel := context.WithTimeout(ctx, settleTimeout)
+	defer cancel()
+	ops, err := r.q.Ops(readCtx, leg.ID)
+	if err != nil {
+		state = "unknown" // cannot tell whether a change is in doubt
+		log.Warn("could not read the leg's operations after its log failed", "error", err.Error())
+	}
+	for _, op := range ops {
+		if op.State == "intended" {
+			state = "unknown"
+		}
+	}
+	return queue.Outcome{
+		State: state, FailureShort: "log storage unavailable",
+		FailureDetail: "the leg's log lines could not be stored because the database did not take them, so the step was stopped",
+	}
 }
 
 // settleCancelledBeforeStart completes a leg as cancelled without running it.
@@ -358,8 +397,10 @@ func (r *Runner) execute(ctx context.Context, env Env, claimed queue.Claimed, lo
 	defer func() {
 		if p := recover(); p != nil {
 			log.Error("executor panicked", "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
-			env.Log("error", fmt.Sprintf("executor panicked: %v", p))
-			outcome = queue.Outcome{State: "unknown", FailureShort: "executor panicked", FailureDetail: fmt.Sprint(p)}
+			// The panic text and stack go to the service log only: the leg's log and
+			// failure fields are readable by everyone who can see the run.
+			env.Log("error", crashedText)
+			outcome = queue.Outcome{State: "unknown", FailureShort: "executor panicked", FailureDetail: crashedText}
 		}
 	}()
 	return executor.Execute(ctx, env, claimed)

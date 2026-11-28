@@ -17,7 +17,7 @@ import (
 
 // runFixture holds the rows every run refers to.
 type runFixture struct {
-	userID, folderID, sourceID int64
+	userID, folderID, sourceID, snapshotID int64
 }
 
 func newRunFixture(t *testing.T, pool *pgxpool.Pool) runFixture {
@@ -35,14 +35,19 @@ func newRunFixture(t *testing.T, pool *pgxpool.Pool) runFixture {
 	if err != nil {
 		t.Fatalf("CreateJobSource: %v", err)
 	}
-	return runFixture{userID: user.ID, folderID: folder.ID, sourceID: source.ID}
+	snapshot, err := ActivateSnapshot(ctx, pool, fmt.Sprintf("inv-%d", time.Now().UnixNano()), []byte(`{}`), time.Now())
+	if err != nil {
+		t.Fatalf("ActivateSnapshot: %v", err)
+	}
+	return runFixture{userID: user.ID, folderID: folder.ID, sourceID: source.ID, snapshotID: snapshot.ID}
 }
 
 func (f runFixture) run(state string) Run {
 	return Run{
 		Kind: "deploy", JobSourceID: f.sourceID, JobID: "deploy-api",
-		JobSnapshot: []byte(`{"id":"deploy-api"}`), InventoryCommit: "inv1", JobCommit: "job1",
-		Environment: "prod-eu", Label: "prod", AWSAccount: "111122223333", FolderID: f.folderID,
+		JobSnapshot: []byte(`{"id":"deploy-api"}`), InventoryCommit: "inv1", JobCommit: "job1", InventorySnapshotID: f.snapshotID,
+		LockResources: []string{"arn:svc/a", "s3://cfg/a.env"},
+		Environment:   "prod-eu", Label: "prod", AWSAccount: "111122223333", FolderID: f.folderID,
 		Selection: []byte(`{"services":["a"]}`), State: state, RequestedBy: f.userID, Via: "web",
 	}
 }
@@ -89,6 +94,9 @@ func TestInsertRunCreatesStepsAndLegsAtomically(t *testing.T) {
 	}
 	if back.Kind != "deploy" || back.State != "resolving" || back.Environment != "prod-eu" || back.Manifest != nil || back.ParentRunID != nil {
 		t.Fatalf("GetRun: %+v", back)
+	}
+	if back.InventorySnapshotID != fx.snapshotID || !reflect.DeepEqual(back.LockResources, []string{"arn:svc/a", "s3://cfg/a.env"}) {
+		t.Fatalf("snapshot id / lock resources not stored: %+v", back)
 	}
 	if string(back.JobSnapshot) == "" || string(back.Selection) == "" {
 		t.Fatalf("snapshot/selection not stored: %+v", back)

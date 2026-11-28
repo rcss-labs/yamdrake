@@ -9,12 +9,17 @@ CREATE TABLE runs (
     job_id               text        NOT NULL,
     job_snapshot         jsonb       NOT NULL,
     inventory_commit     text        NOT NULL DEFAULT '',
+    -- The snapshot the run was planned against; the resolve leg reads the
+    -- selected services from it, never from whatever is active later.
+    inventory_snapshot_id bigint     NOT NULL REFERENCES inventory_snapshots (id),
     job_commit           text        NOT NULL DEFAULT '',
     environment          text        NOT NULL DEFAULT '',
     label                text        NOT NULL DEFAULT '',
     aws_account          text        NOT NULL DEFAULT '',
     folder_id            bigint      NOT NULL REFERENCES folders (id),
     selection            jsonb       NOT NULL,
+    -- The resources the run locks when it starts (service ARNs, config destinations).
+    lock_resources       text[]      NOT NULL DEFAULT '{}',
     manifest             jsonb,
     manifest_id          text        NOT NULL DEFAULT '',
     approval_required    boolean     NOT NULL DEFAULT false,

@@ -83,7 +83,7 @@ both the roles and the key policy.
 | No account id, region, hostname, certificate, VPC id or identity provider in any file | All come from variables (`variables.tf`, `target-account/variables.tf`). `terraform.tfvars.example` holds `REPLACE-ME` placeholders only. The account id comes from `aws_caller_identity` |
 | Each site-specific variable has a description and type; required ones have no default | `variables.tf`. Only sizing, retention and naming variables have defaults |
 | `plan` and `apply` never run | `make tf-check` runs `fmt -check` and `init -backend=false` + `validate` only; CI the same, with no credentials |
-| Terraform 1.5.7 accepted; provider pinned to a verified range | `versions.tf`: `>= 1.5.7, < 2.0.0`; AWS `~> 5.100.0` (5.100.0 installed by `init`); lock files carry hashes for linux and macOS, amd64 and arm64 |
+| Terraform 1.17.2 accepted; provider pinned to a verified range | `versions.tf`: `>= 1.17.2, < 2.0.0`; AWS `~> 6.74.0` (6.74.0 installed by `init`); lock files carry hashes for linux and macOS, amd64 and arm64 |
 | Names lowercase with hyphens, consistent | `local.name` (`<prefix>-<environment>`) used by every resource; `name_prefix` and `environment` validated against `^[a-z][a-z0-9-]*$`; bucket names derived from it |
 | No secret in any `.tf` or example file | Database password generated and kept by RDS (`manage_master_user_password`); task gets it from Secrets Manager (`PGPASSWORD`). The external ids are `sensitive` variables, passed through `TF_VAR_*`, not in the example file. No key, token or password anywhere |
 | Orchestrator can assume only discovery roles; cannot decrypt deployment secrets | Statements 2, 3, 4 and Deny 16 |

@@ -820,6 +820,60 @@ func TestWindowDoesNotCompleteOverUnreadRounds(t *testing.T) {
 	})
 }
 
+// capPolls stops a wait that would otherwise never end: 400 polls is 2000s of
+// virtual time, well past the 15 minute default timeout.
+func capPolls(t *testing.T, then func(n int) error) func(int, *fakeECS) error {
+	return func(n int, _ *fakeECS) error {
+		if n > 400 {
+			t.Fatalf("still waiting after %d polls", n)
+		}
+		if then != nil {
+			return then(n)
+		}
+		return nil
+	}
+}
+
+// wantUnconfirmedAtTimeout checks the leg ended unknown just after the 15 minute
+// timeout: Elapsed first exceeds 900s at poll 182 (905s).
+func wantUnconfirmedAtTimeout(t *testing.T, f *fixture, out queue.Outcome, detailWords string) {
+	t.Helper()
+	f.want(out, "unknown")
+	if want := "rollout looked complete but could not be confirmed stable within 15m0s"; out.FailureShort != want {
+		t.Errorf("short = %q, want %q", out.FailureShort, want)
+	}
+	if !strings.Contains(out.FailureDetail, detailWords) {
+		t.Errorf("detail = %q, want it to mention %q", out.FailureDetail, detailWords)
+	}
+	if f.ecs.polls != 182 {
+		t.Errorf("ended after %d polls, want 182", f.ecs.polls)
+	}
+}
+
+func TestWindowEndsAtTimeoutWhenStoppedTasksCannotBeRead(t *testing.T) {
+	f := newFixture(t)
+	f.ecs.completeAfter = 1
+	f.ecs.onPoll = capPolls(t, nil)
+	f.ecs.listTasksErr = func(int) error { return refusal(400, "AccessDeniedException") }
+	out := f.run()
+	wantUnconfirmedAtTimeout(t, f, out, "stopped tasks could not be read")
+	if !strings.Contains(out.FailureDetail, "AccessDeniedException") {
+		t.Errorf("detail = %q, want the error code", out.FailureDetail)
+	}
+}
+
+func TestWindowEndsAtTimeoutWhenServiceReadsFlap(t *testing.T) {
+	f := newFixture(t)
+	f.ecs.completeAfter = 1
+	f.ecs.onPoll = capPolls(t, func(n int) error {
+		if n%2 == 0 {
+			return errors.New("throttled")
+		}
+		return nil
+	})
+	wantUnconfirmedAtTimeout(t, f, f.run(), "service could not be read")
+}
+
 func TestDesiredZeroNeedsNoStableWindow(t *testing.T) {
 	f := newFixture(t)
 	f.ecs.svc.DesiredCount = 0

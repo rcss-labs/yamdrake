@@ -567,8 +567,16 @@ func (r *leg) wait() queue.Outcome {
 	var failingSince time.Time
 	failing := false
 	seen := map[string]bool{}
-	var stableSince time.Time // when Judge first said succeeded in the current run of polls
+	// The stable window. A round counts towards it only when Judge says
+	// succeeded and both the service and our stopped tasks were read; an unread
+	// round or a new stopped task of ours restarts it. Judge's own timeout rule
+	// never runs while it says succeeded, so the leg timeout also bounds the
+	// window: past it, a rollout that looked complete but was never confirmed
+	// ends unknown, with why in the detail.
+	var stableSince time.Time
 	stableCrashes, stableLogged := 0, false
+	lookedComplete := false // the last good read's verdict was succeeded
+	var whyUnconfirmed unconfirmed
 
 	for {
 		if r.ctx.Err() != nil {
@@ -594,6 +602,12 @@ func (r *leg) wait() queue.Outcome {
 				r.env.Log("error", "The service could not be read for "+ReadFailureLimit.String()+"; the outcome is not known.")
 				return r.end(v.State, v.Short, resolve.ErrorDetail("ecs:DescribeServices", err))
 			}
+			if lookedComplete {
+				whyUnconfirmed.service = resolve.ErrorDetail("ecs:DescribeServices", err)
+				if obs.Elapsed > r.timeout {
+					return r.unconfirmedAtTimeout(whyUnconfirmed)
+				}
+			}
 		default:
 			failing = false
 			obs.Service = svc
@@ -603,18 +617,23 @@ func (r *leg) wait() queue.Outcome {
 				since = *deployment.CreatedAt
 			}
 			r.logEvents(svc, deployment != nil, since, seen)
-			var tasksRead bool
-			obs.StoppedTasks, tasksRead = r.stoppedTasks(ours, since)
+			var tasksUnread string
+			obs.StoppedTasks, tasksUnread = r.stoppedTasks(ours, since)
 			v := Judge(obs, ours, r.timeout)
-			if v.State == "succeeded" && svc.DesiredCount > 0 && !tasksRead {
+			windowed := v.State == "succeeded" && svc.DesiredCount > 0
+			if windowed && tasksUnread != "" {
 				// Nothing was seen of the stopped tasks this round: it cannot count.
 				stableSince = time.Time{}
+				whyUnconfirmed.tasks = tasksUnread
 				v = Verdict{State: "waiting"}
-			} else if v.State == "succeeded" && svc.DesiredCount > 0 {
+			} else if windowed {
 				// A revision can look steady for a moment between crashes: the
 				// verdict must hold for StableFor with no new stopped task of ours.
 				now, crashes := clock.Now(), len(unreplacedStops(obs.StoppedTasks, ours))
 				if stableSince.IsZero() || crashes > stableCrashes {
+					if !stableSince.IsZero() {
+						whyUnconfirmed.crashes = crashes
+					}
 					stableSince, stableCrashes = now, crashes
 					if !stableLogged {
 						stableLogged = true
@@ -626,6 +645,12 @@ func (r *leg) wait() queue.Outcome {
 				}
 			} else if v.State == "waiting" {
 				stableSince = time.Time{}
+			}
+			lookedComplete = windowed
+			if !windowed {
+				whyUnconfirmed = unconfirmed{}
+			} else if v.State == "waiting" && obs.Elapsed > r.timeout {
+				return r.unconfirmedAtTimeout(whyUnconfirmed)
 			}
 			if v.State != "waiting" {
 				return r.finish(v, svc, obs.StoppedTasks)
@@ -670,8 +695,9 @@ func (r *leg) logEvents(svc ecstypes.Service, haveDeployment bool, since time.Ti
 
 // stoppedTasks returns the tasks of our task definition that stopped at or
 // after since, newest first. A failed read only loses this part of the round;
-// read is false then, and the stable window must not count the round.
-func (r *leg) stoppedTasks(ours string, since time.Time) (tasks []ecstypes.Task, read bool) {
+// unread then describes the failed call, and the stable window must not count
+// the round.
+func (r *leg) stoppedTasks(ours string, since time.Time) (tasks []ecstypes.Task, unread string) {
 	var arns []string
 	var token *string
 	for page := 0; page < maxTaskPages; page++ {
@@ -680,7 +706,7 @@ func (r *leg) stoppedTasks(ours string, since time.Time) (tasks []ecstypes.Task,
 			DesiredStatus: ecstypes.DesiredStatusStopped, NextToken: token,
 		})
 		if err != nil {
-			return nil, false
+			return nil, resolve.ErrorDetail("ecs:ListTasks", err)
 		}
 		arns = append(arns, list.TaskArns...)
 		if token = list.NextToken; token == nil {
@@ -690,7 +716,7 @@ func (r *leg) stoppedTasks(ours string, since time.Time) (tasks []ecstypes.Task,
 	for chunk := range slices.Chunk(arns, 100) {
 		out, err := r.client.DescribeTasks(r.ctx, &ecs.DescribeTasksInput{Cluster: aws.String(r.ref.Cluster), Tasks: chunk})
 		if err != nil {
-			return nil, false
+			return nil, resolve.ErrorDetail("ecs:DescribeTasks", err)
 		}
 		for _, t := range out.Tasks {
 			if aws.ToString(t.TaskDefinitionArn) != ours {
@@ -712,7 +738,37 @@ func (r *leg) stoppedTasks(ours string, since time.Time) (tasks []ecstypes.Task,
 		}
 		return a.After(*b)
 	})
-	return tasks, true
+	return tasks, ""
+}
+
+// unconfirmed records what kept the stable window from completing since the
+// rollout last looked complete.
+type unconfirmed struct {
+	service string // the last failed service read
+	tasks   string // the last failed stopped-task read
+	crashes int    // our stopped tasks when one last restarted the window
+}
+
+// unconfirmedAtTimeout ends a leg whose rollout looked complete when the
+// timeout passed but was never confirmed stable. Three of our stopped tasks
+// would already have failed it in Judge, so this is unknown, not failed.
+func (r *leg) unconfirmedAtTimeout(why unconfirmed) queue.Outcome {
+	var parts []string
+	if why.tasks != "" {
+		parts = append(parts, "the stopped tasks could not be read ("+why.tasks+")")
+	}
+	if why.service != "" {
+		parts = append(parts, "the service could not be read ("+why.service+")")
+	}
+	if why.crashes > 0 {
+		parts = append(parts, fmt.Sprintf("our tasks kept stopping (%d stopped)", why.crashes))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "the stable window did not complete")
+	}
+	short := "rollout looked complete but could not be confirmed stable within " + r.timeout.String()
+	r.env.Log("error", short)
+	return r.end("unknown", short, strings.Join(parts, "; "))
 }
 
 // finish logs and returns the outcome for a verdict that ends the wait.

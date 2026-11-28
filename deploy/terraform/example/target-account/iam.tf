@@ -45,7 +45,7 @@ data "aws_iam_policy_document" "discovery" {
   # the resource has to be "*". They are read-only.
   statement {
     sid       = "ListClustersAndTaskDefinitions"
-    actions   = ["ecs:ListClusters", "ecs:ListTaskDefinitions", "ecs:DescribeTaskDefinition"]
+    actions   = ["ecs:ListClusters", "ecs:ListTaskDefinitions", "ecs:DescribeTaskDefinition", "ecs:ListTagsForResource"]
     resources = ["*"]
   }
 

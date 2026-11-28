@@ -337,6 +337,14 @@ func (s *server) updateUser(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					}
+					// Taking someone out of a group weakens them as much as the group's grants allow.
+					for _, groupID := range beforeManual {
+						if !slices.Contains(*req.ManualGroupIDs, groupID) {
+							if err := checkGroupWithinPower(ctx, tx, principal, groupID); err != nil {
+								return err
+							}
+						}
+					}
 				}
 			}
 			before := map[string]any{"disabled": user.Disabled, "group_ids": beforeManual}
@@ -663,12 +671,19 @@ func (s *server) putIDPMapping(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return audit.Event{}, err
 		}
-		if principal, _ := PrincipalFrom(ctx); !principal.Admin {
+		principal, _ := PrincipalFrom(ctx)
+		if !principal.Admin {
 			if err := checkGroupWithinPower(ctx, tx, principal, req.GroupID); err != nil {
 				return audit.Event{}, err
 			}
+			// Repointing a mapping also removes it from the group it pointed at.
+			if previous, had := mappings[name]; had {
+				if err := checkGroupWithinPower(ctx, tx, principal, previous); err != nil {
+					return audit.Event{}, err
+				}
+			}
 		}
-		if !isAdmin(r) {
+		if !principal.Admin {
 			admins, err := adminGroupIDs(ctx, tx)
 			if err != nil {
 				return audit.Event{}, err
@@ -706,13 +721,19 @@ func (s *server) deleteIDPMapping(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return audit.Event{}, err
 		}
-		if !isAdmin(r) {
+		if principal, _ := PrincipalFrom(ctx); !principal.Admin {
 			admins, err := adminGroupIDs(ctx, tx)
 			if err != nil {
 				return audit.Event{}, err
 			}
 			if previous, had := mappings[name]; had && admins[previous] {
 				return audit.Event{}, errAdminRequired
+			}
+			// Only what you hold: removing a mapping to a richer group weakens its members.
+			if previous, had := mappings[name]; had {
+				if err := checkGroupWithinPower(ctx, tx, principal, previous); err != nil {
+					return audit.Event{}, err
+				}
 			}
 		}
 		if err := store.DeleteIDPMapping(ctx, tx, name); err != nil {

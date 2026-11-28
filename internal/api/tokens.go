@@ -153,6 +153,9 @@ func (s *server) createServiceToken(w http.ResponseWriter, r *http.Request) {
 		if user.Source != "service" {
 			return audit.Event{}, fmt.Errorf("%w: tokens are minted here only for service accounts", store.ErrInvalid)
 		}
+		if user.Disabled {
+			return audit.Event{}, fmt.Errorf("%w: no token is minted for a disabled account", store.ErrInvalid)
+		}
 		plaintext, created, err = auth.NewToken(ctx, tx, id, name, time.Duration(req.ExpiresInDays)*24*time.Hour, s.Now())
 		if err != nil {
 			return audit.Event{}, err
@@ -164,7 +167,7 @@ func (s *server) createServiceToken(w http.ResponseWriter, r *http.Request) {
 		return audit.Event{Action: "token.create", TargetType: "token", TargetID: idString(created.ID), Detail: detail}, nil
 	})
 	if errors.Is(err, store.ErrInvalid) {
-		writeError(w, http.StatusUnprocessableEntity, codeInvalid, "tokens are minted here only for service accounts")
+		writeError(w, http.StatusUnprocessableEntity, codeInvalid, "tokens are minted here only for enabled service accounts")
 		return
 	}
 	if err != nil {

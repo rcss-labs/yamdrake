@@ -234,3 +234,19 @@ func TestAdminMintsATokenForAServiceAccount(t *testing.T) {
 		t.Errorf("the service account has %d tokens, want only the one minted", len(tokens))
 	}
 }
+
+// A token minted for a disabled service account would start working the moment
+// the account is enabled again, so the mint is refused.
+func TestAdminCannotMintATokenForADisabledServiceAccount(t *testing.T) {
+	h := newHarness(t)
+	svc := h.newServiceUser("disabledbot")
+	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(svc.ID), map[string]any{"disabled": true}), http.StatusOK, "")
+	rec := h.send(sent{method: "POST", path: "/api/v1/admin/users/" + itoa(svc.ID) + "/tokens", sessionID: h.newSession(h.admin.ID), origin: publicURL, body: map[string]any{"name": "ci"}})
+	if rec.Code != http.StatusUnprocessableEntity || errorCodeOf(rec) != "invalid" {
+		t.Errorf("mint for a disabled account: %s, want 422 invalid", failure(rec))
+	}
+	tokens, _ := store.ListTokens(context.Background(), h.pool, svc.ID)
+	if len(tokens) != 0 {
+		t.Errorf("the disabled account has %d tokens, want none", len(tokens))
+	}
+}

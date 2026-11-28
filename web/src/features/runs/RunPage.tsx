@@ -40,6 +40,17 @@ function WaitReason({ text }: { text: string }) {
 
 const upperFirst = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
+// The reasons the engine writes when nothing more specific is known (internal/engine/advance.go defaultEndReason).
+const defaultEndReasons = {
+  cancelled: "cancelled at a person's request",
+  invalidated: 'the targets changed since the plan was made, so nothing was run',
+}
+
+/** The server's reason, capitalised, when it says more than the state already does. */
+function extraReason(reason: string, fixed: string): string {
+  return reason && reason !== fixed ? upperFirst(reason) : ''
+}
+
 function stateSentence(run: RunDetail): ReactNode {
   const total = serviceProgress(run).length
   const updated = updatedCount(run)
@@ -69,15 +80,27 @@ function stateSentence(run: RunDetail): ReactNode {
     case 'partially_succeeded':
     case 'failed':
       return `${updated} of ${total} services updated`
-    case 'cancelled':
-      return `${run.end_reason || 'Cancelled'}. ${plural(updated, 'service')} had already been updated`
-    case 'invalidated':
-      return `The targets changed after this plan was made.${run.end_reason ? ` ${upperFirst(run.end_reason)}` : ''}`
+    case 'cancelled': {
+      // The API does not send who cancelled yet; cancelled_by_name is read when it does.
+      const who = (run as RunDetail & { cancelled_by_name?: string }).cancelled_by_name
+      const detail = extraReason(run.end_reason, defaultEndReasons.cancelled)
+      return `Cancelled${who ? ` by ${who}` : ''}.${detail ? ` ${detail}.` : ''} ${plural(updated, 'service')} had already been updated`
+    }
+    case 'invalidated': {
+      const detail = extraReason(run.end_reason, defaultEndReasons.invalidated)
+      return `The targets changed after this plan was made${detail ? `. ${detail}` : ''}`
+    }
     case 'rejected':
+      // The engine's reason already says who: "rejected by <name>".
+      return (
+        <>
+          {upperFirst(run.end_reason || 'rejected')} <Time iso={run.state_changed_at} />
+        </>
+      )
     case 'expired':
       return (
         <>
-          {run.end_reason || upperFirst(run.state)} <Time iso={run.state_changed_at} />
+          Expired{run.end_reason ? `: ${run.end_reason}` : ''} <Time iso={run.state_changed_at} />
         </>
       )
   }

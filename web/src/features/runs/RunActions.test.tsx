@@ -1,7 +1,7 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
-import { adminMe, failNext, jobManagerMe, qaMe, requests, runIds, viewerMe } from '../../test/server'
+import { adminMe, eventSources, failNext, jobManagerMe, mockState, qaMe, requests, runIds, viewerMe } from '../../test/server'
 import type { Me } from '../../api/types'
 import { actionNames, moveStoredRun, renderRun, storedRun } from './runTestUtils'
 
@@ -139,9 +139,19 @@ describe('Start', () => {
   })
 
   it('a person with run in dev may start but not discard (Discard needs cancel)', async () => {
+    for (const check of mockState().plans[runIds.plannedFailedCheck]!.checks) check.status = 'passed'
     renderRun(runIds.plannedFailedCheck, qaMe)
-    await screen.findByTestId('run-lead')
+    expect(await actionNames()).toEqual(['Start'])
     expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument()
+  })
+
+  it('says why Start is missing when the plan cannot be loaded, and Try again loads it', async () => {
+    failNext('GET', `/api/v1/runs/${runIds.planned}/plan`, 500, 'internal', 'plan store down')
+    renderRun(runIds.planned, adminMe)
+    expect(await screen.findByText(/The plan could not be loaded/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: 'Start' })).toBeInTheDocument()
   })
 })
 
@@ -205,6 +215,37 @@ describe('Approve and Reject', () => {
     expect(await screen.findByText('This run was already decided.')).toBeInTheDocument()
     await waitFor(async () => expect(await actionNames()).toEqual(['Plan again']))
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Rejected')
+  })
+})
+
+describe('the message after a refused action', () => {
+  it('goes away when a later state event changes the state again', async () => {
+    renderRun(runIds.waitingApproval, adminMe)
+    await screen.findByRole('button', { name: 'Approve' })
+    moveStoredRun(runIds.waitingApproval, 'rejected', { end_reason: 'rejected by Yael Barak' })
+    failNext('POST', `/api/v1/runs/${runIds.waitingApproval}/approve`, 409, 'conflict', 'This run was already decided.')
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(await screen.findByText('This run was already decided.')).toBeInTheDocument()
+    await waitFor(async () => expect(await actionNames()).toEqual(['Plan again']))
+    const run = storedRun(runIds.waitingApproval)
+    await waitFor(() => expect(eventSources.all.length).toBeGreaterThan(0))
+    act(() => {
+      eventSources.last()?.open()
+      eventSources.last()?.emit('state', {
+        id: run.id,
+        state: 'queued',
+        wait_reason: 'Waiting for its turn',
+        end_reason: '',
+        state_changed_at: '2026-11-27T12:02:00Z',
+        started_at: null,
+        finished_at: null,
+        cancel_requested: false,
+        legs: run.legs,
+        locks: [],
+        summary: run.summary,
+      })
+    })
+    await waitFor(() => expect(screen.queryByText('This run was already decided.')).not.toBeInTheDocument())
   })
 })
 

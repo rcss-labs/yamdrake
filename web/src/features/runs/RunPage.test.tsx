@@ -82,10 +82,16 @@ describe('the sentence that says where the run stands', () => {
     expect(await lead()).toHaveTextContent('1 of 2 services updated')
   })
 
-  it('cancelled says by whom and how much was already updated', async () => {
-    moveStoredRun(runIds.partiallySucceeded, 'cancelled', { end_reason: 'Cancelled by Dana Levi' })
+  it('cancelled with the engine default reason says no more than the state, plus how much was updated', async () => {
+    moveStoredRun(runIds.partiallySucceeded, 'cancelled', { end_reason: "cancelled at a person's request" })
     renderRun(runIds.partiallySucceeded)
-    expect(await lead()).toHaveTextContent('Cancelled by Dana Levi. 1 service had already been updated')
+    expect((await lead()).textContent).toBe('Cancelled. 1 service had already been updated')
+  })
+
+  it('cancelled names who when the server sends it, and keeps a more specific reason', async () => {
+    moveStoredRun(runIds.partiallySucceeded, 'cancelled', { end_reason: 'the deploy window closed', cancelled_by_name: 'Dana Levi' } as never)
+    renderRun(runIds.partiallySucceeded)
+    expect((await lead()).textContent).toBe('Cancelled by Dana Levi. The deploy window closed. 1 service had already been updated')
   })
 
   it('invalidated gives the detail', async () => {
@@ -93,10 +99,22 @@ describe('the sentence that says where the run stands', () => {
     expect(await lead()).toHaveTextContent('The targets changed after this plan was made. Billing changed after the plan was made')
   })
 
-  it('rejected says who and when', async () => {
-    moveStoredRun(runIds.waitingApproval, 'rejected', { end_reason: 'Rejected by Dana Levi', state_changed_at: '2026-11-27T11:55:00Z' })
+  it('invalidated with the engine default reason shows the fixed sentence only', async () => {
+    moveStoredRun(runIds.invalidated, 'invalidated', { end_reason: 'the targets changed since the plan was made, so nothing was run' })
+    renderRun(runIds.invalidated)
+    expect((await lead()).textContent).toBe('The targets changed after this plan was made')
+  })
+
+  it('rejected says who and when, from the engine reason', async () => {
+    moveStoredRun(runIds.waitingApproval, 'rejected', { end_reason: 'rejected by Dana Levi', state_changed_at: '2026-11-27T11:55:00Z' })
     renderRun(runIds.waitingApproval)
-    expect(await lead()).toHaveTextContent(/Rejected by Dana Levi/)
+    expect(await lead()).toHaveTextContent(/^Rejected by Dana Levi .+ ago$/)
+  })
+
+  it('expired says why and when, from the engine reason', async () => {
+    moveStoredRun(runIds.planned, 'expired', { end_reason: 'nobody started the plan within 1h0m0s', state_changed_at: '2026-11-27T11:55:00Z' })
+    renderRun(runIds.planned)
+    expect(await lead()).toHaveTextContent(/^Expired: nobody started the plan within 1h0m0s/)
   })
 })
 
@@ -116,6 +134,14 @@ describe('what failed', () => {
     const view = renderRun(runIds.partiallySucceeded)
     await userEvent.click(await screen.findByRole('button', { name: 'Show its log' }))
     expect(view.location().search).toBe('?service=billing')
+  })
+
+  it('is not shown for a cancelled run with no failure and nothing skipped', async () => {
+    const run = moveStoredRun(runIds.succeeded, 'cancelled', { end_reason: "cancelled at a person's request" })
+    run.summary.failures = []
+    renderRun(runIds.succeeded)
+    await lead()
+    expect(screen.queryByRole('region', { name: 'What failed' })).not.toBeInTheDocument()
   })
 
   it('is not shown for a run that succeeded', async () => {

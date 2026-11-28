@@ -35,7 +35,12 @@ export function RunActions({ run, reload }: RunActionsProps) {
   const navigate = useNavigate()
   const [confirming, setConfirming] = useState<Confirming | null>(null)
   const [busy, setBusy] = useState(false)
-  const [notice, setNotice] = useState('')
+  // A message about an action that did not work. It belongs to the state the run was in; a later change of state
+  // (someone else acting, a state event) removes it. After a 409 the reload is expected to change the state once,
+  // and the message stays for that state: `settled` records it.
+  const [notice, setNotice] = useState<{ text: string; from: string; reloading: boolean; settled?: string } | null>(null)
+  if (notice?.reloading && !notice.settled && run.state !== notice.from) setNotice({ ...notice, settled: run.state })
+  const noticeText = notice && run.state === (notice.settled ?? notice.from) ? notice.text : ''
 
   const target = { label: run.label, environment: run.environment, folderId: run.folder_id }
   const mayRun = can('run', target)
@@ -46,6 +51,7 @@ export function RunActions({ run, reload }: RunActionsProps) {
   // Start waits for the plan: it is hidden until the plan has loaded and while any of its checks failed.
   const plan = useRunPlan(run.id, { enabled: run.state === 'planned' && mayRun })
   const planReady = plan.isSuccess && failedChecks(plan.data).length === 0
+  const planFailed = run.state === 'planned' && mayRun && plan.isError
 
   const start = useStartRun(run.id)
   const cancel = useCancelRun(run.id)
@@ -57,15 +63,20 @@ export function RunActions({ run, reload }: RunActionsProps) {
 
   // Runs an action. A 409 means the run changed meanwhile: reload it and say what the server said.
   const perform = async (action: () => Promise<RunDetail>, goToResult = false) => {
-    setNotice('')
+    setNotice(null)
     setBusy(true)
     try {
       const result = await action()
       if (goToResult) navigate(`/runs/${result.id}`)
       else reload()
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 409) reload()
-      setNotice(caught instanceof Error ? caught.message : 'The action did not work. Try again.')
+      const conflict = caught instanceof ApiError && caught.status === 409
+      if (conflict) reload()
+      setNotice({
+        text: caught instanceof Error ? caught.message : 'The action did not work. Try again.',
+        from: run.state,
+        reloading: conflict,
+      })
     } finally {
       setBusy(false)
     }
@@ -125,7 +136,15 @@ export function RunActions({ run, reload }: RunActionsProps) {
         </div>
       )}
       {approvalReason && <Note>{approvalReason}</Note>}
-      {notice && <Note tone="error">{notice}</Note>}
+      {planFailed && (
+        <Note tone="error">
+          The plan could not be loaded, so the run cannot be started yet.{' '}
+          <Button size="sm" onClick={() => void plan.refetch()}>
+            Try again
+          </Button>
+        </Note>
+      )}
+      {noticeText && <Note tone="error">{noticeText}</Note>}
 
       <ConfirmDialog
         open={confirming === 'start'}

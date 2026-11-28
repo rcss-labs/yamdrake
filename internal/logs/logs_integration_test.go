@@ -66,8 +66,12 @@ func newEnv(t *testing.T, n int) testEnv {
 		idx := int64(i % 2)
 		legs[i] = store.Leg{Kind: "step", StepID: &idx, Service: "svc-" + string(rune('a'+(i/2)%2)), State: "running"}
 	}
+	snapshot, err := store.ActivateSnapshot(ctx, pool, "logs-inventory", []byte(`{}`), time.Now())
+	if err != nil {
+		t.Fatalf("ActivateSnapshot: %v", err)
+	}
 	run, err := store.InsertRun(ctx, pool, store.Run{
-		Kind: "deploy", JobSourceID: source.ID, JobID: "deploy-api", JobSnapshot: []byte(`{}`),
+		Kind: "deploy", InventorySnapshotID: snapshot.ID, JobSourceID: source.ID, JobID: "deploy-api", JobSnapshot: []byte(`{}`),
 		Environment: "prod", FolderID: folder.ID, Selection: []byte(`{}`), State: "running",
 		RequestedBy: user.ID, Via: "web",
 	}, steps, legs)

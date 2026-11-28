@@ -144,11 +144,7 @@ func TestDirRefusesKeysOutsideItsDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDir: %v", err)
 	}
-	sentinel := filepath.Join(parent, "x")
-	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
-		t.Fatalf("write sentinel: %v", err)
-	}
-
+	cipher := testCipher(t)
 	keys := []string{
 		"manifests/../x",
 		"../manifests/1/a/b/c",
@@ -158,13 +154,28 @@ func TestDirRefusesKeysOutsideItsDirectory(t *testing.T) {
 		"manifests\\..\\x",
 	}
 	for _, key := range keys {
-		if _, err := s.Get(context.Background(), key, ""); err == nil {
-			t.Errorf("Get(%q) succeeded, want an error", key)
+		// Plant a real, decryptable object where an unchecked join would read it,
+		// with its true checksum. Only the key checks can stop Get from returning it.
+		data := []byte("planted for " + key)
+		target := filepath.Join(dir, filepath.FromSlash(key))
+		sealed, err := cipher.Encrypt(context.Background(), artifactPurpose, data)
+		if err != nil {
+			t.Fatalf("Encrypt: %v", err)
 		}
-	}
-	got, err := os.ReadFile(sentinel) //nolint:gosec // the test reads its own temp dir
-	if err != nil || string(got) != "keep" {
-		t.Errorf("sentinel outside the store changed: %q, %v", got, err)
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			t.Fatalf("mkdir for %q: %v", key, err)
+		}
+		if err := os.WriteFile(target, sealed, 0o600); err != nil {
+			t.Fatalf("plant %q: %v", key, err)
+		}
+
+		got, err := s.Get(context.Background(), key, sha256Hex(data))
+		if err == nil || !strings.Contains(err.Error(), "is outside") {
+			t.Errorf("Get(%q) err = %v, want a refusal containing \"is outside\"", key, err)
+		}
+		if got != nil {
+			t.Errorf("Get(%q) returned data %q", key, got)
+		}
 	}
 }
 
@@ -233,5 +244,33 @@ func TestDirPutRefusesDataOverTheLimit(t *testing.T) {
 	data := make([]byte, MaxObjectBytes+1)
 	if _, _, err := s.Put(context.Background(), 1, "svc", "kind", "name", false, data); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("Put over the limit: err = %v, want ErrTooLarge", err)
+	}
+}
+
+func TestDirPutRecreatesDirectoryRemovedBySweep(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	fired := false
+	s.(*dirStore).beforeCreateTemp = func(parent string) {
+		if !fired {
+			fired = true
+			// Stands in for the sweep removing the just-created, still empty directory.
+			if err := os.Remove(parent); err != nil {
+				t.Fatalf("remove %s: %v", parent, err)
+			}
+		}
+	}
+
+	data := []byte("body after a sweep")
+	key, sum, err := s.Put(ctx, 9, "svc", "kind", "name", false, data)
+	if err != nil {
+		t.Fatalf("Put after the sweep removed its directory: %v", err)
+	}
+	if !fired {
+		t.Fatal("the hook did not run, so the race was not reproduced")
+	}
+	got, err := s.Get(ctx, key, sum)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Errorf("Get = %q, %v; want the stored body", got, err)
 	}
 }

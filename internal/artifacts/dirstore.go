@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -28,6 +29,10 @@ type dirStore struct {
 	// beforeRename runs after a copy is written and synced, before it is renamed
 	// into place. Tests use it to simulate a crash; it is nil in production.
 	beforeRename func(tmpPath string) error
+
+	// beforeCreateTemp runs before the temporary file is created in dir. Tests use
+	// it to stand in for a sweep that removes the directory; it is nil in production.
+	beforeCreateTemp func(dir string)
 }
 
 // NewDir stores encrypted copies as files under dir, which must be absolute
@@ -71,10 +76,27 @@ func (s *dirStore) Put(ctx context.Context, runID int64, service, kind, name str
 	return key, hex.EncodeToString(sum[:]), nil
 }
 
+// createTemp creates the temporary file in parent. A sweep can remove the
+// just-created, still empty directory between MkdirAll and here, so a missing
+// directory is created once more before giving up.
+func (s *dirStore) createTemp(parent string) (*os.File, error) {
+	if s.beforeCreateTemp != nil {
+		s.beforeCreateTemp(parent)
+	}
+	tmp, err := os.CreateTemp(parent, ".tmp-*")
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return nil, err
+		}
+		return os.CreateTemp(parent, ".tmp-*")
+	}
+	return tmp, err
+}
+
 // writeAtomic writes sealed to a temporary file in parent and renames it to
 // target. The temporary file is removed on any failure.
 func (s *dirStore) writeAtomic(parent, target string, sealed []byte) error {
-	tmp, err := os.CreateTemp(parent, ".tmp-*")
+	tmp, err := s.createTemp(parent)
 	if err != nil {
 		return err
 	}

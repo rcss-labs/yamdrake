@@ -1,6 +1,183 @@
-import type { RunDetail } from '../../api/types'
+import type { Check, ConfigItem, Plan, PlanService, RunDetail } from '../../api/types'
+import { Card, DataTable, Loading, Note, Tag, type DataColumn } from '../../ui'
+import { failedChecks, fallbackItems } from './planModel'
+import { useRunPlan } from './queries'
+import './plan-panel.css'
 
-// Placeholder: Task 5 of Plan 8b fills this in (it fetches with useRunPlan).
+const OPEN_STATES: RunDetail['state'][] = ['planned', 'waiting_approval']
+
+function plural(count: number, one: string, many: string) {
+  return `${count} ${count === 1 ? one : many}`
+}
+
+function summaryLine(plan: Plan) {
+  const changing = plan.services.flatMap((service) => service.config).filter((item) => item.change !== 'unchanged').length
+  const services = plural(plan.services.length, 'service', 'services')
+  if (changing === 0) return `Plan: ${services}, no config files change`
+  return `Plan: ${services}, ${changing} ${changing === 1 ? 'config file changes' : 'config files change'}`
+}
+
+function joinNames(names: string[]) {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? '')
+}
+
+function CheckList({ checks }: { checks: Check[] }) {
+  return (
+    <ul className="plan-checks">
+      {checks.map((check) => (
+        <li key={`${check.name}/${check.service}`}>
+          <strong>{check.name}</strong> for <span className="plan-mono">{check.service}</span>: {check.detail}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function KeyList({ label, keys }: { label: string; keys: string[] }) {
+  if (keys.length === 0) return null
+  return (
+    <div className="plan-keys">
+      <span className="plan-keys-label">{label}</span>
+      {keys.map((key) => (
+        <Tag key={key} className="plan-mono">
+          {key}
+        </Tag>
+      ))}
+    </div>
+  )
+}
+
+function ConfigEntry({ item }: { item: ConfigItem }) {
+  const keys = item.kind === 'env' && item.change === 'changed' ? item.keys : null
+  return (
+    <li className="plan-config-item">
+      <span className="plan-config-head">
+        <span className="plan-mono">{item.name}</span>
+        <Tag data-change={item.change}>{item.change}</Tag>
+      </span>
+      {keys && (
+        <>
+          <KeyList label="Added" keys={keys.added} />
+          <KeyList label="Removed" keys={keys.removed} />
+          <KeyList label="Changed" keys={keys.changed} />
+        </>
+      )}
+      {item.not_restored && <Note tone="warning">{item.not_restored}</Note>}
+    </li>
+  )
+}
+
+function columnsFor(restore: boolean): DataColumn<PlanService>[] {
+  return [
+    { key: 'service', header: 'Service', render: (service) => <span className="plan-mono">{service.name}</span> },
+    {
+      key: 'from',
+      header: restore ? 'Now' : 'From',
+      render: (service) =>
+        !service.previous_version ? (
+          <span className="plan-old">unknown</span>
+        ) : service.previous_version === service.version ? (
+          <span className="plan-old">unchanged</span>
+        ) : (
+          <span className="plan-old plan-mono">{service.previous_version}</span>
+        ),
+    },
+    {
+      key: 'to',
+      header: restore ? 'Restored to' : 'To',
+      render: (service) => <span className="plan-mono">{service.version}</span>,
+    },
+    {
+      key: 'task',
+      header: 'Task definition',
+      render: (service) => (
+        <span className="plan-mono">
+          {service.previous_task_definition}
+          {service.target_task_definition && <> {'→'} {service.target_task_definition}</>}
+        </span>
+      ),
+    },
+    {
+      key: 'config',
+      header: 'Config',
+      render: (service) =>
+        service.config.length === 0 ? (
+          <span className="plan-old">none</span>
+        ) : (
+          <ul className="plan-config">
+            {service.config.map((item) => (
+              <ConfigEntry key={`${item.kind}/${item.name}`} item={item} />
+            ))}
+          </ul>
+        ),
+    },
+  ]
+}
+
 export function PlanPanel({ run }: { run: RunDetail }) {
-  return <p>Plan of run #{run.id}</p>
+  const { data: plan, error, isPending } = useRunPlan(run.id)
+
+  if (isPending || (error && error.status === 404)) {
+    return (
+      <Card>
+        <h2 className="plan-title">Plan</h2>
+        {isPending ? <Loading /> : <p className="plan-old">Loading plan. It appears once the run has been planned.</p>}
+      </Card>
+    )
+  }
+  if (error || !plan) {
+    return (
+      <Card>
+        <h2 className="plan-title">Plan</h2>
+        <Note tone="error">The plan could not be loaded: {error?.message}</Note>
+      </Card>
+    )
+  }
+
+  const restore = run.kind === 'restore' || plan.restore_of !== undefined
+  const failed = failedChecks(plan)
+  const fallbacks = fallbackItems(plan)
+  const fallbackServices = [...new Set(fallbacks.map(({ service }) => service.name))]
+  const unverified = plan.checks.filter((check) => check.status === 'not_verified')
+
+  return (
+    <Card className="plan-panel">
+      <details open={OPEN_STATES.includes(run.state)}>
+        <summary>
+          <span className="plan-title">Plan</span>
+          <span className="plan-summary">{summaryLine(plan)}</span>
+        </summary>
+        <div className="plan-body">
+          {failed.length > 0 && (
+            <Note tone="error">
+              <p>
+                <strong>This run cannot start.</strong> {plural(failed.length, 'check failed', 'checks failed')}.
+              </p>
+              <CheckList checks={failed} />
+            </Note>
+          )}
+          {fallbacks.length > 0 && (
+            <Note tone="warning">
+              Env files for {joinNames(fallbackServices)} come from branch {fallbacks[0]!.item.branch ?? 'dev'} because branch v
+              {fallbacks[0]!.service.version} does not exist
+            </Note>
+          )}
+          {unverified.length > 0 && (
+            <Note tone="info">
+              {plural(unverified.length, 'check', 'checks')} could not be verified:{' '}
+              {unverified.map((check) => `${check.name} for ${check.service}`).join(', ')}.
+            </Note>
+          )}
+          <DataTable
+            label="Plan"
+            columns={columnsFor(restore)}
+            rows={plan.services}
+            rowKey={(service) => service.name}
+            empty={<p className="plan-old">The plan changes no services.</p>}
+            minWidth={640}
+          />
+        </div>
+      </details>
+    </Card>
+  )
 }

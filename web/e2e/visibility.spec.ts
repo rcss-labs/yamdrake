@@ -160,11 +160,11 @@ test('the overview, versions, service, queue and health screens tell the truth a
   stopRunner()
   await expect
     .poll(async () => ((await (await page.request.get(`${baseURL}/api/v1/system/health`)).json()) as { problems: string[] }).problems, {
-      timeout: 30_000,
+      timeout: 60_000,
       intervals: [1000],
     })
-    .toContain('No runner has reported for 5 seconds.')
+    .toContain('No runner has reported for 20 seconds.')
   await page.goto(`${baseURL}/admin/health`)
-  await expect(page.getByText('No runner has reported for 5 seconds.').first()).toBeVisible()
+  await expect(page.getByText('No runner has reported for 20 seconds.').first()).toBeVisible()
   await shots(page, 'health')
 })

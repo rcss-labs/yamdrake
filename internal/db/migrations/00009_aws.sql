@@ -3,8 +3,8 @@
 -- secret: discovery (read-only, used by the orchestrator) and deploy (used by
 -- the runner). A secret access key is stored only as ciphertext, encrypted
 -- under the purpose "aws-discovery" or "aws-deploy"; the access key id and role
--- ARN are not secret. The version number skips 00006, which belongs to another
--- change: gaps are fine.
+-- ARN are not secret. It is numbered 00009 because it was renumbered to follow
+-- 00008 (governance) when the branches were merged.
 CREATE TABLE aws_accounts (
     id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name       text        NOT NULL UNIQUE CHECK (name <> ''),

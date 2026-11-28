@@ -300,6 +300,16 @@ func (h *harness) setLeg(legID int64, state string) {
 	}
 }
 
+// failRevalidateWithDrift fails a revalidate leg the way the runner does when
+// the targets changed since planning.
+func (h *harness) failRevalidateWithDrift(legID int64) {
+	h.t.Helper()
+	h.setLeg(legID, "failed")
+	if _, err := h.pool.Exec(context.Background(), `UPDATE legs SET failure_short = $2 WHERE id = $1`, legID, RevalidateDriftReason); err != nil {
+		h.t.Fatalf("set the failure reason of leg %d: %v", legID, err)
+	}
+}
+
 // resolved settles the run's resolve leg as succeeded with a plan result.
 func (h *harness) resolved(runID int64) {
 	h.t.Helper()

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rcss-labs/yamdrake/internal/manifest"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -212,21 +213,19 @@ func TestResolveReturnsManifestListingTheSelection(t *testing.T) {
 	if out.State != "succeeded" {
 		t.Fatalf("outcome = %+v", out)
 	}
-	var manifest struct {
-		Services []struct {
-			Group, Service, Version string
-			Name                    string `json:"name"`
-			PreviousTaskDefinition  string `json:"previous_task_definition"`
-		}
-	}
-	if err := json.Unmarshal(out.Result, &manifest); err != nil {
+	var plan manifest.Manifest
+	if err := json.Unmarshal(out.Result, &plan); err != nil {
 		t.Fatalf("Result %s is not JSON: %v", out.Result, err)
 	}
+	// The engine takes only a plan that is this run's own, with its identity.
+	if plan.RunID != 3 || plan.ID == "" || plan.ID != manifest.Identity(plan) {
+		t.Errorf("manifest run %d, id %q: want run 3 and its own identity", plan.RunID, plan.ID)
+	}
 	got := map[string]string{}
-	for _, s := range manifest.Services {
-		got[s.Service] = s.Version
-		if s.Name != s.Service || s.PreviousTaskDefinition == "" {
-			t.Errorf("service %s is named %q with previous task definition %q, want the real manifest's name and a previous task definition", s.Service, s.Name, s.PreviousTaskDefinition)
+	for _, s := range plan.Services {
+		got[s.Name] = s.Version
+		if s.PreviousTaskDefinition == "" {
+			t.Errorf("service %s has no previous task definition, so the service page could offer no restore", s.Name)
 		}
 	}
 	if len(got) != 2 || got["billing"] != "1.2.3" || got["search"] != "1.2.4" {

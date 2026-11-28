@@ -373,6 +373,16 @@ func (p *parser) text(n *yaml.Node, context string) string {
 	return n.Value
 }
 
+// configName is a config item's name. It becomes part of the key of the stored
+// copy, so it must be one path segment.
+func (p *parser) configName(n *yaml.Node, context string) string {
+	value := p.text(n, context)
+	if strings.Contains(value, "/") {
+		p.add(n.Line, "%s %q must not contain \"/\"", context, value)
+	}
+	return value
+}
+
 func (p *parser) name(n *yaml.Node, context string) string {
 	value := p.text(n, context)
 	if value != "" && !namePattern.MatchString(value) {
@@ -503,7 +513,7 @@ func (p *parser) serviceEnv(n *yaml.Node) ServiceEnv {
 	for _, item := range p.optionalSequence(fields["env_files"], "env_files") {
 		itemFields := p.fields(item, "env file", envFileFields...)
 		file := EnvFile{Line: item.Line}
-		file.Name = p.text(p.require(itemFields, item, "name"), "env file name")
+		file.Name = p.configName(p.require(itemFields, item, "name"), "env file name")
 		file.Source = p.sourceEnvPath(p.require(itemFields, item, "source_env_path"))
 		file.Destination = p.s3Location(p.require(itemFields, item, "destination_env_path"), "destination_env_path")
 		env.EnvFiles = append(env.EnvFiles, file)
@@ -511,7 +521,7 @@ func (p *parser) serviceEnv(n *yaml.Node) ServiceEnv {
 	for _, item := range p.optionalSequence(fields["tomls"], "tomls") {
 		itemFields := p.fields(item, "toml", tomlFields...)
 		toml := Toml{Line: item.Line}
-		toml.Name = p.text(p.require(itemFields, item, "name"), "toml name")
+		toml.Name = p.configName(p.require(itemFields, item, "name"), "toml name")
 		toml.Source = p.s3Location(p.require(itemFields, item, "source_toml_path"), "source_toml_path")
 		toml.Destination = p.s3Location(p.require(itemFields, item, "destination_toml_path"), "destination_toml_path")
 		env.Tomls = append(env.Tomls, toml)

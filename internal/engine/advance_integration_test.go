@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -534,7 +535,7 @@ func TestRevalidateFailureInvalidatesAndReleasesLocks(t *testing.T) {
 	if len(h.locks(run.ID)) == 0 {
 		t.Fatalf("running run holds no locks")
 	}
-	h.setLeg(h.legByKind(run.ID, "revalidate").ID, "failed")
+	h.failRevalidateWithDrift(h.legByKind(run.ID, "revalidate").ID)
 	h.advance(run.ID)
 	invalid := h.expectState(run.ID, "invalidated")
 	if invalid.EndReason == "" || invalid.WaitReason != "" {
@@ -609,7 +610,11 @@ func TestTwoAdvancersNeverQueueALegTwice(t *testing.T) {
 					seen[l.ID] = *l.QueuedAt
 				}
 				if l.State == "queued" {
-					_, err := h.pool.Exec(ctx, `UPDATE legs SET state = 'succeeded', result = '{"ok":true}'::jsonb, finished_at = now() WHERE id = $1 AND state = 'queued'`, l.ID)
+					result := []byte(`{"ok":true}`)
+					if l.Kind == "resolve" { // the plan of this run
+						result, _ = json.Marshal(sampleManifest(run.ID))
+					}
+					_, err := h.pool.Exec(ctx, `UPDATE legs SET state = 'succeeded', result = $2::jsonb, finished_at = now() WHERE id = $1 AND state = 'queued'`, l.ID, result)
 					if err != nil {
 						report("settle leg: %v", err)
 					}

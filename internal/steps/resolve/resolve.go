@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
@@ -85,6 +86,9 @@ type Deps struct {
 	Options awsx.Options
 	// Parallel bounds how many services are resolved at once. Default 8.
 	Parallel int
+	// RetryBase is the first wait before revalidate repeats a transient AWS
+	// call; each retry doubles it. Default 500 ms.
+	RetryBase time.Duration
 }
 
 type executor struct{ d Deps }
@@ -272,13 +276,21 @@ func (r *resolution) clientsFor(ctx context.Context, region string) (Clients, er
 	}
 	r.mu.Unlock()
 	entry.once.Do(func() {
-		cfg, err := r.x.d.AWS(ctx, r.run.AWSAccount, region, r.session)
+		callCtx, cancel := context.WithTimeout(ctx, CallTimeout)
+		defer cancel()
+		cfg, err := r.x.d.AWS(callCtx, r.run.AWSAccount, region, r.session)
+		if err == nil {
+			clients := r.x.d.Clients(cfg)
+			// A credential of another account would read that account's services.
+			if err = CheckCallerAccount(callCtx, clients, r.run.AWSAccount); err == nil {
+				entry.c = clients
+			}
+		}
 		if err != nil {
 			entry.err = err
 			r.env.Log("error", "Credentials for account "+r.run.AWSAccount+" in "+region+": "+ErrorDetail("sign-in", err))
 			return
 		}
-		entry.c = r.x.d.Clients(cfg)
 		r.env.Log("info", "Credentials for account "+r.run.AWSAccount+" in "+region+": ok.")
 	})
 	return entry.c, entry.err
@@ -360,8 +372,11 @@ func (s *serviceRun) logf(level, format string, args ...any) {
 }
 
 // call logs an AWS or GitHub call with its outcome and returns its error.
-func (s *serviceRun) call(operation, subject string, fn func() error) error {
-	err := fn()
+// The call runs under CallTimeout, derived from the leg's context.
+func (s *serviceRun) call(ctx context.Context, operation, subject string, fn func(ctx context.Context) error) error {
+	callCtx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+	err := fn(callCtx)
 	if err != nil {
 		s.logf("error", "%s %s: %s", operation, subject, ErrorDetail(operation, err))
 		return err
@@ -390,7 +405,7 @@ func (s *serviceRun) checkService(ctx context.Context) {
 	}
 
 	var described *ecs.DescribeServicesOutput
-	err = s.call("ecs:DescribeServices", ref.Service, func() (callErr error) {
+	err = s.call(ctx, "ecs:DescribeServices", ref.Service, func(ctx context.Context) (callErr error) {
 		described, callErr = clients.ECS.DescribeServices(ctx, &ecs.DescribeServicesInput{
 			Cluster: aws.String(ref.Cluster), Services: []string{ref.Service},
 		})
@@ -400,15 +415,32 @@ func (s *serviceRun) checkService(ctx context.Context) {
 		s.add(&s.core, checkServiceExists, "failed", ErrorDetail("ecs:DescribeServices", err))
 		return
 	}
-	var found *ecstypes.Service
+	// Only a service of the environment's account and region counts; a name
+	// alone never matches. ECS answers with the service asked for, so when
+	// exactly one in-scope service comes back it is that one.
+	var candidates []*ecstypes.Service
+	var outOfScope []string
 	for i := range described.Services {
-		if aws.ToString(described.Services[i].ServiceArn) == s.t.env.ECSService || aws.ToString(described.Services[i].ServiceName) == ref.Service {
-			found = &described.Services[i]
+		candidate := &described.Services[i]
+		if problem := ARNScopeProblem(aws.ToString(candidate.ServiceArn), s.r.run.AWSAccount, ref.Region); problem != "" {
+			outOfScope = append(outOfScope, problem)
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	var found *ecstypes.Service
+	for _, candidate := range candidates {
+		if aws.ToString(candidate.ServiceArn) == s.t.env.ECSService || aws.ToString(candidate.ServiceName) == ref.Service {
+			found = candidate
 			break
 		}
 	}
-	if found == nil && len(described.Services) == 1 {
-		found = &described.Services[0]
+	if found == nil && len(candidates) == 1 && len(outOfScope) == 0 {
+		found = candidates[0]
+	}
+	if found == nil && len(outOfScope) > 0 {
+		s.add(&s.core, checkServiceExists, "failed", fmt.Sprintf("service %s in cluster %s was refused: %s", ref.Service, ref.Cluster, outOfScope[0]))
+		return
 	}
 	if found == nil {
 		reason := "not found"
@@ -429,7 +461,7 @@ func (s *serviceRun) checkService(ctx context.Context) {
 	}
 
 	var td *ecs.DescribeTaskDefinitionOutput
-	err = s.call("ecs:DescribeTaskDefinition", taskDefinition, func() (callErr error) {
+	err = s.call(ctx, "ecs:DescribeTaskDefinition", taskDefinition, func(ctx context.Context) (callErr error) {
 		td, callErr = clients.ECS.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{
 			TaskDefinition: aws.String(taskDefinition), Include: []ecstypes.TaskDefinitionField{ecstypes.TaskDefinitionFieldTags},
 		})
@@ -506,7 +538,7 @@ func (s *serviceRun) checkImage(ctx context.Context) {
 		return
 	}
 	var out *ecr.DescribeImagesOutput
-	err = s.call("ecr:DescribeImages", ref.Name+":"+s.t.version, func() (callErr error) {
+	err = s.call(ctx, "ecr:DescribeImages", ref.Name+":"+s.t.version, func(ctx context.Context) (callErr error) {
 		out, callErr = clients.ECR.DescribeImages(ctx, &ecr.DescribeImagesInput{
 			RegistryId: aws.String(ref.Account), RepositoryName: aws.String(ref.Name),
 			ImageIds: []ecrtypes.ImageIdentifier{{ImageTag: aws.String(s.t.version)}},
@@ -556,7 +588,7 @@ func (f fileFact) describe() string {
 }
 
 func (s *serviceRun) envFile(ctx context.Context, f spec.EnvFile) {
-	item := manifest.ConfigItem{Kind: "env", Name: f.Name, Source: f.Source, Destination: f.Destination}
+	item := manifest.ConfigItem{Kind: "env", Name: f.Name, Source: f.Source, Destination: f.Destination, Change: "unknown"}
 	name := checkConfigSource + " " + f.Name
 	content, detail := s.readEnvSource(ctx, f, &item)
 	if detail != "" {
@@ -591,7 +623,7 @@ func (s *serviceRun) readEnvSource(ctx context.Context, f spec.EnvFile, item *ma
 
 	versionBranch := BranchFor(s.t.version)
 	var exists bool
-	if err := s.call("github:BranchExists", repo+"@"+versionBranch, func() (callErr error) {
+	if err := s.call(ctx, "github:BranchExists", repo+"@"+versionBranch, func(ctx context.Context) (callErr error) {
 		exists, callErr = source.BranchExists(ctx, repo, versionBranch)
 		return callErr
 	}); err != nil {
@@ -607,7 +639,7 @@ func (s *serviceRun) readEnvSource(ctx context.Context, f spec.EnvFile, item *ma
 	item.Branch, item.Fallback = branch, fallback
 
 	var commit string
-	if err := s.call("github:HeadCommit", repo+"@"+branch, func() (callErr error) {
+	if err := s.call(ctx, "github:HeadCommit", repo+"@"+branch, func(ctx context.Context) (callErr error) {
 		commit, callErr = source.HeadCommit(ctx, repo, branch)
 		return callErr
 	}); err != nil {
@@ -616,7 +648,7 @@ func (s *serviceRun) readEnvSource(ctx context.Context, f spec.EnvFile, item *ma
 	item.Commit = commit
 
 	var data []byte
-	if err := s.call("github:ReadFile", fmt.Sprintf("%s %s@%s", f.Name, repo, commit), func() (callErr error) {
+	if err := s.call(ctx, "github:ReadFile", fmt.Sprintf("%s %s@%s", f.Name, repo, commit), func(ctx context.Context) (callErr error) {
 		data, callErr = source.ReadFile(ctx, repo, commit, path)
 		return callErr
 	}); err != nil {
@@ -642,7 +674,7 @@ func githubDetail(err error) string {
 }
 
 func (s *serviceRun) toml(ctx context.Context, f spec.Toml) {
-	item := manifest.ConfigItem{Kind: "toml", Name: f.Name, Source: f.Source, Destination: f.Destination}
+	item := manifest.ConfigItem{Kind: "toml", Name: f.Name, Source: f.Source, Destination: f.Destination, Change: "unknown"}
 	name := checkConfigSource + " " + f.Name
 	var content fileFact
 	ref, err := awsx.ParseS3(f.Source)
@@ -693,7 +725,7 @@ func (s *serviceRun) put(ctx context.Context, item *manifest.ConfigItem, previou
 	if previous {
 		label = item.Name + " previous copy"
 	}
-	err := s.call("artifacts:Put", label, func() (callErr error) {
+	err := s.call(ctx, "artifacts:Put", label, func(ctx context.Context) (callErr error) {
 		key, sum, callErr = s.r.x.d.Artifacts.Put(ctx, s.r.run.ID, s.t.name, item.Kind, item.Name, previous, content.data)
 		return callErr
 	})
@@ -766,28 +798,33 @@ func (s *serviceRun) getObject(ctx context.Context, ref awsx.S3Ref, label string
 	if err != nil {
 		return nil, "", false, errors.New(ErrorDetail("sign-in", err))
 	}
-	var out *s3.GetObjectOutput
-	callErr := s.call("s3:GetObject", fmt.Sprintf("s3://%s/%s (%s)", ref.Bucket, ref.Key, label), func() (err error) {
-		out, err = clients.S3.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(ref.Bucket), Key: aws.String(ref.Key)})
+	// The body is read inside the call: its context must outlive the read.
+	found = true
+	var readErr error
+	callErr := s.call(ctx, "s3:GetObject", fmt.Sprintf("s3://%s/%s (%s)", ref.Bucket, ref.Key, label), func(ctx context.Context) error {
+		out, err := clients.S3.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(ref.Bucket), Key: aws.String(ref.Key)})
 		if isMissing(err) {
-			err = nil
-			out = nil
+			found = false
+			return nil
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		defer func() { _ = out.Body.Close() }()
+		versionID = aws.ToString(out.VersionId)
+		data, readErr = readLimited(out.Body)
+		return nil
 	})
-	if callErr != nil {
+	switch {
+	case callErr != nil:
 		return nil, "", false, errors.New(ErrorDetail("s3:GetObject", callErr))
-	}
-	if out == nil {
+	case !found:
 		s.logf("info", "s3:GetObject %s: the object does not exist", label)
 		return nil, "", false, nil
+	case readErr != nil:
+		return nil, "", false, readErr
 	}
-	defer func() { _ = out.Body.Close() }()
-	data, err = readLimited(out.Body)
-	if err != nil {
-		return nil, "", false, err
-	}
-	return data, aws.ToString(out.VersionId), true, nil
+	return data, versionID, true, nil
 }
 
 func isMissing(err error) bool {

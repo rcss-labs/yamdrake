@@ -168,6 +168,29 @@ func TestCreateAccountValidatesInputAndRejectsDuplicates(t *testing.T) {
 	}
 }
 
+func TestSavingADeployRoleFromAnotherAccountIsRefused(t *testing.T) {
+	h := newHarness(t)
+	for _, which := range []string{"discovery", "deploy"} {
+		body := awsRoleBody("wrong-"+which, "111111111111")
+		body[which] = map[string]any{"method": "role", "role_arn": "arn:aws:iam::999999999999:role/yumdrake"}
+		code, got := h.do("POST", "/api/v1/admin/aws-accounts", body)
+		if code != http.StatusUnprocessableEntity || errorCode(t, got) != "invalid" {
+			t.Fatalf("%s role of another account: POST = %d %v, want 422 invalid", which, code, got)
+		}
+		problems, _ := got["error"].(map[string]any)["problems"].([]any)
+		first, _ := problems[0].(map[string]any)
+		message, _ := first["message"].(string)
+		if len(problems) != 1 || first["file"] != which+".role_arn" || !strings.Contains(message, "999999999999") || !strings.Contains(message, "111111111111") {
+			t.Errorf("%s problems = %v, want one problem on %s.role_arn naming both accounts", which, problems, which)
+		}
+	}
+	if n := h.auditCount("aws_account.create"); n != 0 {
+		t.Errorf("refused saves were audited %d times", n)
+	}
+	// A role of the connection's own account is fine.
+	h.mustDo("POST", "/api/v1/admin/aws-accounts", awsRoleBody("right", "111111111111"), http.StatusCreated)
+}
+
 func TestListAccountsNamesTheEnvironmentsUsingEach(t *testing.T) {
 	h := newHarness(t)
 	h.pushInventory("c1")
@@ -228,6 +251,14 @@ func TestTestConnectionFailureReportsACodeNotTheSecret(t *testing.T) {
 	if len(checks) != 1 || checks[0].Kind != "aws" || checks[0].Ref != "123456789012" || checks[0].LastErrorAt == nil ||
 		checks[0].LastErrorCode != result["error_code"] || checks[0].LastOKAt != nil {
 		t.Errorf("connection checks = %+v, want one aws check for 123456789012 failed with %v", checks, result["error_code"])
+	}
+	// The discovery and the deployment credential are reported apart. The
+	// orchestrator never holds deployment credentials, so it can only say what
+	// the runner will check.
+	discovery, _ := result["discovery"].(map[string]any)
+	deploy, _ := result["deploy"].(map[string]any)
+	if discovery["ok"] != false || discovery["error_code"] == "" || deploy["ok"] != true || deploy["message"] == "" {
+		t.Errorf("discovery = %v, deploy = %v, want the discovery failure and a separate deploy result", discovery, deploy)
 	}
 	texts := append([]string{h.logs.String()}, h.bodies...)
 	for _, e := range h.auditEntries() {

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rcss-labs/yamdrake/internal/manifest"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner"
 )
@@ -124,17 +125,6 @@ type selectionEntry struct {
 	Services map[string]string
 }
 
-// manifestService is one service of the fake plan. Besides the original
-// Group, Service and Version fields it carries the names the real manifest
-// uses (name, version, previous_task_definition), so the service page's
-// history and restore source work in demos and browser tests.
-type manifestService struct {
-	Group, Service, Version string
-	Name                    string `json:"name"`
-	LowerVersion            string `json:"version"`
-	PreviousTaskDefinition  string `json:"previous_task_definition"`
-}
-
 func (f *fakes) resolve(ctx context.Context, env runner.Env, task queue.Claimed) queue.Outcome {
 	env.Log("info", "resolving the selection against the inventory snapshot")
 	var selection map[string]selectionEntry
@@ -148,7 +138,7 @@ func (f *fakes) resolve(ctx context.Context, env runner.Env, task queue.Claimed)
 		groups = append(groups, g)
 	}
 	sort.Strings(groups)
-	services := []manifestService{}
+	services := []manifest.Service{}
 	for _, g := range groups {
 		names := make([]string, 0, len(selection[g].Services))
 		for s := range selection[g].Services {
@@ -160,7 +150,8 @@ func (f *fakes) resolve(ctx context.Context, env runner.Env, task queue.Claimed)
 			if version == "" {
 				version = selection[g].Version
 			}
-			services = append(services, manifestService{Group: g, Service: s, Version: version, Name: s, LowerVersion: version,
+			// A previous task definition gives the service page a restore source.
+			services = append(services, manifest.Service{Name: s, Group: g, Version: version, Config: []manifest.ConfigItem{},
 				PreviousTaskDefinition: fmt.Sprintf("arn:aws:ecs:fake:000000000000:task-definition/%s:1", s)})
 			env.Log("info", fmt.Sprintf("selected %s %s in group %s", s, version, g))
 		}
@@ -168,12 +159,18 @@ func (f *fakes) resolve(ctx context.Context, env runner.Env, task queue.Claimed)
 	if !pause(ctx, f.opts.StepTime) {
 		return stopped(env, ctx)
 	}
-	manifest, err := json.Marshal(map[string]any{"fake": true, "services": services})
+	// A real manifest of this run: the engine refuses a plan that is not.
+	plan := manifest.Manifest{
+		RunID: task.Run.ID, Environment: task.Run.Environment, Label: task.Run.Label, AWSAccount: task.Run.AWSAccount,
+		InventoryCommit: task.Run.InventoryCommit, JobCommit: task.Run.JobCommit, Services: services, Checks: []manifest.Check{},
+	}
+	plan.ID = manifest.Identity(plan)
+	encoded, err := json.Marshal(plan)
 	if err != nil {
 		return queue.Outcome{State: "failed", FailureShort: "could not build the manifest", FailureDetail: err.Error()}
 	}
 	env.Log("ok", fmt.Sprintf("resolved %d services", len(services)))
-	return queue.Outcome{State: "succeeded", Result: manifest}
+	return queue.Outcome{State: "succeeded", Result: encoded}
 }
 
 func (f *fakes) revalidate(ctx context.Context, env runner.Env, task queue.Claimed) queue.Outcome {

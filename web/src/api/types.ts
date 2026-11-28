@@ -870,7 +870,8 @@ export interface JobVersions {
 
 // ---- The plan (Plan 5 Tasks 6 and 9, assumed) ---------------------------------------------
 
-export type ConfigChange = 'new' | 'changed' | 'unchanged'
+/** 'unknown': the plan failed before it could tell. */
+export type ConfigChange = 'new' | 'changed' | 'unchanged' | 'unknown'
 
 /** Key names only; a value never travels. */
 export interface KeyDiff {

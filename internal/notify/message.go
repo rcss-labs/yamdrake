@@ -40,8 +40,13 @@ type Event struct {
 type Failure struct{ Service, Step, Short string }
 
 // Text returns the message for e: its wording, a newline, then the run's link.
+// Every value is escaped for Slack (&, < and >), so a job title cannot ping a
+// channel or forge a link; only the run link is built here and left as is.
 func Text(e Event, publicURL string) string {
 	r := e.Run
+	r.Environment, r.Label = slackEscape(r.Environment), slackEscape(r.Label)
+	e.JobTitle, e.Requester = slackEscape(e.JobTitle), slackEscape(e.Requester)
+	e.Actor, e.Versions = slackEscape(e.Actor), slackEscape(e.Versions)
 	var body string
 	switch e.Kind {
 	case KindApprovalRequested:
@@ -78,7 +83,7 @@ func outcome(state string) string {
 	case "needs_reconciliation":
 		return "Needs reconciliation"
 	}
-	return fmt.Sprintf("Ended (%s)", state)
+	return fmt.Sprintf("Ended (%s)", slackEscape(state))
 }
 
 func failureLine(failures []Failure) string {
@@ -89,16 +94,21 @@ func failureLine(failures []Failure) string {
 	parts := make([]string, 0, len(listed))
 	for _, f := range listed {
 		if f.Short == "" {
-			parts = append(parts, f.Service)
+			parts = append(parts, slackEscape(f.Service))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s (%s)", f.Service, truncateRunes(f.Short, maxShortRunes)))
+		parts = append(parts, fmt.Sprintf("%s (%s)", slackEscape(f.Service), slackEscape(truncateRunes(f.Short, maxShortRunes))))
 	}
 	line := "Failed: " + strings.Join(parts, ", ")
 	if more := len(failures) - len(listed); more > 0 {
 		line += fmt.Sprintf(", and %d more", more)
 	}
 	return line
+}
+
+// slackEscape applies Slack's text rules: &, < and > are written as entities.
+func slackEscape(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
 
 func truncateRunes(s string, n int) string {

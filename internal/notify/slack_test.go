@@ -103,9 +103,9 @@ func TestPermanentCodesAreMarkedPermanent(t *testing.T) {
 	}{
 		{"channel_not_found", true},
 		{"not_in_channel", true},
-		{"invalid_auth", true},
-		{"account_inactive", true},
-		{"token_revoked", true},
+		{"invalid_auth", false},
+		{"account_inactive", false},
+		{"token_revoked", false},
 		{"ratelimited", false},
 		{"internal_error", false},
 	}

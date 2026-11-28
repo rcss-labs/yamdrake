@@ -26,6 +26,9 @@ type storedSlack struct {
 	Token []byte    `json:"token"`
 	SetBy int64     `json:"set_by"`
 	SetAt time.Time `json:"set_at"`
+	// InvalidAt is when Slack first refused the token; absent while it works.
+	// Storing a new token writes a fresh document without it.
+	InvalidAt *time.Time `json:"invalid_at,omitempty"`
 }
 
 // SlackStatus says whether a token is stored, never what it is.
@@ -33,6 +36,11 @@ type SlackStatus struct {
 	Configured bool
 	SetAt      *time.Time
 	SetBy      *int64
+	// InvalidSince is when Slack first refused the stored token (nil while it
+	// works or is unset). Sending is paused until a new token is stored.
+	InvalidSince *time.Time
+	// ciphertext identifies the stored token, to guard MarkSlackTokenInvalid.
+	ciphertext []byte
 }
 
 // SaveSlackToken encrypts and stores the bot token, replacing any earlier
@@ -51,6 +59,31 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, sla
 		return fmt.Errorf("save slack token: %w", err)
 	}
 	return nil
+}
+
+// MarkSlackTokenInvalid records that Slack refused the stored token, at the
+// given time. It only acts when the stored token is still the one that was
+// refused (status is what the sender read before posting), so a token an admin
+// set in the meantime is not marked. It reports whether it changed anything.
+func MarkSlackTokenInvalid(ctx context.Context, db store.DBTX, refused SlackStatus, at time.Time) (bool, error) {
+	if !refused.Configured || len(refused.ciphertext) == 0 {
+		return false, nil
+	}
+	stamp, err := json.Marshal(at.UTC())
+	if err != nil {
+		return false, fmt.Errorf("mark slack token invalid: %w", err)
+	}
+	guard, err := json.Marshal(refused.ciphertext)
+	if err != nil {
+		return false, fmt.Errorf("mark slack token invalid: %w", err)
+	}
+	tag, err := db.Exec(ctx, `UPDATE instance_settings
+SET value = value || jsonb_build_object('invalid_at', $2::jsonb), updated_at = now()
+WHERE key = $1 AND value->'token' = $3::jsonb AND NOT value ? 'invalid_at'`, slackSettingsKey, string(stamp), string(guard))
+	if err != nil {
+		return false, fmt.Errorf("mark slack token invalid: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func loadStoredSlack(ctx context.Context, db store.DBTX) (storedSlack, bool, error) {
@@ -76,7 +109,7 @@ func LoadSlackStatus(ctx context.Context, db store.DBTX) (SlackStatus, error) {
 		return SlackStatus{}, err
 	}
 	at, by := doc.SetAt, doc.SetBy
-	return SlackStatus{Configured: true, SetAt: &at, SetBy: &by}, nil
+	return SlackStatus{Configured: true, SetAt: &at, SetBy: &by, InvalidSince: doc.InvalidAt, ciphertext: doc.Token}, nil
 }
 
 // TokenSource returns the Slack bot token, or "" when none is configured.

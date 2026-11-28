@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,6 +33,14 @@ const (
 	// claimPostingBudget is the 2-minute claim lease minus the 10s Slack timeout
 	// and a margin, so a row is never posted after its lease may have run out.
 	claimPostingBudget = 90 * time.Second
+	// defaultRateLimitWait is how long a 429 without a usable Retry-After pauses
+	// sending; maxRateLimitWait caps what Slack asks for.
+	defaultRateLimitWait = 30 * time.Second
+	maxRateLimitWait     = 15 * time.Minute
+	// maxPendingAge is how long a message may wait before it is given up on.
+	maxPendingAge = 24 * time.Hour
+	// expiredReason is the error recorded on a message that waited too long.
+	expiredReason = "expired while Slack was unavailable"
 )
 
 // Sender delivers the notification outbox to Slack.
@@ -41,6 +50,9 @@ type Sender struct {
 	tokens TokenSource
 	now    func() time.Time
 	log    *slog.Logger
+
+	mu          sync.Mutex
+	pausedUntil time.Time // set by a 429: no round starts before it
 }
 
 // NewSender builds a sender over pool. A nil now means time.Now; a nil log discards.
@@ -88,13 +100,39 @@ func backoff(n int) time.Duration {
 // are left that are due. Rows of one run go out in order (the claim never
 // hands out a message while an earlier one of its run is pending).
 //
+// A 429 ends the round at once, uses no attempt and holds this sender back for
+// the Retry-After seconds (30 when missing, at most 15 minutes). A token Slack
+// refuses (invalid_auth, token_revoked, account_inactive, not_authed) stops
+// sending too: the token is recorded as invalid, every message stays pending
+// with no attempt used, and nothing is posted until a new token is stored.
+// Messages pending for more than 24 hours are failed on every call.
+//
 // With no Slack token stored, due messages stay pending and wait fifteen
 // minutes without using up an attempt. When ctx ends mid-post, the message is
 // released without an attempt counted and ctx's error is returned.
 func (s *Sender) DeliverDue(ctx context.Context) (sent, retried, failed int, err error) {
+	if expired, err := store.ExpireStaleNotifications(ctx, s.pool, s.now().Add(-maxPendingAge), s.now(), expiredReason); err != nil {
+		return 0, 0, 0, err
+	} else if expired > 0 {
+		s.log.Warn("notifications expired while Slack was unavailable", "count", expired)
+		failed += expired
+	}
+	s.mu.Lock()
+	paused := s.now().Before(s.pausedUntil)
+	s.mu.Unlock()
+	if paused {
+		return sent, retried, failed, nil
+	}
+	status, err := LoadSlackStatus(ctx, s.pool)
+	if err != nil {
+		return sent, retried, failed, err
+	}
+	if status.InvalidSince != nil {
+		return sent, retried, failed, nil // waiting for a new token
+	}
 	token, err := s.tokens(ctx)
 	if err != nil {
-		return 0, 0, 0, err
+		return sent, retried, failed, err
 	}
 	for range maxRoundsPerDelivery {
 		claimedAt := s.now()
@@ -128,6 +166,15 @@ func (s *Sender) DeliverDue(ctx context.Context) (sent, retried, failed int, err
 				retried++
 			case deliveryResultFailed:
 				failed++
+			case deliveryResultRateLimited:
+				s.release(due[i+1:]) // the message itself was deferred
+				return sent, retried, failed, nil
+			case deliveryResultTokenRefused:
+				s.release(due[i+1:])
+				if _, err := MarkSlackTokenInvalid(ctx, s.pool, status, s.now()); err != nil {
+					return sent, retried, failed, err
+				}
+				return sent, retried, failed, nil
 			}
 		}
 		if token == "" {
@@ -143,7 +190,9 @@ const (
 	deliveryResultSent deliveryResult = iota
 	deliveryResultRetry
 	deliveryResultFailed
-	deliveryResultStale // another sender settled the message first
+	deliveryResultStale        // another sender settled the message first
+	deliveryResultRateLimited  // Slack asked for a pause; the round ends
+	deliveryResultTokenRefused // Slack refused the token; the round ends
 )
 
 // deliver posts one claimed message and records the result. It returns a
@@ -169,6 +218,25 @@ func (s *Sender) deliver(ctx context.Context, token string, n store.Notification
 	}
 
 	code, permanent, retryAfter := classify(postErr)
+	var slackErr *SlackError
+	if errors.As(postErr, &slackErr) {
+		switch {
+		case slackErr.Status == http.StatusTooManyRequests || code == "ratelimited":
+			wait := retryAfter
+			if wait <= 0 {
+				wait = defaultRateLimitWait
+			}
+			wait = min(wait, maxRateLimitWait)
+			s.mu.Lock()
+			s.pausedUntil = s.now().Add(wait)
+			s.mu.Unlock()
+			s.log.Warn("slack rate limited the sender", "wait", wait.String())
+			return s.record(ctx, n, store.DeferNotification(ctx, s.pool, n.ID, s.now().Add(wait)), deliveryResultRateLimited)
+		case tokenFaultCodes[code]:
+			s.log.Error("slack refused the token; sending is paused until a new token is stored", "error", code)
+			return s.record(ctx, n, store.DeferNotification(ctx, s.pool, n.ID, s.now()), deliveryResultTokenRefused)
+		}
+	}
 	attempt := n.Attempts + 1
 	if permanent || attempt >= maxAttempts {
 		s.log.Warn("notification given up", "id", n.ID, "run_id", n.RunID, "kind", n.Kind, "attempts", attempt, "error", code)

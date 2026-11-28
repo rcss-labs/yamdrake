@@ -93,3 +93,36 @@ func TestLinkHasNoDoubleSlash(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestSlackMarkupInValuesIsEscaped(t *testing.T) {
+	e := baseEvent("finished", "failed")
+	e.JobTitle = "Deploy <!channel> & friends"
+	e.Requester = "<@U123>"
+	e.Run.Environment = "prod<eu>"
+	e.Run.Label = "a&b"
+	e.Versions = "x <!here> 1.0"
+	e.Actor = "<!everyone>"
+	e.Updated, e.Total = 0, 1
+	e.Failures = []Failure{{Service: "api<1>", Step: "deploy", Short: "<!channel> & boom"}}
+
+	got := Text(e, "https://yum.example.com")
+	for _, raw := range []string{"<!channel>", "<@U123>", "<!here>", "<!everyone>", "<eu>", "<1>", "a&b"} {
+		if strings.Contains(got, raw) {
+			t.Errorf("message contains raw %q:\n%s", raw, got)
+		}
+	}
+	for _, want := range []string{`"Deploy &lt;!channel&gt; &amp; friends"`, "prod&lt;eu&gt;", "api&lt;1&gt; (&lt;!channel&gt; &amp; boom)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("message lacks %q:\n%s", want, got)
+		}
+	}
+	if !strings.HasSuffix(got, "\nhttps://yum.example.com/runs/42") {
+		t.Errorf("the run link must stay as built, got:\n%s", got)
+	}
+	for _, kind := range []string{"approval_requested", "approved", "rejected", "started"} {
+		e.Kind = kind
+		if text := Text(e, "https://yum.example.com"); strings.Contains(text, "<!") || strings.Contains(text, "<@") {
+			t.Errorf("%s message contains raw markup:\n%s", kind, text)
+		}
+	}
+}

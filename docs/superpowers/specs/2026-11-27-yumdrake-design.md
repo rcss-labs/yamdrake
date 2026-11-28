@@ -428,8 +428,9 @@ Every permission, freeze, connection, job and folder change, every run request, 
 
 **Freezes**
 
-- An admin can freeze an environment or a label with a reason and an expiry. No run may start executing there while it is frozen. Queued runs wait. Running runs continue.
-- There is no bypass: lifting the freeze is the audited action.
+- A global admin, or a user whose `manage_access` grant has no scope (not limited to a folder, label or environment), can freeze an environment or a label with a reason and an expiry, and lift a freeze. No run may start executing there while it is frozen. Queued runs wait. Running runs continue.
+- Why `manage_access` and not admin only: a freeze is not scoped to one folder, so the permission check has no target and only an unscoped grant passes, and only a global admin can create a grant of `manage_access` (section 9.2). The power therefore stays with whom admins chose, as for releasing locks, without being an admin power: it does not confer the rights `manage_access` is denied above.
+- There is no bypass: lifting the freeze is the audited action, and creating one is audited too.
 
 **Notifications**
 

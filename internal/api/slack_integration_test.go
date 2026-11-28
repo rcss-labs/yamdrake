@@ -78,8 +78,24 @@ func TestSlackSettingsNeverReturnToken(t *testing.T) {
 	if parsed, err := time.Parse(time.RFC3339, at); err != nil || time.Since(parsed) > time.Minute {
 		t.Errorf("set_at = %v, want a recent RFC 3339 time", put["set_at"])
 	}
-	if len(put) != 3 {
-		t.Errorf("PUT answered with keys %v, want exactly token_set, set_at and set_by_name", put)
+	if len(put) != 5 || put["token_invalid"] != false || put["token_invalid_since"] != nil {
+		t.Errorf("PUT answered %v, want exactly token_set, set_at, set_by_name, token_invalid false and token_invalid_since null", put)
+	}
+	refusedAt := time.Now().UTC().Truncate(time.Second)
+	status, err := notify.LoadSlackStatus(ctx, h.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := notify.MarkSlackTokenInvalid(ctx, h.pool, status, refusedAt); err != nil || !changed {
+		t.Fatalf("MarkSlackTokenInvalid = %v, %v", changed, err)
+	}
+	if got := h.mustDo("GET", "/api/v1/admin/slack", nil, http.StatusOK); got["token_invalid"] != true || got["token_invalid_since"] != refusedAt.Format(time.RFC3339) || got["token_set"] != true {
+		t.Errorf("GET after Slack refused the token = %v, want token_invalid true since %v", got, refusedAt)
+	}
+	// Storing a token again clears it; the next assertions compare with that answer.
+	put = h.mustDo("PUT", "/api/v1/admin/slack", map[string]any{"token": slackFakeToken}, http.StatusOK)
+	if put["token_invalid"] != false || put["token_invalid_since"] != nil {
+		t.Errorf("PUT after a refusal = %v, want the token valid again", put)
 	}
 	if again := h.mustDo("GET", "/api/v1/admin/slack", nil, http.StatusOK); again["token_set"] != true || again["set_by_name"] != h.admin.Name || again["set_at"] != put["set_at"] {
 		t.Errorf("GET after PUT = %v, want the same as the PUT answer %v", again, put)
@@ -103,8 +119,8 @@ func TestSlackSettingsNeverReturnToken(t *testing.T) {
 			t.Errorf("audit entry %s holds the token", e.Action)
 		}
 	}
-	if actions := strings.Join(h.auditActions(), ","); !strings.Contains(actions, "slack.set") || strings.Count(actions, "slack.set") != 1 {
-		t.Errorf("audit actions %s, want exactly one slack.set (the refused PUTs write none)", actions)
+	if actions := strings.Join(h.auditActions(), ","); !strings.Contains(actions, "slack.set") || strings.Count(actions, "slack.set") != 2 {
+		t.Errorf("audit actions %s, want exactly two slack.set (one per accepted PUT) (the refused PUTs write none)", actions)
 	}
 }
 

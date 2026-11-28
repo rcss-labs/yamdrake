@@ -21,13 +21,19 @@ const (
 	maxSlackResponse = 64 << 10
 )
 
+// tokenFaultCodes say the connection's token is unusable, not that the message
+// is bad: sending pauses until a new token is stored.
+var tokenFaultCodes = map[string]bool{
+	"invalid_auth":     true,
+	"token_revoked":    true,
+	"account_inactive": true,
+	"not_authed":       true,
+}
+
 // permanentSlackCodes never succeed on retry without a person changing something.
 var permanentSlackCodes = map[string]bool{
 	"channel_not_found": true,
 	"not_in_channel":    true,
-	"invalid_auth":      true,
-	"account_inactive":  true,
-	"token_revoked":     true,
 }
 
 // slackCodePattern is the shape of a Slack error code. Anything else in the

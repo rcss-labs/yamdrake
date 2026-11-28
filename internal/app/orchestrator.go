@@ -132,11 +132,15 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 }
 
 // notificationStats reports the Slack outbox for /readyz: how many messages
-// are pending and failed and when the oldest pending one was created (null
-// when none is).
+// are pending and failed, when the oldest pending one was created (null when
+// none is) and whether Slack refused the stored token.
 func notificationStats(pool *pgxpool.Pool) func(context.Context) (any, error) {
 	return func(ctx context.Context) (any, error) {
 		pending, failed, oldest, err := store.NotificationStats(ctx, pool)
+		if err != nil {
+			return nil, err
+		}
+		slackStatus, err := notify.LoadSlackStatus(ctx, pool)
 		if err != nil {
 			return nil, err
 		}
@@ -149,7 +153,8 @@ func notificationStats(pool *pgxpool.Pool) func(context.Context) (any, error) {
 			Pending         int        `json:"pending"`
 			Failed          int        `json:"failed"`
 			OldestPendingAt *time.Time `json:"oldest_pending_at"`
-		}{pending, failed, oldestAt}, nil
+			TokenInvalid    bool       `json:"token_invalid"`
+		}{pending, failed, oldestAt, slackStatus.InvalidSince != nil}, nil
 	}
 }
 

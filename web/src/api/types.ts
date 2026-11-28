@@ -995,6 +995,9 @@ export interface SlackSettings {
   token_set: boolean
   set_at: string | null
   set_by_name: string
+  /** True when Slack refused the token: nothing is sent until a new one is stored. */
+  token_invalid?: boolean
+  token_invalid_since?: string | null
 }
 
 export interface SlackTestResult {

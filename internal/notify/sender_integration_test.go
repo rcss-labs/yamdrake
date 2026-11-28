@@ -331,31 +331,6 @@ func TestTransientErrorRetriesWithBackoffThenFails(t *testing.T) {
 	}
 }
 
-func TestRetryAfterLongerThanBackoffWins(t *testing.T) {
-	t.Parallel()
-	f := newSenderFixture(t)
-	run := f.runs.newRun(t)
-	enqueue(t, f.pool, run, "started", f.clock.now())
-	reply := "10"
-	f.slack.set(func(post) (int, string, string) { return 429, reply, `{"ok":false,"error":"ratelimited"}` })
-
-	before := f.clock.now()
-	f.deliver(t)
-	row := rowsOfRun(t, f.pool, run)[0]
-	if want := before.Add(10 * time.Second); !row.NextAttemptAt.Equal(before.Add(time.Minute)) || row.LastError != "ratelimited" {
-		t.Fatalf("short Retry-After: next %v last_error %q, want the 1m backoff (not %v) and ratelimited", row.NextAttemptAt, row.LastError, want)
-	}
-
-	reply = "600"
-	f.clock.advance(time.Minute)
-	before = f.clock.now()
-	f.deliver(t)
-	row = rowsOfRun(t, f.pool, run)[0]
-	if want := before.Add(10 * time.Minute); !row.NextAttemptAt.Equal(want) {
-		t.Fatalf("long Retry-After: next %v, want %v", row.NextAttemptAt, want)
-	}
-}
-
 func TestPermanentErrorFailsAtOnceWithCode(t *testing.T) {
 	t.Parallel()
 	f := newSenderFixture(t)
@@ -702,5 +677,193 @@ func TestSlackTokenSourceDecryptsWhatWasSaved(t *testing.T) {
 	}
 	if strings.Contains(stored, senderToken) {
 		t.Error("the stored document holds the token in the clear")
+	}
+}
+
+// saveStoredToken stores token the way PUT /admin/slack does, so the sender
+// can record that it was refused.
+func (f *senderFixture) saveStoredToken(t *testing.T, token string) {
+	t.Helper()
+	cipher, err := secrets.NewLocal([]byte(strings.Repeat("k", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSlackToken(context.Background(), f.pool, cipher, token, f.runs.userID, f.clock.now()); err != nil {
+		t.Fatalf("SaveSlackToken: %v", err)
+	}
+	f.setToken(token)
+}
+
+func TestRateLimitStopsTheRoundAndWaitsRetryAfter(t *testing.T) {
+	t.Parallel()
+	f := newSenderFixture(t)
+	var runs []int64
+	for range 20 {
+		run := f.runs.newRun(t)
+		runs = append(runs, run)
+		enqueue(t, f.pool, run, "started", f.clock.now())
+	}
+	f.slack.set(func(post) (int, string, string) { return 429, "30", `{"ok":false,"error":"ratelimited"}` })
+
+	f.deliver(t)
+	if got := f.slack.count(); got != 1 {
+		t.Fatalf("%d posts in the round that was rate limited, want exactly 1", got)
+	}
+	for _, run := range runs {
+		if row := rowsOfRun(t, f.pool, run)[0]; row.State != "pending" || row.Attempts != 0 || row.Claimed {
+			t.Fatalf("run %d row %+v, want pending, no attempt used, not claimed", run, row)
+		}
+	}
+
+	f.slack.set(func(post) (int, string, string) { return 200, "", `{"ok":true}` })
+	f.clock.advance(29 * time.Second)
+	f.deliver(t)
+	if got := f.slack.count(); got != 1 {
+		t.Fatalf("%d posts 29s after the 429, want none before Retry-After ends", got)
+	}
+	f.clock.advance(time.Second)
+	if sent, _, _ := f.deliver(t); sent != 20 {
+		t.Fatalf("sent %d after Retry-After, want all 20", sent)
+	}
+}
+
+func TestRateLimitWithoutRetryAfterWaitsThirtySecondsAndIsCapped(t *testing.T) {
+	t.Parallel()
+	f := newSenderFixture(t)
+	run := f.runs.newRun(t)
+	enqueue(t, f.pool, run, "started", f.clock.now())
+	retryAfter := ""
+	f.slack.set(func(post) (int, string, string) { return 429, retryAfter, `{"ok":false,"error":"ratelimited"}` })
+
+	f.deliver(t)
+	f.clock.advance(29 * time.Second)
+	f.deliver(t)
+	if got := f.slack.count(); got != 1 {
+		t.Fatalf("%d posts, want the default 30s wait to hold", got)
+	}
+	f.clock.advance(time.Second)
+	retryAfter = "86400"
+	f.deliver(t)
+	f.clock.advance(15*time.Minute - time.Second)
+	f.deliver(t)
+	if got := f.slack.count(); got != 2 {
+		t.Fatalf("%d posts, want the wait held for just under 15 minutes", got)
+	}
+	f.clock.advance(time.Second)
+	f.deliver(t)
+	if got := f.slack.count(); got != 3 {
+		t.Fatalf("%d posts, want the wait capped at 15 minutes", got)
+	}
+}
+
+func TestRevokedTokenPausesSendingAndKeepsMessagesPending(t *testing.T) {
+	t.Parallel()
+	for _, code := range []string{"invalid_auth", "token_revoked", "account_inactive", "not_authed"} {
+		t.Run(code, func(t *testing.T) {
+			t.Parallel()
+			f := newSenderFixture(t)
+			f.saveStoredToken(t, senderToken)
+			var runs []int64
+			for range 5 {
+				run := f.runs.newRun(t)
+				runs = append(runs, run)
+				enqueue(t, f.pool, run, "started", f.clock.now())
+				enqueue(t, f.pool, run, "finished", f.clock.now())
+			}
+			f.slack.set(func(post) (int, string, string) { return 200, "", `{"ok":false,"error":"` + code + `"}` })
+
+			f.deliver(t)
+			if got := f.slack.count(); got != 1 {
+				t.Fatalf("%d posts with a refused token, want 1 and then a stop", got)
+			}
+			for _, run := range runs {
+				for _, row := range rowsOfRun(t, f.pool, run) {
+					if row.State != "pending" || row.Attempts != 0 || row.Claimed {
+						t.Fatalf("run %d row %+v, want pending, no attempt used, not claimed", run, row)
+					}
+				}
+			}
+			status, err := LoadSlackStatus(context.Background(), f.pool)
+			if err != nil || !status.Configured || status.InvalidSince == nil || !status.InvalidSince.Equal(f.clock.now()) {
+				t.Fatalf("status %+v, %v; want the token recorded as invalid now", status, err)
+			}
+
+			f.clock.advance(2 * time.Hour)
+			f.deliver(t)
+			if got := f.slack.count(); got != 1 {
+				t.Fatalf("%d posts later, want sending to stay paused until a new token is set", got)
+			}
+		})
+	}
+}
+
+func TestSettingANewTokenResumesSending(t *testing.T) {
+	t.Parallel()
+	f := newSenderFixture(t)
+	f.saveStoredToken(t, senderToken)
+	run := f.runs.newRun(t)
+	enqueue(t, f.pool, run, "started", f.clock.now())
+	enqueue(t, f.pool, run, "finished", f.clock.now())
+	f.slack.set(func(p post) (int, string, string) {
+		if p.Token == senderToken {
+			return 200, "", `{"ok":false,"error":"token_revoked"}`
+		}
+		return 200, "", `{"ok":true}`
+	})
+	f.deliver(t)
+	f.clock.advance(time.Minute)
+
+	const newToken = "xoxb-replacement-fake-token" //nolint:gosec // a fake token for tests
+	f.saveStoredToken(t, newToken)
+	status, err := LoadSlackStatus(context.Background(), f.pool)
+	if err != nil || status.InvalidSince != nil {
+		t.Fatalf("status %+v, %v after a new token, want it not invalid", status, err)
+	}
+	if sent, _, _ := f.deliver(t); sent != 2 {
+		t.Fatalf("sent %d with the new token, want both messages", sent)
+	}
+	for _, row := range rowsOfRun(t, f.pool, run) {
+		if row.State != "sent" || row.Attempts != 0 {
+			t.Errorf("row %+v, want sent without any attempt used", row)
+		}
+	}
+}
+
+func TestANewTokenSetWhileAPostWasInFlightIsNotMarkedInvalid(t *testing.T) {
+	t.Parallel()
+	f := newSenderFixture(t)
+	f.saveStoredToken(t, senderToken)
+	run := f.runs.newRun(t)
+	enqueue(t, f.pool, run, "started", f.clock.now())
+	f.slack.set(func(post) (int, string, string) {
+		f.saveStoredToken(t, "xoxb-replacement-fake-token") // an admin sets one while this post is out
+		return 200, "", `{"ok":false,"error":"invalid_auth"}`
+	})
+	f.deliver(t)
+	if status, err := LoadSlackStatus(context.Background(), f.pool); err != nil || status.InvalidSince != nil {
+		t.Fatalf("status %+v, %v; the new token must not be marked invalid by the old one's refusal", status, err)
+	}
+}
+
+func TestMessagesPendingForADayExpire(t *testing.T) {
+	t.Parallel()
+	f := newSenderFixture(t)
+	f.setToken("") // no connection
+	old, fresh := f.runs.newRun(t), f.runs.newRun(t)
+	payload, _ := json.Marshal(map[string]string{"text": "old"})
+	if err := store.EnqueueNotification(context.Background(), f.pool, store.Notification{
+		RunID: old, Kind: "started", Channel: "#deploys", Payload: payload,
+		CreatedAt: f.clock.now().Add(-25 * time.Hour), NextAttemptAt: f.clock.now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	enqueue(t, f.pool, fresh, "started", f.clock.now().Add(-23*time.Hour))
+
+	f.deliver(t)
+	if row := rowsOfRun(t, f.pool, old)[0]; row.State != "failed" || row.LastError != "expired while Slack was unavailable" {
+		t.Errorf("old row %+v, want failed as expired while Slack was unavailable", row)
+	}
+	if row := rowsOfRun(t, f.pool, fresh)[0]; row.State != "pending" {
+		t.Errorf("fresh row %+v, want it still pending", row)
 	}
 }

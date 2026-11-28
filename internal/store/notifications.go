@@ -179,6 +179,21 @@ func DeferNotification(ctx context.Context, db DBTX, id int64, next time.Time) e
 	return nil
 }
 
+// ExpireStaleNotifications gives up on pending messages created before
+// createdBefore (and not being posted right now at now), recording reason as
+// their error, and returns how many it ended. Without it a long Slack outage
+// would leave a backlog that grows without bound.
+func ExpireStaleNotifications(ctx context.Context, db DBTX, createdBefore, now time.Time, reason string) (int, error) {
+	tag, err := db.Exec(ctx,
+		`UPDATE notifications SET state = 'failed', last_error = $3, claimed_until = NULL
+		 WHERE state = 'pending' AND created_at < $1 AND (claimed_until IS NULL OR claimed_until <= $2)`,
+		dbTime(createdBefore), dbTime(now), reason)
+	if err != nil {
+		return 0, fmt.Errorf("expire notifications: %w", mapError(err))
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // NotificationStats is for system health: how many messages are pending and
 // failed, and when the oldest pending one was created (nil when none).
 func NotificationStats(ctx context.Context, db DBTX) (pending, failed int, oldestPending *time.Time, err error) {

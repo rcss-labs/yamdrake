@@ -32,6 +32,7 @@ type readyBody struct {
 		Pending         int        `json:"pending"`
 		Failed          int        `json:"failed"`
 		OldestPendingAt *time.Time `json:"oldest_pending_at"`
+		TokenInvalid    *bool      `json:"token_invalid"`
 	} `json:"notifications"`
 }
 
@@ -168,6 +169,9 @@ func TestOrchestratorDeliversNotificationsAndReportsThem(t *testing.T) {
 		ready = readReady(t, addr)
 		return ready.Notifications != nil
 	})
+	if n := ready.Notifications; n.TokenInvalid == nil || *n.TokenInvalid {
+		t.Fatalf("notifications = %+v, want token_invalid present and false", n)
+	}
 	if n := ready.Notifications; n.Pending != 1 || n.Failed != 0 || n.OldestPendingAt == nil {
 		t.Fatalf("notifications = %+v, want 1 pending, 0 failed and an oldest_pending_at", n)
 	}
@@ -188,4 +192,15 @@ func TestOrchestratorDeliversNotificationsAndReportsThem(t *testing.T) {
 		n := readReady(t, addr).Notifications
 		return n != nil && n.Pending == 0 && n.OldestPendingAt == nil
 	})
+	// A token Slack refused shows on /readyz.
+	status, err := notify.LoadSlackStatus(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := notify.MarkSlackTokenInvalid(ctx, pool, status, time.Now()); err != nil || !changed {
+		t.Fatalf("MarkSlackTokenInvalid = %v, %v", changed, err)
+	}
+	if n := readReady(t, addr).Notifications; n == nil || n.TokenInvalid == nil || !*n.TokenInvalid {
+		t.Errorf("notifications = %+v after the token was refused, want token_invalid true", n)
+	}
 }

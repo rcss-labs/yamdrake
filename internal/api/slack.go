@@ -39,6 +39,10 @@ type slackResponse struct {
 	SetAt    *time.Time `json:"set_at"`
 	// SetByName is who stored the token: their name, else their email; "" when unset.
 	SetByName string `json:"set_by_name"`
+	// TokenInvalid is true when Slack refused the token; nothing is sent until
+	// a new one is stored. TokenInvalidSince is when that was first seen.
+	TokenInvalid      bool       `json:"token_invalid"`
+	TokenInvalidSince *time.Time `json:"token_invalid_since"`
 }
 
 // slackTestResponse is Slack's answer to a test post. Code is Slack's error
@@ -53,7 +57,11 @@ func (s *server) slackView(ctx context.Context) (slackResponse, error) {
 	if err != nil {
 		return slackResponse{}, err
 	}
-	out := slackResponse{TokenSet: status.Configured}
+	out := slackResponse{TokenSet: status.Configured, TokenInvalid: status.InvalidSince != nil}
+	if status.InvalidSince != nil {
+		since := status.InvalidSince.UTC()
+		out.TokenInvalidSince = &since
+	}
 	if status.SetAt != nil {
 		at := status.SetAt.UTC()
 		out.SetAt = &at

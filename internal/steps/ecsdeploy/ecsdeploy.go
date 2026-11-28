@@ -111,6 +111,7 @@ const (
 	updateOp          = "update-service"
 	sessionPrefix     = "yumdrake-runner-run-"
 	lookupRevisions   = 10
+	maxLookupPages    = 20 // 200 newest revisions
 	stoppedTasksShown = 5
 	maxTaskPages      = 10
 )
@@ -237,9 +238,9 @@ func (r *leg) settleTaskDefinition() *queue.Outcome {
 		return r.stopped("failed", "the previous task definition in the manifest is not usable", "")
 	}
 
-	arn, err := r.findTagged(family)
-	if err != nil {
-		return r.lookupFailed(err, r.hasOp(registerOp))
+	arn, out := r.lookupTagged(family, r.hasOp(registerOp))
+	if out != nil {
+		return out
 	}
 	if arn != "" {
 		return r.adopt(arn)
@@ -281,9 +282,9 @@ func (r *leg) settleTaskDefinition() *queue.Outcome {
 	a := r.registerOnce(next, key)
 	if errors.Is(a.err, runner.ErrAmbiguous) {
 		// An earlier attempt intended a registration and never recorded it.
-		arn, err := r.findTagged(family)
-		if err != nil {
-			return r.lookupFailed(err, true)
+		arn, out := r.lookupTagged(family, true)
+		if out != nil {
+			return out
 		}
 		if arn != "" {
 			return r.adopt(arn)
@@ -330,35 +331,67 @@ func (r *leg) lookupFailed(err error, interrupted bool) *queue.Outcome {
 	return r.stopped("failed", code+" on ecs:ListTaskDefinitions", detail)
 }
 
-// findTagged returns the newest of the family's latest revisions that was
-// registered for this run and leg, or "".
+// errLookupTooDeep means the newest maxLookupPages*lookupRevisions revisions
+// held no revision of this leg, and older ones exist that were not looked at.
+var errLookupTooDeep = errors.New("task definition lookup reached its page limit")
+
+// findTagged returns the newest revision of the family that was registered for
+// this run and leg, or "". It reads the revisions newest first, lookupRevisions
+// per page, for at most maxLookupPages pages, and stops at the first match. If
+// the pages run out with more revisions remaining it returns errLookupTooDeep.
 func (r *leg) findTagged(family string) (string, error) {
-	callCtx, cancel := r.callContext()
-	list, err := r.client.ListTaskDefinitions(callCtx, &ecs.ListTaskDefinitionsInput{
-		FamilyPrefix: aws.String(family), Sort: ecstypes.SortOrderDesc, MaxResults: aws.Int32(lookupRevisions),
-	})
-	cancel()
-	if err != nil {
-		return "", err
-	}
 	run, legID := strconv.FormatInt(r.task.Run.ID, 10), strconv.FormatInt(r.task.Leg.ID, 10)
-	for _, arn := range list.TaskDefinitionArns {
+	var token *string
+	for page := 0; page < maxLookupPages; page++ {
 		callCtx, cancel := r.callContext()
-		d, err := r.client.DescribeTaskDefinition(callCtx, &ecs.DescribeTaskDefinitionInput{
-			TaskDefinition: aws.String(arn), Include: []ecstypes.TaskDefinitionField{ecstypes.TaskDefinitionFieldTags},
+		list, err := r.client.ListTaskDefinitions(callCtx, &ecs.ListTaskDefinitionsInput{
+			FamilyPrefix: aws.String(family), Sort: ecstypes.SortOrderDesc, MaxResults: aws.Int32(lookupRevisions), NextToken: token,
 		})
 		cancel()
 		if err != nil {
 			return "", err
 		}
-		if d.TaskDefinition == nil || aws.ToString(d.TaskDefinition.Family) != family {
-			continue
+		for _, arn := range list.TaskDefinitionArns {
+			callCtx, cancel := r.callContext()
+			d, err := r.client.DescribeTaskDefinition(callCtx, &ecs.DescribeTaskDefinitionInput{
+				TaskDefinition: aws.String(arn), Include: []ecstypes.TaskDefinitionField{ecstypes.TaskDefinitionFieldTags},
+			})
+			cancel()
+			if err != nil {
+				return "", err
+			}
+			if d.TaskDefinition == nil || aws.ToString(d.TaskDefinition.Family) != family {
+				continue
+			}
+			if tagValue(d.Tags, TagRun) == run && tagValue(d.Tags, TagLeg) == legID {
+				return arn, nil
+			}
 		}
-		if tagValue(d.Tags, TagRun) == run && tagValue(d.Tags, TagLeg) == legID {
-			return arn, nil
+		if token = list.NextToken; token == nil {
+			return "", nil
 		}
 	}
-	return "", nil
+	return "", errLookupTooDeep
+}
+
+// lookupTagged is findTagged for settleTaskDefinition: a non-nil outcome ends the
+// leg. Running past the page limit ends it unknown when an earlier attempt
+// intended a register (a revision of ours may lie further back); with no
+// register op none can exist, so the revision counts as not found.
+func (r *leg) lookupTagged(family string, interrupted bool) (arn string, out *queue.Outcome) {
+	arn, err := r.findTagged(family)
+	switch {
+	case errors.Is(err, errLookupTooDeep):
+		if interrupted {
+			r.env.Log("error", fmt.Sprintf("No revision of this leg was found among the newest %d.", maxLookupPages*lookupRevisions))
+			return "", r.stopped("unknown", fmt.Sprintf("could not find an interrupted register's revision among the newest %d", maxLookupPages*lookupRevisions),
+				"The family has more recent revisions than the lookup reads.")
+		}
+		return "", nil
+	case err != nil:
+		return "", r.lookupFailed(err, interrupted)
+	}
+	return arn, nil
 }
 
 func tagValue(tags []ecstypes.Tag, key string) string {

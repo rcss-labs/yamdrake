@@ -147,10 +147,20 @@ func (f *fakeECS) ListTaskDefinitions(_ context.Context, in *ecs.ListTaskDefinit
 	if f.listCalls <= f.hideLists {
 		return out, nil
 	}
-	for i := len(f.tds) - 1; i >= 0 && len(out.TaskDefinitionArns) < int(aws.ToInt32(in.MaxResults)); i-- {
+	var matching []string // newest first
+	for i := len(f.tds) - 1; i >= 0; i-- {
 		if strings.HasPrefix(aws.ToString(f.tds[i].td.Family), aws.ToString(in.FamilyPrefix)) {
-			out.TaskDefinitionArns = append(out.TaskDefinitionArns, aws.ToString(f.tds[i].td.TaskDefinitionArn))
+			matching = append(matching, aws.ToString(f.tds[i].td.TaskDefinitionArn))
 		}
+	}
+	start := 0
+	if in.NextToken != nil {
+		start, _ = strconv.Atoi(*in.NextToken) // the token is the index to continue from
+	}
+	end := min(start+int(aws.ToInt32(in.MaxResults)), len(matching))
+	out.TaskDefinitionArns = matching[start:end]
+	if end < len(matching) {
+		out.NextToken = aws.String(strconv.Itoa(end))
 	}
 	return out, nil
 }
@@ -458,6 +468,59 @@ func TestAdoptsTaggedRevisionInsteadOfRegisteringAgain(t *testing.T) {
 	if f.countLogged("adopting "+tdARN(8)+", registered by an earlier attempt") != 1 {
 		t.Errorf("log:\n%s", f.logText())
 	}
+}
+
+func intendedRegister() store.Op {
+	return store.Op{ID: 1, Seq: 1, Name: "register-task-definition", Key: "register-task-definition:77", State: "intended"}
+}
+
+// addUntagged stores n revisions after the newest one, with no tags.
+func (f *fakeECS) addUntagged(n int) {
+	next := int32(len(f.tds)) + 7 // revisions are 7, 8, ... without gaps
+	for i := range n {
+		f.addTD(next+int32(i), nil)
+	}
+}
+
+func TestAdoptsTaggedRevisionBeyondTheFirstPage(t *testing.T) {
+	f := newFixture(t)
+	f.ecs.addTD(8, stamp(runID, legID))
+	f.ecs.addUntagged(25) // other deploys registered after ours
+	f.env.PresetOps = []store.Op{intendedRegister()}
+	out := f.run()
+	f.want(out, "succeeded")
+	if len(f.ecs.registers) != 0 {
+		t.Errorf("registered %d revisions, want 0", len(f.ecs.registers))
+	}
+	if res := f.result(out); !res.Adopted || res.TaskDefinition != tdARN(8) {
+		t.Errorf("result = %+v", res)
+	}
+}
+
+func TestLookupBeyondTheCapWithAnInterruptedRegisterIsUnknown(t *testing.T) {
+	t.Run("an interrupted register may be further back", func(t *testing.T) {
+		f := newFixture(t)
+		f.ecs.addTD(8, stamp(runID, legID))
+		f.ecs.addUntagged(250)
+		f.env.PresetOps = []store.Op{intendedRegister()}
+		out := f.run()
+		f.want(out, "unknown")
+		if out.FailureShort != "could not find an interrupted register's revision among the newest 200" {
+			t.Errorf("short = %q", out.FailureShort)
+		}
+		if len(f.ecs.registers) != 0 || len(f.ecs.updates) != 0 {
+			t.Errorf("registers %d, updates %d", len(f.ecs.registers), len(f.ecs.updates))
+		}
+	})
+	t.Run("no register was ever intended", func(t *testing.T) {
+		f := newFixture(t)
+		f.ecs.addUntagged(250)
+		out := f.run()
+		f.want(out, "succeeded")
+		if len(f.ecs.registers) != 1 {
+			t.Errorf("registers = %d, want 1", len(f.ecs.registers))
+		}
+	})
 }
 
 func TestAmbiguousRegisterLooksForTaggedRevisionFirst(t *testing.T) {

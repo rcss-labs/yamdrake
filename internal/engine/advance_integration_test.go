@@ -4,8 +4,7 @@ package engine
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -17,7 +16,9 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/queue"
+	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/internal/testutil/awsseed"
 	"github.com/rcss-labs/yamdrake/internal/wake"
 )
 
@@ -180,11 +181,10 @@ func TestHappyPathStateSequence(t *testing.T) {
 	h.advance(run.ID)
 	planned := h.expectState(run.ID, "planned")
 
-	// The manifest is the resolve leg's result and its id is the hex SHA-256 of it.
+	// The manifest is the resolve leg's result and its id is the manifest's own identity.
 	resolve := h.legByKind(run.ID, "resolve")
-	sum := sha256.Sum256(resolve.Result)
-	if planned.ManifestID != hex.EncodeToString(sum[:]) || string(planned.Manifest) != string(resolve.Result) {
-		t.Fatalf("manifest %q / %q, want the resolve result %q hashed", planned.Manifest, planned.ManifestID, resolve.Result)
+	if planned.ManifestID != sampleManifest(run.ID).ID || string(planned.Manifest) != string(resolve.Result) {
+		t.Fatalf("manifest %q / %q, want the resolve result %q with its identity", planned.Manifest, planned.ManifestID, resolve.Result)
 	}
 	if len(h.locks(run.ID)) != 0 {
 		t.Fatalf("a planned run holds locks")
@@ -535,7 +535,7 @@ func TestRevalidateFailureInvalidatesAndReleasesLocks(t *testing.T) {
 	if len(h.locks(run.ID)) == 0 {
 		t.Fatalf("running run holds no locks")
 	}
-	h.setLeg(h.legByKind(run.ID, "revalidate").ID, "failed")
+	h.failRevalidateWithDrift(h.legByKind(run.ID, "revalidate").ID)
 	h.advance(run.ID)
 	invalid := h.expectState(run.ID, "invalidated")
 	if invalid.EndReason == "" || invalid.WaitReason != "" {
@@ -610,7 +610,11 @@ func TestTwoAdvancersNeverQueueALegTwice(t *testing.T) {
 					seen[l.ID] = *l.QueuedAt
 				}
 				if l.State == "queued" {
-					_, err := h.pool.Exec(ctx, `UPDATE legs SET state = 'succeeded', result = '{"ok":true}'::jsonb, finished_at = now() WHERE id = $1 AND state = 'queued'`, l.ID)
+					result := []byte(`{"ok":true}`)
+					if l.Kind == "resolve" { // the plan of this run
+						result, _ = json.Marshal(sampleManifest(run.ID))
+					}
+					_, err := h.pool.Exec(ctx, `UPDATE legs SET state = 'succeeded', result = $2::jsonb, finished_at = now() WHERE id = $1 AND state = 'queued'`, l.ID, result)
 					if err != nil {
 						report("settle leg: %v", err)
 					}
@@ -1090,6 +1094,74 @@ func TestCancelOfAClaimedLegFlagsItInsteadOfFailing(t *testing.T) {
 	got := h.legByKind(run.ID, "revalidate")
 	if got.State != "claimed" || !got.CancelRequested {
 		t.Fatalf("leg = %+v, want still claimed and flagged", got)
+	}
+}
+
+func TestCreateRunRefusedWhenAccountNotConnected(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, harnessOptions{})
+	create := func(services ...string) error {
+		_, err := h.eng.Create(ctx, h.starter, h.sourceID, testEnvironment, selection(services...), "web", false)
+		return err
+	}
+	runCount := func() int {
+		var n int
+		if err := h.pool.QueryRow(ctx, "SELECT count(*) FROM runs").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// The environment's account is not connected.
+	if _, err := h.pool.Exec(ctx, "DELETE FROM aws_accounts WHERE account_id = $1", testAWSAccount); err != nil {
+		t.Fatal(err)
+	}
+	err := create("s1")
+	if !errors.Is(err, ErrNotRunnable) || !strings.Contains(err.Error(), testAWSAccount) || !strings.Contains(err.Error(), "not connected") {
+		t.Fatalf("environment account not connected: Create = %v, want ErrNotRunnable naming %s", err, testAWSAccount)
+	}
+	if n := runCount(); n != 0 {
+		t.Fatalf("%d runs after the refusal, want 0", n)
+	}
+	awsseed.Connect(t, h.pool, testAWSAccount)
+	if err := create("s1"); err != nil {
+		t.Fatalf("after connecting the environment account: Create = %v", err)
+	}
+
+	// A selected service's ECR repository lives in another, unconnected account;
+	// an unselected service's repository does not matter.
+	const ecrAccount = "999988887777"
+	inv := spec.Inventory{
+		Environments: []spec.Environment{{Name: testEnvironment, Label: testLabel, AWSAccount: testAWSAccount}},
+		Services:     map[string]spec.Service{},
+	}
+	for _, name := range []string{"s1", "s2"} {
+		env := spec.ServiceEnv{
+			ECSService: fmt.Sprintf("arn:aws:ecs:eu-west-1:%s:service/cluster/%s-staging", testAWSAccount, name),
+			Tomls:      []spec.Toml{{Name: "app", Destination: fmt.Sprintf("s3://cfg/staging/%s.toml", name)}},
+		}
+		if name == "s1" {
+			env.ECRRepository = ecrAccount + ".dkr.ecr.eu-west-1.amazonaws.com/s1"
+		}
+		inv.Services[name] = spec.Service{Name: name, Environments: map[string]spec.ServiceEnv{testEnvironment: env}}
+	}
+	if _, err := store.ActivateSnapshot(ctx, h.pool, "invcommit2", mustJSON(t, inv), nil, h.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	before := runCount()
+	err = create("s1", "s2")
+	if !errors.Is(err, ErrNotRunnable) || !strings.Contains(err.Error(), ecrAccount) {
+		t.Fatalf("ECR account not connected: Create = %v, want ErrNotRunnable naming %s", err, ecrAccount)
+	}
+	if n := runCount(); n != before {
+		t.Fatalf("%d runs after the refusal, want %d", n, before)
+	}
+	if err := create("s2"); err != nil {
+		t.Fatalf("service without the unconnected repository: Create = %v", err)
+	}
+	awsseed.Connect(t, h.pool, ecrAccount)
+	if err := create("s1", "s2"); err != nil {
+		t.Fatalf("after connecting the ECR account: Create = %v", err)
 	}
 }
 

@@ -41,9 +41,26 @@ func newGitHubSources(pool *pgxpool.Pool, cipher secrets.Cipher, apiURL string, 
 	return &githubSources{pool: pool, cipher: cipher, apiURL: apiURL, log: log, clients: map[string]*github.Client{}}
 }
 
-// For implements sync.SourceFor. GitHub owners are case-insensitive while the
-// database is not, so connections are stored and looked up in lower case.
+// GitHubClients returns the function the runner reads config sources with: the
+// client for an owner, built from the stored connection. Its errors are fixed
+// messages that carry no credential (see githubSources).
+func GitHubClients(pool *pgxpool.Pool, cipher secrets.Cipher, apiURL string, log *slog.Logger) func(ctx context.Context, owner string) (*github.Client, error) {
+	return newGitHubSources(pool, cipher, apiURL, log).client
+}
+
+// For implements sync.SourceFor.
 func (g *githubSources) For(ctx context.Context, owner string) (yumsync.Source, error) {
+	client, err := g.client(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+// client returns the cached client for the owner or builds it. GitHub owners
+// are case-insensitive while the database is not, so connections are stored
+// and looked up in lower case.
+func (g *githubSources) client(ctx context.Context, owner string) (*github.Client, error) {
 	key := strings.ToLower(owner)
 	g.mu.Lock()
 	defer g.mu.Unlock()

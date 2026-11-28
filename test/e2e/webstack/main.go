@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	usage = `usage: webstack [--binary bin/yumdrake-orchestrator] [--runner-binary bin/yumdrake-runner] [--fixture internal/spec/testdata/valid]
+	usage = `usage: webstack [--binary bin/yumdrake-orchestrator] [--runner-binary web/.e2e-bin/webrunner] [--fixture internal/spec/testdata/valid]
 
 Needs YUMDRAKE_TEST_DATABASE_URL and YUMDRAKE_TEST_VALKEY_ADDR (see make dev-up).
 Exit codes: 0 stopped normally, 1 failure, 2 usage.
@@ -73,7 +73,7 @@ func run() int {
 	flags := flag.NewFlagSet("webstack", flag.ContinueOnError)
 	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage) }
 	binary := flags.String("binary", "bin/yumdrake-orchestrator", "path to the orchestrator binary built by make build")
-	runnerBinary := flags.String("runner-binary", "bin/yumdrake-runner", "path to the runner binary built by make build; it runs with the fake steps")
+	runnerBinary := flags.String("runner-binary", "web/.e2e-bin/webrunner", "path to the test runner (test/e2e/webrunner), which runs only fake steps; not the production bin/yumdrake-runner, which wires the real resolve and revalidate")
 	fixture := flags.String("fixture", "internal/spec/testdata/valid", "directory committed to the fake GitHub repository")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -232,9 +232,11 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 		return ready{}, err
 	}
 
-	// The real runner with the fake steps (allowed only in dev). It shares the database, Valkey and key
+	// The test runner (test/e2e/webrunner) with only fake steps, allowed only in dev: the production
+	// runner wires the real resolve and revalidate, which need AWS. It shares the database, Valkey and key
 	// prefix, so the runs the browser starts are executed for real, with short polling. The fake step
-	// times are fixed in the runner (2s a step, 30s for a "slow" version).
+	// times are fixed in the test runner (2s a step, 30s for a "slow" version). The configuration still
+	// demands an artifact bucket, which the fake steps never touch.
 	runnerHealthAddr, err := freeAddr()
 	if err != nil {
 		return ready{}, fmt.Errorf("find a free port: %w", err)
@@ -243,6 +245,7 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 		"YUMDRAKE_HEALTH_ADDR="+runnerHealthAddr,
 		"YUMDRAKE_ENV=dev",
 		"YUMDRAKE_FAKE_STEPS=true",
+		"YUMDRAKE_ARTIFACT_BUCKET=web-e2e-unused-bucket",
 		"YUMDRAKE_RUNNER_ID=web-e2e-runner",
 		"YUMDRAKE_RUNNER_POLL=500ms",
 	)
@@ -277,11 +280,15 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 	api.session = cookie
 
 	// Set-up as the Go e2e tests do it; each step syncs at once.
+	// A run is refused unless the AWS account of its environment (hetzner-01, in the fixture) is connected.
+	// Creating the account makes no AWS call, and the fake steps never use the keys, which are not real.
+	fakeKey := map[string]any{"method": "key", "access_key_id": "AKIAWEBE2EFAKEKEY00", "secret_access_key": "web-e2e-fake-secret-key"} //nolint:gosec // a made-up key for the fake steps; no AWS call is ever made with it
 	steps := []struct {
 		method, path string
 		body         any
 		out          any
 	}{
+		{http.MethodPost, "/api/v1/admin/aws-accounts", map[string]any{"name": "web-e2e-dev", "account_id": "111111111111", "discovery": fakeKey, "deploy": fakeKey}, nil},
 		{http.MethodPost, "/api/v1/admin/github-connections", map[string]any{"owner": "acme", "method": "token", "token": githubToken}, nil},
 		{http.MethodPut, "/api/v1/admin/inventory-source", map[string]any{"repo": repo, "branch": branch}, nil},
 	}
@@ -398,10 +405,13 @@ func waitUntil(ctx context.Context, what string, cond func() (bool, error)) erro
 }
 
 // waitReady waits for the named service ("the orchestrator", "the runner") to answer /readyz.
-func waitReady(ctx context.Context, service, readyURL string, exited <-chan error) error {
+func waitReady(ctx context.Context, service, readyURL string, exited chan error) error {
 	return waitUntil(ctx, service+" to answer /readyz", func() (bool, error) {
 		select {
 		case err := <-exited:
+			// Put the exit back (the channel holds one): stopChild reads it too, and without it would
+			// wait for a process that is already gone, then block on the kill.
+			exited <- err
 			return false, fmt.Errorf("%s exited early: %w", service, err)
 		default:
 		}

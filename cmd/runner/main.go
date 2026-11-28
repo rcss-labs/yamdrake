@@ -19,6 +19,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner"
+	"github.com/rcss-labs/yamdrake/internal/runnerapp"
 	"github.com/rcss-labs/yamdrake/internal/steps/fake"
 	"github.com/rcss-labs/yamdrake/internal/version"
 	"github.com/rcss-labs/yamdrake/internal/wake"
@@ -79,12 +80,19 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 		Common: cfg.Common,
 		Addr:   cfg.HealthAddr,
 		Fields: []any{"runner_id", cfg.RunnerID, "env", cfg.Env, "fake_steps", cfg.FakeSteps},
-		Extend: func(_ context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (app.Extension, error) {
+		Extend: func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (app.Extension, error) {
 			bus := wake.New(client, log, wake.WithKeyPrefix(cfg.ValkeyKeyPrefix))
 			sink := logs.NewWriter(pool, logFlushEvery, logMaxBatch, time.Now, func(runID int64) {
 				bus.Publish(context.Background(), wake.TopicLogs, runID)
 			}, log)
 			r := newRunner(cfg, pool, sink, bus, log)
+			// The real resolve and revalidate replace the fake ones, except in
+			// the demo (YUMDRAKE_FAKE_RESOLVE), which has no AWS or GitHub.
+			if !cfg.FakeResolve {
+				if err := runnerapp.RegisterExecutors(ctx, log, cfg, pool, r); err != nil {
+					return app.Extension{}, err
+				}
+			}
 			background := []func(context.Context){
 				func(ctx context.Context) {
 					if err := r.Run(ctx, legWakeups(ctx, bus)); err != nil {
@@ -159,9 +167,10 @@ func legWakeups(ctx context.Context, bus *wake.Bus) <-chan struct{} {
 // the runner announces its run on the "runs" topic so the orchestrator
 // advances it at once. The fake steps are registered only when
 // the configuration allows them (YUMDRAKE_ENV=dev and YUMDRAKE_FAKE_STEPS=true;
-// config.LoadRunner refuses fakes anywhere else). The real executors arrive
-// with plans 5 and 6, so until then a runner without fakes fails every leg it
-// claims with "no executor for this step".
+// config.LoadRunner refuses fakes anywhere else). The caller registers the real
+// "resolve" and "revalidate" afterwards, which replace the fake ones; copy-config and ecs-deploy
+// arrive with plan 6, so a runner without fakes fails those legs with "no
+// executor for this step".
 func newRunner(cfg config.Runner, pool *pgxpool.Pool, sink runner.LineSink, bus *wake.Bus, log *slog.Logger) *runner.Runner {
 	q := queue.New(pool, cfg.Lease, nil) // nil: the database clock, shared by every runner and orchestrator
 	r := runner.New(q, sink, cfg.RunnerID, cfg.Concurrency, cfg.Heartbeat, cfg.Poll, log).

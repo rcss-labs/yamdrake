@@ -10,7 +10,7 @@ BINARY_PACKAGES := orchestrator runner
 # Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
 export VERSION COMMIT
 
-.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke compose-check demo demo-down demo-check tf-check web-install web-lint web-test web-build web-e2e
+.PHONY: help build lint test dev-up dev-down test-integration test-floci floci-clean test-e2e images smoke compose-check demo demo-down demo-check tf-check web-install web-lint web-test web-build web-e2e
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -42,8 +42,8 @@ lint: ## Check gofmt, go vet and golangci-lint
 test: ## Run unit tests with the race detector
 	go test -race ./...
 
-dev-up: ## Start local PostgreSQL and Valkey and wait until healthy
-	docker compose up -d --wait postgres valkey
+dev-up: ## Start local PostgreSQL, Valkey and Floci (local AWS) and wait until healthy
+	docker compose up -d --wait postgres valkey floci
 
 dev-down: ## Stop local services and delete their volumes
 	docker compose down -v
@@ -55,10 +55,30 @@ YUMDRAKE_TEST_VALKEY_ADDR ?= localhost:6379
 export YUMDRAKE_TEST_DATABASE_URL YUMDRAKE_TEST_VALKEY_ADDR
 
 test-integration: ## Run integration tests against the local services (see dev-up)
-	go test -race -tags integration ./...
+	go test -race -tags integration -timeout 25m ./...
 
-test-e2e: ## Run the end-to-end tests (in-process orchestrator, fake GitHub) against the local services
-	go test -race -tags e2e -timeout 6m ./test/e2e/...
+# Floci (the local AWS emulator) is published on 4577; 4566 is deliberately unused.
+YUMDRAKE_TEST_AWS_ENDPOINT ?= http://localhost:4577
+export YUMDRAKE_TEST_AWS_ENDPOINT
+ifeq ($(origin YUMDRAKE_TEST_AWS_ENDPOINT),file)
+E2E_FLOCI_ENDPOINT :=
+else
+E2E_FLOCI_ENDPOINT := $(strip $(YUMDRAKE_TEST_AWS_ENDPOINT))
+endif
+
+test-floci: ## Run the integration and Floci tests (see dev-up; needs Docker for ECS and ECR)
+	go test -race -tags "integration floci" -timeout 25m ./...
+
+floci-clean: ## Remove the floci-aws-* containers that our Floci created (never another Floci's)
+	./scripts/floci-clean.sh
+
+# Floci planning tests run only when YUMDRAKE_TEST_AWS_ENDPOINT is set in the environment or on the command line; the default above does not enable them.
+test-e2e: ## Run the end-to-end tests (in-process orchestrator, fake GitHub; with Floci when YUMDRAKE_TEST_AWS_ENDPOINT is set) against the local services
+ifeq ($(E2E_FLOCI_ENDPOINT),)
+	go test -race -tags e2e -timeout 15m ./test/e2e/...
+else
+	go test -race -tags "e2e floci" -timeout 25m ./test/e2e/...
+endif
 
 images: ## Build the yumdrake-orchestrator and yumdrake-runner images (tag :dev)
 	@for svc in orchestrator runner; do \

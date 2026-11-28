@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/rcss-labs/yamdrake/internal/audit"
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/awsx"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -53,6 +56,9 @@ func (e *Engine) Create(ctx context.Context, p auth.Principal, jobSourceID int64
 	if len(problems) > 0 { // includes an unknown environment, which has no label to check
 		return store.Run{}, &SelectionError{Problems: problems}
 	}
+	if err := e.checkAccountsConnected(ctx, environment, built.Legs, inventory); err != nil {
+		return store.Run{}, err
+	}
 	selectionJSON, err := json.Marshal(sel)
 	if err != nil {
 		return store.Run{}, fmt.Errorf("create run: encode selection: %w", err)
@@ -95,6 +101,47 @@ func (e *Engine) Create(ctx context.Context, p auth.Principal, jobSourceID int64
 	}
 	e.publish(ctx, created.ID, outcome{runChanged: true, legsQueued: true})
 	return created, nil
+}
+
+// checkAccountsConnected refuses, with ErrNotRunnable, a run whose
+// environment account, or the account of a selected service's ECR repository,
+// is not connected: its legs could never get credentials.
+func (e *Engine) checkAccountsConnected(ctx context.Context, environment spec.Environment, legs []store.Leg, inventory spec.Inventory) error {
+	needed := map[string]string{environment.AWSAccount: "the environment's account"}
+	for _, leg := range legs {
+		if leg.Kind != "step" {
+			continue
+		}
+		uri := inventory.Services[leg.Service].Environments[environment.Name].ECRRepository
+		if uri == "" {
+			continue
+		}
+		repo, err := awsx.ParseECRRepository(uri, e.aws)
+		if err != nil {
+			return fmt.Errorf("create run: %w: service %s: %w", ErrNotRunnable, leg.Service, err)
+		}
+		if _, seen := needed[repo.Account]; !seen {
+			needed[repo.Account] = "the ECR repository of " + leg.Service
+		}
+	}
+	accounts := make([]string, 0, len(needed))
+	for account := range needed {
+		accounts = append(accounts, account)
+	}
+	sort.Strings(accounts)
+	var missing []string
+	for _, account := range accounts {
+		_, err := store.AWSAccountByAccountID(ctx, e.db, account)
+		if errors.Is(err, store.ErrNotFound) {
+			missing = append(missing, fmt.Sprintf("%s (%s)", account, needed[account]))
+		} else if err != nil {
+			return fmt.Errorf("create run: check AWS accounts: %w", err)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("create run: %w: AWS account not connected: %s; connect it under AWS accounts first", ErrNotRunnable, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func needsApproval(job spec.Job, label string) bool {

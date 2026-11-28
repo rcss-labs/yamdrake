@@ -14,16 +14,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/jackc/pgx/v5/pgxpool"
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yamdrake/internal/awsx/discovery"
 	"github.com/rcss-labs/yamdrake/internal/engine"
 	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/notify"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/internal/versions"
 )
 
 // DefaultTokenSSOMaxAge is the default of Deps.TokenSSOMaxAge.
@@ -51,6 +55,13 @@ type Syncer interface {
 	// SetInventorySource stores the source and syncs it as one serialised step.
 	SetInventorySource(ctx context.Context, source store.InventorySource, inTx func(context.Context, store.DBTX) error) error
 	SyncJob(ctx context.Context, jobSourceID int64) error
+}
+
+// DiscoveryCredentials is implemented by *discovery.Provider.
+type DiscoveryCredentials interface {
+	// ForUncached skips the credential cache: the connection test must see
+	// AWS as it is now.
+	ForUncached(ctx context.Context, accountID, region, sessionName string) (aws.Config, error)
 }
 
 // Deps are the collaborators of the API.
@@ -110,6 +121,20 @@ type Deps struct {
 	// identity provider refresh only at sign-in, so this bounds how long a
 	// person removed there keeps their access through a token.
 	TokenSSOMaxAge time.Duration
+	// Discovery builds the discovery credentials of an account; the connection
+	// test uses it. Optional: New builds one from AWSConfig.
+	Discovery DiscoveryCredentials
+	// AWSConfig is the orchestrator's own AWS configuration (default
+	// credential chain, optional endpoint override), the base of the default
+	// Discovery. It may be empty when the service runs without AWS credentials;
+	// the connection test then reports a failure.
+	AWSConfig aws.Config
+	// AWSOptions are the deployment-wide AWS settings (the emulator endpoint
+	// in tests); zero for real AWS.
+	AWSOptions awsx.Options
+	// Versions lists the image versions of a job's services. Optional: New
+	// builds one from the default Discovery and Valkey.
+	Versions VersionLister
 }
 
 // valkeyTimeout bounds every Valkey call made for a request: against a dead
@@ -159,6 +184,17 @@ func New(deps Deps) http.Handler {
 	}
 	if deps.DevicePollInterval <= 0 {
 		deps.DevicePollInterval = defaultDevicePollInterval
+	}
+	if deps.Discovery == nil {
+		deps.Discovery = discovery.New(deps.Pool, deps.Cipher, deps.AWSConfig, deps.AWSOptions).WithLogger(deps.Log)
+	}
+	if deps.Versions == nil {
+		// The cached provider is the one that builds version-list credentials;
+		// a Discovery that cannot (a test double) leaves the route unavailable.
+		if provider, ok := deps.Discovery.(versions.Discovery); ok {
+			deps.Versions = versions.New(versions.Config{
+				Discovery: provider, Valkey: deps.Valkey, KeyPrefix: deps.KeyPrefix, AWS: deps.AWSOptions})
+		}
 	}
 	dummy, err := dummyPasswordHash()
 	if err != nil {
@@ -269,6 +305,9 @@ func (s *server) routes() []routeDef {
 		{"PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource},
 		{"GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections},
 		{"POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection},
+		{"GET /api/v1/admin/aws-accounts", auth.ManageConnections, s.listAWSAccounts},
+		{"POST /api/v1/admin/aws-accounts", auth.ManageConnections, s.createAWSAccount},
+		{"POST /api/v1/admin/aws-accounts/{id}/test", auth.ManageConnections, s.testAWSAccount},
 		{"GET /api/v1/admin/sso", auth.ManageAccess, s.getSSO},
 		{"PUT /api/v1/admin/sso", auth.ManageAccess, s.putSSO},
 		{"POST /api/v1/admin/sso/test", auth.ManageAccess, s.testSSO},
@@ -279,6 +318,7 @@ func (s *server) routes() []routeDef {
 		{"GET /api/v1/jobs/{id}", auth.View, s.getJob},
 		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
 		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
+		{"GET /api/v1/jobs/{id}/versions", auth.View, s.getJobVersions},
 	}, append(s.runRoutes(), append(s.accessRoutes(), append(s.freezeRoutes(), s.slackRoutes()...)...)...)...)
 }
 

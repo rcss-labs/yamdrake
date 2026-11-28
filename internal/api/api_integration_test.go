@@ -115,6 +115,8 @@ type harness struct {
 	bodies  []string // every response body, for the secret checks
 	// bodiesMu guards bodies: some tests send requests from several goroutines.
 	bodiesMu gosync.Mutex
+	// logs holds everything the server logged, for the secret checks.
+	logs *lockedBuffer
 
 	dbURL      string
 	deps       Deps
@@ -253,7 +255,8 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("NewLocal: %v", err)
 	}
 	src := &fakeSource{files: map[string][]byte{}, heads: map[string]string{}}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logBuffer := &lockedBuffer{}
+	log := slog.New(slog.NewTextHandler(logBuffer, nil))
 	engine := yumsync.NewEngine(pool,
 		func(context.Context, string) (yumsync.Source, error) { return src, nil },
 		log, time.Now)
@@ -267,7 +270,7 @@ func newHarness(t *testing.T) *harness {
 		Runs:          runengine.New(runengine.Deps{DB: pool, Log: log}),
 		Logs:          logs.NewReader(pool, nil),
 	}
-	h := &harness{t: t, dbURL: url, pool: pool, cipher: cipher, src: src, handler: New(deps),
+	h := &harness{t: t, logs: logBuffer, dbURL: url, pool: pool, cipher: cipher, src: src, handler: New(deps),
 		deps: deps, valkey: client, sessions: sessions}
 	h.admin = h.newUser("admin")
 	adminGroup, err := store.CreateGroup(ctx, pool, "Admins", true)

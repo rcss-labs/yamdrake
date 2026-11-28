@@ -59,6 +59,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   // A helper binary (not `go run`) so signals reach the helper itself, which then stops the orchestrator.
   mkdirSync(dirname(helperPath), { recursive: true })
   execFileSync('go', ['build', '-o', helperPath, './test/e2e/webstack'], { cwd: repoRoot, stdio: 'inherit' })
+  // The runner with fake steps only. The production runner wires the real resolve, which needs AWS.
+  execFileSync('go', ['build', '-o', resolve(dirname(helperPath), 'webrunner'), './test/e2e/webrunner'], { cwd: repoRoot, stdio: 'inherit' })
 
   // The helper stops when its standard input closes, so it also stops if this process dies.
   const child = spawn(helperPath, [], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'inherit'] })

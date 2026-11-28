@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rcss-labs/yamdrake/internal/manifest"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -212,15 +213,17 @@ func TestResolveReturnsManifestListingTheSelection(t *testing.T) {
 	if out.State != "succeeded" {
 		t.Fatalf("outcome = %+v", out)
 	}
-	var manifest struct {
-		Services []struct{ Group, Service, Version string }
-	}
-	if err := json.Unmarshal(out.Result, &manifest); err != nil {
+	var plan manifest.Manifest
+	if err := json.Unmarshal(out.Result, &plan); err != nil {
 		t.Fatalf("Result %s is not JSON: %v", out.Result, err)
 	}
+	// The engine takes only a plan that is this run's own, with its identity.
+	if plan.RunID != 3 || plan.ID == "" || plan.ID != manifest.Identity(plan) {
+		t.Errorf("manifest run %d, id %q: want run 3 and its own identity", plan.RunID, plan.ID)
+	}
 	got := map[string]string{}
-	for _, s := range manifest.Services {
-		got[s.Service] = s.Version
+	for _, s := range plan.Services {
+		got[s.Name] = s.Version
 	}
 	if len(got) != 2 || got["billing"] != "1.2.3" || got["search"] != "1.2.4" {
 		t.Errorf("manifest services = %v, want billing 1.2.3 and search 1.2.4", got)

@@ -264,6 +264,29 @@ func TestActivateSnapshotKeepsOneActive(t *testing.T) {
 	assertSnapshotCounts(t, pool, 2, 1)
 }
 
+// A run is planned against one snapshot and must keep reading that one after
+// a newer inventory has been activated.
+func TestSnapshotByIDReturnsAnInactiveSnapshot(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := newPool(t)
+	at := nanosecondNow()
+	first, err := ActivateSnapshot(ctx, pool, "A", []byte(`{"v":"a"}`), nil, at)
+	if err != nil {
+		t.Fatalf("activate A: %v", err)
+	}
+	if _, err := ActivateSnapshot(ctx, pool, "B", []byte(`{"v":"b"}`), nil, at.Add(time.Second)); err != nil {
+		t.Fatalf("activate B: %v", err)
+	}
+	got, err := SnapshotByID(ctx, pool, first.ID)
+	if err != nil || got.Commit != "A" || string(got.Inventory) != `{"v": "a"}` && string(got.Inventory) != `{"v":"a"}` {
+		t.Fatalf("SnapshotByID(A) = %+v, %v", got, err)
+	}
+	if _, err := SnapshotByID(ctx, pool, first.ID+1000000); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SnapshotByID(missing) error = %v, want ErrNotFound", err)
+	}
+}
+
 func assertSnapshotCounts(t *testing.T, pool *pgxpool.Pool, total, active int) {
 	t.Helper()
 	var gotTotal, gotActive int

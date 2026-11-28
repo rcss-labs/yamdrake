@@ -351,3 +351,89 @@ func TestManagerCannotJoinOrMapAGroupHoldingMoreThanTheirOwn(t *testing.T) {
 	}
 	_ = scoped
 }
+
+// Removing is the mirror of adding: a manager must not strip someone out of a
+// group, or unmap an identity-provider group, when that group holds more than
+// the manager does (that weakens other people's access).
+func TestManagerCannotRemoveMembershipsOrMappingsOfAGroupHoldingMoreThanTheirOwn(t *testing.T) {
+	m := newManagerHarness(t)
+	rich := m.createGroupVia("richrm-"+uniqueEmail(t, "g"), false)
+	m.expect(m.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": rich, "action": "manage_connections"}), http.StatusCreated, "")
+	modest := m.createGroupVia("modestrm-"+uniqueEmail(t, "g"), false)
+	m.expect(m.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": modest, "action": "run", "label": "dev"}), http.StatusCreated, "")
+	_, scopedToken := m.scopedManager()
+
+	member := m.newUser("member")
+	m.expect(m.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(member.ID), map[string]any{"group_ids": []int64{rich, modest}}), http.StatusOK, "")
+	patch := func(token string, groupIDs []int64) int {
+		return m.send(sent{method: "PATCH", path: "/api/v1/admin/users/" + itoa(member.ID), bearer: token, body: map[string]any{"group_ids": groupIDs}}).Code
+	}
+	if code := patch(m.managerToken, []int64{modest}); code != http.StatusForbidden {
+		t.Errorf("remove a membership of a richer group: %d, want 403", code)
+	}
+	if code := patch(scopedToken, []int64{modest}); code != http.StatusForbidden {
+		t.Errorf("scoped manager removes a membership of a richer group: %d, want 403", code)
+	}
+	if !m.memberOf(member.ID)[rich] {
+		t.Error("the richer membership was removed")
+		m.expect(m.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(member.ID), map[string]any{"group_ids": []int64{rich, modest}}), http.StatusOK, "")
+	}
+	// A group within their power can be left.
+	if code := patch(scopedToken, []int64{rich}); code != http.StatusOK {
+		t.Errorf("remove a membership within their power: %d, want 200", code)
+	}
+
+	mapping := func(method, name, token string, body any) int {
+		return m.send(sent{method: method, path: "/api/v1/admin/idp-mappings/" + name, bearer: token, body: body}).Code
+	}
+	m.expect(m.asAdmin("PUT", "/api/v1/admin/idp-mappings/rich-rm", map[string]any{"group_id": rich}), http.StatusOK, "")
+	m.expect(m.asAdmin("PUT", "/api/v1/admin/idp-mappings/modest-rm", map[string]any{"group_id": modest}), http.StatusOK, "")
+	if code := mapping("DELETE", "rich-rm", m.managerToken, nil); code != http.StatusForbidden {
+		t.Errorf("delete a mapping to a richer group: %d, want 403", code)
+	}
+	if code := mapping("PUT", "rich-rm", scopedToken, map[string]any{"group_id": modest}); code != http.StatusForbidden {
+		t.Errorf("repoint a mapping away from a richer group: %d, want 403", code)
+	}
+	if code := mapping("DELETE", "rich-rm", scopedToken, nil); code != http.StatusForbidden {
+		t.Errorf("scoped manager deletes a mapping to a richer group: %d, want 403", code)
+	}
+	if code := mapping("DELETE", "modest-rm", scopedToken, nil); code != http.StatusNoContent {
+		t.Errorf("delete a mapping within their power: %d, want 204", code)
+	}
+	if code := m.asAdmin("DELETE", "/api/v1/admin/idp-mappings/rich-rm", nil).Code; code != http.StatusNoContent {
+		t.Errorf("admin deletes the mapping: %d, want 204", code)
+	}
+}
+
+// The scope-width half of the removal rule: the group holds `run` in prod, which
+// is not admin-only, but a manager scoped to dev does not hold it.
+func TestScopedManagerCannotRemoveFromAGroupWiderInScopeThanTheirOwn(t *testing.T) {
+	m := newManagerHarness(t)
+	prod := m.createGroupVia("prodrm-"+uniqueEmail(t, "g"), false)
+	m.expect(m.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": prod, "action": "run", "label": "prod"}), http.StatusCreated, "")
+	_, scopedToken := m.scopedManager()
+
+	member := m.newUser("prodmember")
+	m.expect(m.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(member.ID), map[string]any{"group_ids": []int64{prod}}), http.StatusOK, "")
+	if code := m.send(sent{method: "PATCH", path: "/api/v1/admin/users/" + itoa(member.ID), bearer: scopedToken, body: map[string]any{"group_ids": []int64{}}}).Code; code != http.StatusForbidden {
+		t.Errorf("remove a membership of a prod group: %d, want 403", code)
+	}
+	if !m.memberOf(member.ID)[prod] {
+		t.Error("the prod membership was removed")
+	}
+
+	m.expect(m.asAdmin("PUT", "/api/v1/admin/idp-mappings/prod-rm", map[string]any{"group_id": prod}), http.StatusOK, "")
+	modest := m.createGroupVia("modestprod-"+uniqueEmail(t, "g"), false)
+	m.expect(m.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": modest, "action": "run", "label": "dev"}), http.StatusCreated, "")
+	path := "/api/v1/admin/idp-mappings/prod-rm"
+	if code := m.send(sent{method: "PUT", path: path, bearer: scopedToken, body: map[string]any{"group_id": modest}}).Code; code != http.StatusForbidden {
+		t.Errorf("repoint a mapping away from a prod group: %d, want 403", code)
+	}
+	if code := m.send(sent{method: "DELETE", path: path, bearer: scopedToken}).Code; code != http.StatusForbidden {
+		t.Errorf("delete a mapping to a prod group: %d, want 403", code)
+	}
+	mappings, err := store.ListIDPMappings(context.Background(), m.pool)
+	if err != nil || mappings["prod-rm"] != prod {
+		t.Errorf("mapping = %v, %v; want unchanged pointing at the prod group", mappings["prod-rm"], err)
+	}
+}

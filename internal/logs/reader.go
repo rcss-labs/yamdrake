@@ -215,7 +215,7 @@ func (r *Reader) read(ctx context.Context, runID int64, f Filter, after Cursor, 
 		return Page{}, err
 	}
 	archiveGaps := map[int64][]Gap{} // per archived leg, every gap after the cursor
-	lost := map[int64]Gap{} // archived legs whose object is gone
+	lost := map[int64]Gap{}          // archived legs whose object is gone
 	if len(archived) > 0 {
 		archCands, gaps, err := r.readArchived(ctx, tx, runID, f, cursor, archived, limit, cache, cands, lost)
 		if err != nil {

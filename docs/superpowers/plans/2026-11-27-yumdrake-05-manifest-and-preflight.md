@@ -64,7 +64,7 @@ Use the real names in the code, not the ones this plan's text predicted. Earlier
 | `internal/awsx/clients.go` | Build SDK clients for an account, region and endpoint |
 | `internal/awsx/discovery/creds.go` | Read-only credentials, for the orchestrator |
 | `internal/awsx/deploy/creds.go` | Deployment credentials, for the runner only |
-| `internal/db/migrations/00007_aws.sql`, `internal/store/aws.go` | Connected AWS accounts |
+| `internal/db/migrations/00009_aws.sql`, `internal/store/aws.go` | Connected AWS accounts |
 | `internal/secrets/kms.go` | KMS-backed cipher |
 | `internal/versions/versions.go` | Version lists from ECR, with the per-service rule and a cache |
 | `internal/artifacts/artifacts.go` | Encrypted copies of config files in S3 |
@@ -135,7 +135,7 @@ Behaviour:
 ### Task 2: Connected AWS accounts and the KMS cipher
 
 **Files:**
-- Create: `internal/db/migrations/00007_aws.sql`, `internal/store/aws.go`, `internal/secrets/kms.go`, `internal/api/aws.go`
+- Create: `internal/db/migrations/00009_aws.sql`, `internal/store/aws.go`, `internal/secrets/kms.go`, `internal/api/aws.go`
 - Modify: `internal/config/config.go` (`YUMDRAKE_SECRETS_MODE` may now be `kms`; `YUMDRAKE_KMS_KEY_ID` required in that mode), `cmd/*/main.go`
 - Test: `internal/store/aws_integration_test.go`, `internal/secrets/kms_floci_test.go`, `internal/api/aws_integration_test.go`
 

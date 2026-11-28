@@ -6,7 +6,7 @@ import "testing"
 // that the latest version is at least the last one known to exist and that
 // every embedded file is at or below it, not an exact number.
 func TestLatestVersionMatchesEmbeddedFiles(t *testing.T) {
-	const lastKnown = 7 // 00007_aws.sql
+	const lastKnown = 9 // 00009_aws.sql
 	if got := LatestVersion(); got < lastKnown {
 		t.Fatalf("LatestVersion() = %d, want at least %d", got, lastKnown)
 	}

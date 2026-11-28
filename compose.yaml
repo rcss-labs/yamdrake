@@ -59,6 +59,8 @@ services:
       YUMDRAKE_VALKEY_ADDR: valkey:6379
       # Development only: a fixed, public key. Real deployments must set their own secret.
       YUMDRAKE_LOCAL_SECRET_KEY: ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=
+      # The key above is public, so the service accepts it only with YUMDRAKE_ENV=dev.
+      YUMDRAKE_ENV: dev
       # Development only: the address the browser uses; https:// is required
       # everywhere except localhost and 127.0.0.1.
       YUMDRAKE_PUBLIC_URL: http://localhost:${YUMDRAKE_ORCHESTRATOR_PORT:-8080}
@@ -88,9 +90,10 @@ services:
       # Development only: the runner requires an artifact bucket name; nothing
       # creates it yet.
       YUMDRAKE_ARTIFACT_BUCKET: yumdrake-artifacts-dev
-      # Fake steps change nothing real. Both default to off; only scripts/smoke.sh
-      # turns them on (dev environment, fake steps) for its own project.
-      YUMDRAKE_ENV: ${YUMDRAKE_RUNNER_ENV:-prod}
+      # The public key above is accepted only with YUMDRAKE_ENV=dev, so the
+      # environment defaults to dev. Fake steps change nothing real and default
+      # to off; only scripts/smoke.sh turns them on for its own project.
+      YUMDRAKE_ENV: ${YUMDRAKE_RUNNER_ENV:-dev}
       YUMDRAKE_FAKE_STEPS: ${YUMDRAKE_RUNNER_FAKE_STEPS:-false}
     depends_on:
       postgres:

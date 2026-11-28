@@ -153,6 +153,7 @@ func baseEnv(t *testing.T, databaseURL, httpAddr string) map[string]string {
 		"YUMDRAKE_DATABASE_URL":      databaseURL,
 		"YUMDRAKE_VALKEY_ADDR":       valkeyAddr(t),
 		"YUMDRAKE_LOCAL_SECRET_KEY":  devSecretKey,
+		"YUMDRAKE_ENV":               "dev", // the key is public, which only dev accepts
 		"YUMDRAKE_HTTP_ADDR":         httpAddr,
 		"YUMDRAKE_PUBLIC_URL":        publicURL,
 		"YUMDRAKE_VALKEY_KEY_PREFIX": uniquePrefix(t),
@@ -415,6 +416,7 @@ func TestRunExits1WhenDatabaseNeverAppears(t *testing.T) {
 		"YUMDRAKE_STARTUP_TIMEOUT":  "2s",
 		"YUMDRAKE_PUBLIC_URL":       publicURL,
 		"YUMDRAKE_LOCAL_SECRET_KEY": devSecretKey,
+		"YUMDRAKE_ENV":              "dev", // the key is public, which only dev accepts
 	}
 	var stdout, stderr syncBuffer
 	done := make(chan int, 1)

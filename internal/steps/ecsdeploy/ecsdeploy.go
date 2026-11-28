@@ -8,7 +8,13 @@
 // registering and updating go through Env.Do. After a crash the executor finds
 // out what happened by asking ECS: a revision tagged with this run and leg is
 // adopted instead of registering another, and a service already on the revision
-// needs no second update.
+// needs no second update. A service that is not on the revision is updated
+// again only if ECS never ran a task of it: a stopped task of the revision means
+// the update went through and was rolled back, and it is not applied twice. Only
+// tasks started at or after the intended update (less a minute of clock skew)
+// count, and ECS keeps stopped
+// tasks for about an hour: a retry after that window can deploy a revision that
+// was already rolled back again.
 //
 // The wait is Judge applied to what each poll saw. A cancel request does not
 // stop the wait once the service has been updated: the outcome must be the real
@@ -109,8 +115,11 @@ const (
 	updateOp          = "update-service"
 	sessionPrefix     = "yumdrake-runner-run-"
 	lookupRevisions   = 10
+	maxLookupPages    = 20 // 200 newest revisions
 	stoppedTasksShown = 5
 	maxTaskPages      = 10
+	// clockSkew tolerates the difference between the database clock (op times) and the ECS clock (task times).
+	clockSkew = time.Minute
 )
 
 type executor struct{ d Deps }
@@ -235,9 +244,9 @@ func (r *leg) settleTaskDefinition() *queue.Outcome {
 		return r.stopped("failed", "the previous task definition in the manifest is not usable", "")
 	}
 
-	arn, err := r.findTagged(family)
-	if err != nil {
-		return r.lookupFailed(err, r.hasOp(registerOp))
+	arn, out := r.lookupTagged(family, r.hasOp(registerOp))
+	if out != nil {
+		return out
 	}
 	if arn != "" {
 		return r.adopt(arn)
@@ -279,9 +288,9 @@ func (r *leg) settleTaskDefinition() *queue.Outcome {
 	a := r.registerOnce(next, key)
 	if errors.Is(a.err, runner.ErrAmbiguous) {
 		// An earlier attempt intended a registration and never recorded it.
-		arn, err := r.findTagged(family)
-		if err != nil {
-			return r.lookupFailed(err, true)
+		arn, out := r.lookupTagged(family, true)
+		if out != nil {
+			return out
 		}
 		if arn != "" {
 			return r.adopt(arn)
@@ -328,35 +337,73 @@ func (r *leg) lookupFailed(err error, interrupted bool) *queue.Outcome {
 	return r.stopped("failed", code+" on ecs:ListTaskDefinitions", detail)
 }
 
-// findTagged returns the newest of the family's latest revisions that was
-// registered for this run and leg, or "".
-func (r *leg) findTagged(family string) (string, error) {
-	callCtx, cancel := r.callContext()
-	list, err := r.client.ListTaskDefinitions(callCtx, &ecs.ListTaskDefinitionsInput{
-		FamilyPrefix: aws.String(family), Sort: ecstypes.SortOrderDesc, MaxResults: aws.Int32(lookupRevisions),
-	})
-	cancel()
-	if err != nil {
-		return "", err
-	}
+// errLookupTooDeep means the newest maxLookupPages*lookupRevisions revisions
+// held no revision of this leg, and older ones exist that were not looked at.
+var errLookupTooDeep = errors.New("task definition lookup reached its page limit")
+
+// findTagged returns the newest revision of the family that was registered for
+// this run and leg, or "". It reads the revisions newest first, lookupRevisions
+// per page, for at most maxPages pages, and stops at the first match. If the
+// pages run out with more revisions remaining it returns errLookupTooDeep.
+func (r *leg) findTagged(family string, maxPages int) (string, error) {
 	run, legID := strconv.FormatInt(r.task.Run.ID, 10), strconv.FormatInt(r.task.Leg.ID, 10)
-	for _, arn := range list.TaskDefinitionArns {
+	var token *string
+	for page := 0; page < maxPages; page++ {
 		callCtx, cancel := r.callContext()
-		d, err := r.client.DescribeTaskDefinition(callCtx, &ecs.DescribeTaskDefinitionInput{
-			TaskDefinition: aws.String(arn), Include: []ecstypes.TaskDefinitionField{ecstypes.TaskDefinitionFieldTags},
+		list, err := r.client.ListTaskDefinitions(callCtx, &ecs.ListTaskDefinitionsInput{
+			FamilyPrefix: aws.String(family), Sort: ecstypes.SortOrderDesc, MaxResults: aws.Int32(lookupRevisions), NextToken: token,
 		})
 		cancel()
 		if err != nil {
 			return "", err
 		}
-		if d.TaskDefinition == nil || aws.ToString(d.TaskDefinition.Family) != family {
-			continue
+		for _, arn := range list.TaskDefinitionArns {
+			callCtx, cancel := r.callContext()
+			d, err := r.client.DescribeTaskDefinition(callCtx, &ecs.DescribeTaskDefinitionInput{
+				TaskDefinition: aws.String(arn), Include: []ecstypes.TaskDefinitionField{ecstypes.TaskDefinitionFieldTags},
+			})
+			cancel()
+			if err != nil {
+				return "", err
+			}
+			if d.TaskDefinition == nil || aws.ToString(d.TaskDefinition.Family) != family {
+				continue
+			}
+			if tagValue(d.Tags, TagRun) == run && tagValue(d.Tags, TagLeg) == legID {
+				return arn, nil
+			}
 		}
-		if tagValue(d.Tags, TagRun) == run && tagValue(d.Tags, TagLeg) == legID {
-			return arn, nil
+		if token = list.NextToken; token == nil {
+			return "", nil
 		}
 	}
-	return "", nil
+	return "", errLookupTooDeep
+}
+
+// lookupTagged is findTagged for settleTaskDefinition: a non-nil outcome ends the
+// leg. Running past the page limit ends it unknown when an earlier attempt
+// intended a register (a revision of ours may lie further back); with no
+// register op none can exist, so the revision counts as not found.
+func (r *leg) lookupTagged(family string, interrupted bool) (arn string, out *queue.Outcome) {
+	// Without an intended register no revision of ours can exist, so the newest
+	// page is a cheap sanity check; paging deep is for an interrupted register.
+	pages := 1
+	if interrupted {
+		pages = maxLookupPages
+	}
+	arn, err := r.findTagged(family, pages)
+	switch {
+	case errors.Is(err, errLookupTooDeep):
+		if interrupted {
+			r.env.Log("error", fmt.Sprintf("No revision of this leg was found among the newest %d.", maxLookupPages*lookupRevisions))
+			return "", r.stopped("unknown", fmt.Sprintf("could not find an interrupted register's revision among the newest %d", maxLookupPages*lookupRevisions),
+				"The family has more recent revisions than the lookup reads.")
+		}
+		return "", nil
+	case err != nil:
+		return "", r.lookupFailed(err, interrupted)
+	}
+	return arn, nil
 }
 
 func tagValue(tags []ecstypes.Tag, key string) string {
@@ -531,7 +578,35 @@ func (r *leg) updateService() *queue.Outcome {
 			r.env.Log("ok", "An earlier attempt's update of the service is in place.")
 			return nil
 		}
-		delete(r.pending, updateOp) // the service is not on it: the intended update did not happen
+		// The service is not on it. That is also what it looks like when the
+		// update went through, the rollout failed and ECS rolled the service
+		// back. A stopped task of the revision proves ECS started it, so it is
+		// not applied again.
+		stopped, unread := r.stoppedTasks(arn, time.Time{})
+		if unread != "" {
+			r.env.Log("error", "An interrupted update could not be checked (stopped tasks were not readable).")
+			return r.stopped("unknown", "could not check an interrupted update", unread)
+		}
+		// Only tasks started at or after the intended update (less clockSkew)
+		// count: a restore's target ran in earlier deploys, and those tasks
+		// prove nothing.
+		var ran []ecstypes.Task
+		intendedAt := r.opTime(updateOp, key)
+		for _, t := range stopped {
+			started := t.StartedAt
+			if started == nil {
+				started = t.CreatedAt
+			}
+			if started == nil || intendedAt.IsZero() || !started.Before(intendedAt.Add(-clockSkew)) {
+				ran = append(ran, t)
+			}
+		}
+		delete(r.pending, updateOp)
+		if len(ran) > 0 {
+			r.env.Log("error", "ECS already started "+arn+" and the service is no longer on it; it is not applied again.")
+			return r.stopped("failed", "ECS already rolled this revision back",
+				"An earlier attempt's update started "+arn+" and the service is no longer on it; the revision is not applied again.")
+		}
 		if r.env.CancelRequested(r.ctx) {
 			return cancelled()
 		}
@@ -825,6 +900,17 @@ func taskID(t ecstypes.Task) string {
 }
 
 // --- helpers ----------------------------------------------------------------------
+
+// opTime is when the operation with this name and key was recorded, or the zero
+// time when there is no such record.
+func (r *leg) opTime(name, key string) time.Time {
+	for _, op := range r.ops {
+		if op.Name == name && op.Key == key {
+			return op.At
+		}
+	}
+	return time.Time{}
+}
 
 func (r *leg) hasKey(key string) bool {
 	for _, op := range r.ops {

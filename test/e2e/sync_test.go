@@ -253,6 +253,7 @@ func startService(t *testing.T, githubURL string) (base, databaseURL string, env
 		"YUMDRAKE_VALKEY_ADDR":      valkeyAddr,
 		"YUMDRAKE_HTTP_ADDR":        addr,
 		"YUMDRAKE_LOCAL_SECRET_KEY": localSecretKey,
+		"YUMDRAKE_ENV":              "dev", // the key is public, which only dev accepts
 		"YUMDRAKE_PUBLIC_URL":       "http://" + addr,
 		// Runs sharing the Valkey must not sign each other out (users are numbered from 1 in every database).
 		"YUMDRAKE_VALKEY_KEY_PREFIX": randomKeyPrefix(t),

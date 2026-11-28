@@ -735,10 +735,22 @@ func TestOrchestratorRunnerGoneAfter(t *testing.T) {
 	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.RunnerGoneAfter != 45*time.Second {
 		t.Fatalf("override = %v, %v; want 45s", cfg.RunnerGoneAfter, err)
 	}
+	env["YUMDRAKE_RUNNER_GONE_AFTER"] = "20s"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.RunnerGoneAfter != 20*time.Second {
+		t.Fatalf("minimum = %v, %v; want 20s accepted", cfg.RunnerGoneAfter, err)
+	}
 	for _, bad := range []string{"0s", "soon"} {
 		env["YUMDRAKE_RUNNER_GONE_AFTER"] = bad
 		if _, err := LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_RUNNER_GONE_AFTER") {
 			t.Errorf("YUMDRAKE_RUNNER_GONE_AFTER=%s: error = %v, want one naming the variable", bad, err)
+		}
+	}
+	// A runner reports every 10s; a shorter window would flip healthy runners to gone.
+	for _, short := range []string{"19s", "5s"} {
+		env["YUMDRAKE_RUNNER_GONE_AFTER"] = short
+		_, err := LoadOrchestrator(envFrom(env))
+		if err == nil || !strings.Contains(err.Error(), "YUMDRAKE_RUNNER_GONE_AFTER") || !strings.Contains(err.Error(), "at least 20s") {
+			t.Errorf("YUMDRAKE_RUNNER_GONE_AFTER=%s: error = %v, want one naming the variable and saying at least 20s", short, err)
 		}
 	}
 }

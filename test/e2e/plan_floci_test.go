@@ -440,6 +440,7 @@ func (s *flociStack) startRunner(id string) *flociRunner {
 		"YUMDRAKE_DATABASE_URL":      s.databaseURL,
 		"YUMDRAKE_VALKEY_ADDR":       s.valkeyAddr,
 		"YUMDRAKE_LOCAL_SECRET_KEY":  localSecretKey,
+		"YUMDRAKE_ENV":               "dev", // the key is public, which only dev accepts
 		"YUMDRAKE_VALKEY_KEY_PREFIX": s.keyPrefix,
 		"YUMDRAKE_ARTIFACT_BUCKET":   s.artifactBucket,
 		"YUMDRAKE_GITHUB_API_URL":    s.gh.URL(),

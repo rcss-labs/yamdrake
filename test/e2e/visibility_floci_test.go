@@ -32,7 +32,8 @@ const (
 	handChanged = "worker"
 	// runnerGoneAfter is how long the orchestrator waits before it calls a
 	// silent runner gone, shortened from 2 minutes for the test.
-	runnerGoneAfter = 3 * time.Second
+	// 20s is the smallest the setting allows (two report intervals).
+	runnerGoneAfter = 20 * time.Second
 )
 
 type visibilityOverview struct {
@@ -206,7 +207,7 @@ func TestVisibilityAfterTwoRunsAndAStoppedRunner(t *testing.T) {
 		want := "No runner has reported for " + strconv.Itoa(int(runnerGoneAfter/time.Second)) + " seconds."
 		var q visibilityQueue
 		var h visibilityHealth
-		eventually(t, 15*time.Second, "the queue and System health to report the stopped runner", func() bool {
+		eventually(t, 45*time.Second, "the queue and System health to report the stopped runner", func() bool {
 			s.api.call(http.MethodGet, "/api/v1/queue", nil, &q)
 			s.api.call(http.MethodGet, "/api/v1/system/health", nil, &h)
 			return len(q.Runners) == 0 && slices.Contains(h.Problems, want)

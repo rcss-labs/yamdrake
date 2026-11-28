@@ -119,6 +119,7 @@ func TestOrchestratorDeliversNotificationsAndReportsThem(t *testing.T) {
 		"YUMDRAKE_VALKEY_ADDR":      os.Getenv("YUMDRAKE_TEST_VALKEY_ADDR"),
 		"YUMDRAKE_HTTP_ADDR":        addr,
 		"YUMDRAKE_LOCAL_SECRET_KEY": appSecretKey,
+		"YUMDRAKE_ENV":              "dev", // the key is public, which only dev accepts
 		"YUMDRAKE_PUBLIC_URL":       "http://" + addr,
 		"YUMDRAKE_MIGRATE_ON_START": "false",
 		"YUMDRAKE_SLACK_API_URL":    slack.URL,

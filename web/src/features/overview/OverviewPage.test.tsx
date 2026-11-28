@@ -169,6 +169,22 @@ describe('the filters', () => {
   })
 })
 
+describe('changing the filters while the answer is on its way', () => {
+  it('comparison text matches the data shown while a new period loads', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const { container } = renderApp(<OverviewPage />)
+    await screen.findByText(/vs the previous 14 days/)
+    delayNext('GET', path, 300)
+    await user.selectOptions(screen.getByLabelText('Period'), '30')
+    // The 14-day numbers are still on screen: they must not claim to be compared with 30 days.
+    expect(screen.queryByText(/previous 30 days/)).not.toBeInTheDocument()
+    expect(screen.getByText(/vs the previous 14 days/)).toBeInTheDocument()
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull()
+    expect(await screen.findByText(/vs the previous 30 days/, undefined, { timeout: 2000 })).toBeInTheDocument()
+    expect(container.querySelector('[aria-busy="true"]')).toBeNull()
+  })
+})
+
 describe('loading and failing', () => {
   it('shows a loading state first', async () => {
     delayNext('GET', path, 50)

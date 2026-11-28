@@ -187,7 +187,9 @@ export function OverviewPage() {
   }
 
   const data = overview.data
-  const period = `the previous ${days} days`
+  // While a new filter loads, the previous answer stays on screen: name the period of that answer, not the one asked for.
+  const period = `the previous ${data.days.length} days`
+  const stale = overview.isPlaceholderData
   const chartDays = data.days.map((day) => ({
     ...dayLabels(day.date),
     values: [
@@ -200,6 +202,7 @@ export function OverviewPage() {
   return (
     <>
       {header}
+      <div className={stale ? 'ov-stale' : undefined} aria-busy={stale}>
       <Tiles data={data} period={period} />
       <div className="ov-row">
         <Card className="ov-wide">
@@ -239,6 +242,7 @@ export function OverviewPage() {
             empty={<p className="ov-empty">No environments to show</p>}
           />
         </Card>
+      </div>
       </div>
     </>
   )

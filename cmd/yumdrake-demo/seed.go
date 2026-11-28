@@ -105,6 +105,7 @@ func seed(ctx context.Context, cfg seedConfig) error {
 	}{
 		{"the admin user", s.ensureAdmin},
 		{"the GitHub connection", s.ensureConnection},
+		{"the AWS accounts", s.ensureAWSAccounts},
 		{"the inventory source", s.ensureInventorySource},
 		{"the folders", s.ensureFolders},
 		{"the jobs", s.ensureJobs},
@@ -152,6 +153,30 @@ func (s *seeder) ensureConnection(ctx context.Context) error {
 	}
 	return s.api.call(ctx, http.MethodPost, "/api/v1/admin/github-connections",
 		map[string]any{"owner": demoOwner, "method": "token", "token": demoGitHubToken}, nil)
+}
+
+// demoAWSAccounts are the account ids deploy/compose/demo/environments.yaml uses. The engine
+// refuses a run whose environment account is not connected, so each gets a placeholder.
+var demoAWSAccounts = []string{"111111111111", "222222222222"}
+
+// ensureAWSAccounts connects a placeholder for each demo account. Creating one makes no AWS call,
+// and the fake steps never use the keys, which are made up.
+func (s *seeder) ensureAWSAccounts(ctx context.Context) error {
+	existing, err := store.ListAWSAccounts(ctx, s.pool)
+	if err != nil {
+		return err
+	}
+	fakeKey := map[string]any{"method": "key", "access_key_id": "AKIADEMOFAKEKEY0000", "secret_access_key": "demo-fake-secret-key"} //nolint:gosec // a made-up key for the fake steps; no AWS call is ever made with it
+	for _, id := range demoAWSAccounts {
+		if slices.ContainsFunc(existing, func(a store.AWSAccount) bool { return a.AccountID == id }) {
+			continue
+		}
+		body := map[string]any{"name": "demo-" + id, "account_id": id, "discovery": fakeKey, "deploy": fakeKey}
+		if err := s.api.call(ctx, http.MethodPost, "/api/v1/admin/aws-accounts", body, nil); err != nil {
+			return fmt.Errorf("account %s: %w", id, err)
+		}
+	}
+	return nil
 }
 
 func (s *seeder) ensureInventorySource(ctx context.Context) error {

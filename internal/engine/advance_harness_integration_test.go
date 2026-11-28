@@ -15,6 +15,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/internal/testutil/awsseed"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
 )
 
@@ -171,6 +172,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		h.snapshot = snapshot
 	}
 
+	awsseed.Connect(t, pool, testAWSAccount)
 	h.eng = New(Deps{DB: pool, Limits: opts.limits, Now: h.clock.Now, Publisher: h.pub})
 	return h
 }

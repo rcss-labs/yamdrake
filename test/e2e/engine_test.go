@@ -34,6 +34,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/runner"
 	"github.com/rcss-labs/yamdrake/internal/steps/fake"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/internal/testutil/awsseed"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
 	"github.com/rcss-labs/yamdrake/internal/wake"
 	"github.com/rcss-labs/yamdrake/test/e2e/fakegithub"
@@ -202,6 +203,7 @@ func startEngine(t *testing.T, opts engineOpts) *engineStack {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(s.pool.Close)
+	awsseed.Connect(t, s.pool, "111111111111") // the fixture's environments need their account connected
 	if s.valkey, err = valkey.NewClient(valkey.ClientOption{InitAddress: []string{valkeyAddr}, ForceSingleClient: true}); err != nil {
 		t.Fatalf("open valkey: %v", err)
 	}

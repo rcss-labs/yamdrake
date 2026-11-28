@@ -14,6 +14,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/internal/testutil/awsseed"
 )
 
 const (
@@ -50,6 +51,7 @@ func newRunFixture(t *testing.T) *runFixture {
 		}
 		inventory.Services[name] = spec.Service{Name: name, Environments: envs}
 	}
+	awsseed.Connect(t, h.pool, "111122223333", "444455556666") // runs need their accounts connected
 	if _, err := store.ActivateSnapshot(ctx, h.pool, "inv1", mustMarshal(t, inventory), nil, time.Now()); err != nil {
 		t.Fatalf("ActivateSnapshot: %v", err)
 	}

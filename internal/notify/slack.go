@@ -79,13 +79,13 @@ func (s *Slack) Post(ctx context.Context, token, channel, text string) error {
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return transportError(err, token)
+		return transportError(ctx, err, token)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSlackResponse))
 	if err != nil {
-		return transportError(err, token)
+		return transportError(ctx, err, token)
 	}
 
 	var reply struct {
@@ -115,7 +115,12 @@ func (s *Slack) Post(ctx context.Context, token, channel, text string) error {
 }
 
 // transportError reports a network failure without the request URL and with the token scrubbed.
-func transportError(err error, token string) error {
+// When ctx ended, the error wraps ctx.Err() so callers can tell a shutdown
+// or timeout of their own from a failure of Slack.
+func transportError(ctx context.Context, err error, token string) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("slack: request abandoned: %w", ctxErr)
+	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
 		err = urlErr.Err

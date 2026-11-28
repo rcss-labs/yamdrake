@@ -136,17 +136,23 @@ func TestErrorNeverContainsToken(t *testing.T) {
 	closed.Close()
 
 	cases := []struct {
-		name string
-		url  string
+		name   string
+		url    string
+		client *http.Client
 	}{
-		{"ok false", fakeSlack(t, 200, nil, `{"ok":false,"error":"invalid_auth","detail":"`+leaky+`"}`).URL},
-		{"rate limited", fakeSlack(t, 429, map[string]string{"Retry-After": "3"}, `{"ok":false,"error":"`+leaky+`"}`).URL},
-		{"server error", fakeSlack(t, 500, nil, "boom "+leaky).URL},
-		{"transport error", closedURL},
+		{"ok false", fakeSlack(t, 200, nil, `{"ok":false,"error":"invalid_auth","detail":"`+leaky+`"}`).URL, nil},
+		{"rate limited", fakeSlack(t, 429, map[string]string{"Retry-After": "3"}, `{"ok":false,"error":"`+leaky+`"}`).URL, nil},
+		{"server error", fakeSlack(t, 500, nil, "boom "+leaky).URL, nil},
+		{"transport error", closedURL, nil},
+		// A transport whose own error carries the token (as a proxy or a
+		// custom dialer might): the scrub must remove it.
+		{"transport error echoing the token", "http://slack.invalid", &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("dial failed for Bearer " + leaky)
+		})}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := NewSlack(tc.url, nil).Post(context.Background(), testToken, "C1", "x")
+			err := NewSlack(tc.url, tc.client).Post(context.Background(), testToken, "C1", "x")
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -154,5 +160,36 @@ func TestErrorNeverContainsToken(t *testing.T) {
 				t.Errorf("error leaks the token: %q", err.Error())
 			}
 		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestCancelledContextGivesContextCanceled(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer srv.Close()
+	defer close(release) // runs first, so a failed assertion cannot leave Close waiting
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	err := NewSlack(srv.URL, nil).Post(ctx, testToken, "C1", "x")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want errors.Is(err, context.Canceled)", err)
+	}
+	if strings.Contains(err.Error(), testToken) {
+		t.Errorf("error leaks the token: %q", err.Error())
 	}
 }

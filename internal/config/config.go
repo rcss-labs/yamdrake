@@ -51,6 +51,11 @@ type Orchestrator struct {
 	// SweepInterval is how often the engine loop sweeps expired leases and
 	// advances every active run, whether or not a wake-up arrived.
 	SweepInterval time.Duration
+	// SlackAPIURL is the Slack Web API base (YUMDRAKE_SLACK_API_URL, default
+	// https://slack.com/api); tests point it at a fake. NotifyInterval is how
+	// often the sender looks for due notifications (YUMDRAKE_NOTIFY_INTERVAL, 5s).
+	SlackAPIURL    string
+	NotifyInterval time.Duration
 	// LimitPerEnvironment and LimitPerAccount cap the legs running at once.
 	LimitPerEnvironment, LimitPerAccount int
 	// TokenSSOMaxAge is how old the last SSO sign-in of a SAML user may be for
@@ -150,6 +155,11 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	cfg.LogArchiveInterval = l.duration("YUMDRAKE_LOG_ARCHIVE_INTERVAL", "1m")
 	cfg.LogArchiveAfter = l.duration("YUMDRAKE_LOG_ARCHIVE_AFTER", "1h")
 	cfg.SweepInterval = l.duration("YUMDRAKE_SWEEP_INTERVAL", "2s")
+	cfg.SlackAPIURL = l.valueOr("YUMDRAKE_SLACK_API_URL", "https://slack.com/api")
+	if reason := validateHTTPURL(cfg.SlackAPIURL); reason != "" {
+		l.fail("YUMDRAKE_SLACK_API_URL", reason)
+	}
+	cfg.NotifyInterval = l.duration("YUMDRAKE_NOTIFY_INTERVAL", "5s")
 	cfg.LimitPerEnvironment = l.positiveInt("YUMDRAKE_LIMIT_PER_ENVIRONMENT", "10")
 	cfg.LimitPerAccount = l.positiveInt("YUMDRAKE_LIMIT_PER_ACCOUNT", "20")
 	cfg.TokenSSOMaxAge = l.duration("YUMDRAKE_TOKEN_SSO_MAX_AGE", "168h")

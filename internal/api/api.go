@@ -20,6 +20,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/engine"
 	"github.com/rcss-labs/yamdrake/internal/logs"
+	"github.com/rcss-labs/yamdrake/internal/notify"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -57,7 +58,10 @@ type Deps struct {
 	Pool   *pgxpool.Pool
 	Engine Syncer
 	Cipher secrets.Cipher
-	Log    *slog.Logger
+	// Slack posts the test message of the Slack settings page; nil means the
+	// real Slack API (https://slack.com/api).
+	Slack *notify.Slack
+	Log   *slog.Logger
 	// OnConnectionCreated, when set, is called with the (lower case) owner
 	// after a connection is stored so caches for that owner can be dropped.
 	OnConnectionCreated func(owner string)
@@ -275,7 +279,7 @@ func (s *server) routes() []routeDef {
 		{"GET /api/v1/jobs/{id}", auth.View, s.getJob},
 		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
 		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
-	}, append(s.runRoutes(), append(s.accessRoutes(), s.freezeRoutes()...)...)...)
+	}, append(s.runRoutes(), append(s.accessRoutes(), append(s.freezeRoutes(), s.slackRoutes()...)...)...)...)
 }
 
 type errorBody struct {

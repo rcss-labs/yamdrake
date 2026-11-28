@@ -165,3 +165,27 @@ func TestProbe(t *testing.T) {
 		t.Fatal("Probe against closed port = nil, want error")
 	}
 }
+
+func TestReadyzReportsDetailsWithoutAffectingReadiness(t *testing.T) {
+	ok := func(context.Context) error { return nil }
+	h := Handler([]Check{{Name: "postgres", Fn: ok}},
+		WithDetail("notifications", func(context.Context) (any, error) {
+			return map[string]any{"pending": 2, "failed": 1, "oldest_pending_at": nil}, nil
+		}),
+		WithDetail("broken", func(context.Context) (any, error) { return nil, errors.New("boom") }),
+	)
+	rec := get(t, h, http.MethodGet, "/readyz")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: a detail that fails must not make the service unready", rec.Code)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if got := string(body["notifications"]); got != `{"failed":1,"oldest_pending_at":null,"pending":2}` {
+		t.Errorf("notifications = %s, want the detail's value", got)
+	}
+	if _, present := body["broken"]; present {
+		t.Error("a detail that failed is still in the response")
+	}
+}

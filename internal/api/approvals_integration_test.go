@@ -46,10 +46,10 @@ func TestApprovalsListShowsCanApproveAndReason(t *testing.T) {
 	approver := f.userWith("approver", store.Grant{Action: "approve", Label: "prod"})
 	devOnly := f.userWith("devonly", store.Grant{Action: "approve", Label: "dev"})
 
-	// An empty list is [], not null.
+	// An empty list is {"approvals": []}, not null.
 	_, raw := f.doRaw("GET", "/api/v1/approvals", f.adminToken, nil)
-	if strings.TrimSpace(string(raw)) != "[]" {
-		t.Fatalf("empty approvals = %s, want []", raw)
+	if strings.TrimSpace(string(raw)) != `{"approvals":[]}` {
+		t.Fatalf("empty approvals = %s, want {\"approvals\":[]}", raw)
 	}
 
 	runID, manifestID := f.waitingRun(starterUser.ID, prodEnvironment)
@@ -63,11 +63,13 @@ func TestApprovalsListShowsCanApproveAndReason(t *testing.T) {
 		if code != http.StatusOK {
 			t.Fatalf("GET /api/v1/approvals = %d %s", code, body)
 		}
-		var items []map[string]any
-		if err := json.Unmarshal(body, &items); err != nil {
+		var wrapper struct {
+			Approvals []map[string]any `json:"approvals"`
+		}
+		if err := json.Unmarshal(body, &wrapper); err != nil {
 			t.Fatalf("decode %s: %v", body, err)
 		}
-		return items
+		return wrapper.Approvals
 	}
 	single := func(who string, items []map[string]any) map[string]any {
 		t.Helper()
@@ -81,11 +83,16 @@ func TestApprovalsListShowsCanApproveAndReason(t *testing.T) {
 	for key, want := range map[string]any{
 		"run_id": float64(runID), "job_id": "release", "job_title": "release", "environment": prodEnvironment, "label": "prod",
 		"versions": "g 1.0 (1)", "manifest_id": manifestID, "requested_by": float64(starterUser.ID),
-		"can_approve": true, "reason": "",
+		"requested_by_name": "starter", "can_approve": true, "reason": "",
 	} {
 		if got[key] != want {
 			t.Errorf("approver sees %s = %v, want %v", key, got[key], want)
 		}
+	}
+	// A requester with no name is shown by email.
+	f.exec(`UPDATE users SET name = '' WHERE id = $1`, starterUser.ID)
+	if nameless := single("approver", list(approver)); nameless["requested_by_name"] != starterUser.Email {
+		t.Errorf("requested_by_name of a nameless requester = %v, want the email %q", nameless["requested_by_name"], starterUser.Email)
 	}
 	for _, key := range []string{"requested_at", "expires_at"} {
 		if s, _ := got[key].(string); s == "" {
@@ -211,8 +218,8 @@ func TestRunViewShowsAWithdrawnApprovalOfACancelledRun(t *testing.T) {
 	if got["state"] != "cancelled" || approval["decision"] != "withdrawn" || approval["decided_by"] != nil {
 		t.Errorf("state %v approval %v, want a cancelled run with a withdrawn approval decided by nobody", got["state"], approval)
 	}
-	if _, raw := f.doRaw("GET", "/api/v1/approvals", f.adminToken, nil); strings.TrimSpace(string(raw)) != "[]" {
-		t.Errorf("approvals list = %s, want []", raw)
+	if _, raw := f.doRaw("GET", "/api/v1/approvals", f.adminToken, nil); strings.TrimSpace(string(raw)) != `{"approvals":[]}` {
+		t.Errorf("approvals list = %s, want {\"approvals\":[]}", raw)
 	}
 }
 

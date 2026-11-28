@@ -88,6 +88,7 @@ type fakeECS struct {
 	onPoll        func(n int, f *fakeECS) error
 	events        []ecstypes.ServiceEvent
 	stopped       []ecstypes.Task
+	listTasksErr  func(poll int) error // ListTasks fails when it returns an error
 
 	hideLists       int // the first N ListTaskDefinitions calls see nothing
 	listCalls       int
@@ -240,6 +241,11 @@ func (f *fakeECS) DescribeServices(_ context.Context, _ *ecs.DescribeServicesInp
 func (f *fakeECS) ListTasks(_ context.Context, _ *ecs.ListTasksInput, _ ...func(*ecs.Options)) (*ecs.ListTasksOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listTasksErr != nil {
+		if err := f.listTasksErr(f.polls); err != nil {
+			return nil, err
+		}
+	}
 	out := &ecs.ListTasksOutput{}
 	for _, t := range f.stopped {
 		out.TaskArns = append(out.TaskArns, aws.ToString(t.TaskArn))
@@ -762,6 +768,56 @@ func TestBriefStabilityThenCrashFails(t *testing.T) {
 	if out.FailureShort != "tasks keep stopping" {
 		t.Errorf("short = %q", out.FailureShort)
 	}
+}
+
+func TestStoppedTaskInsideTheWindowRestartsIt(t *testing.T) {
+	f := newFixture(t)
+	f.ecs.completeAfter = 1
+	f.ecs.onPoll = func(n int, e *fakeECS) error {
+		if n == 3 { // t = 10s: one crash, fewer than the three that would fail the leg
+			e.stopped = append(e.stopped, crashedTask("a", t0.Add(time.Second), 3))
+		}
+		return nil
+	}
+	f.want(f.run(), "succeeded")
+	// The window restarts at poll 3 (10s) and ends at poll 6 (25s); without the
+	// restart the leg would have ended at poll 4.
+	if f.ecs.polls != 6 {
+		t.Errorf("ended after %d polls, want 6", f.ecs.polls)
+	}
+}
+
+func TestWindowDoesNotCompleteOverUnreadRounds(t *testing.T) {
+	t.Run("stopped tasks could not be read", func(t *testing.T) {
+		f := newFixture(t)
+		f.ecs.completeAfter = 1
+		f.ecs.listTasksErr = func(poll int) error {
+			if poll >= 2 && poll <= 4 {
+				return errors.New("throttled")
+			}
+			return nil
+		}
+		f.want(f.run(), "succeeded")
+		// Good reads resume at poll 5 (20s): the window runs 20s..35s, poll 8.
+		if f.ecs.polls != 8 {
+			t.Errorf("ended after %d polls, want 8", f.ecs.polls)
+		}
+	})
+	t.Run("the service could not be read", func(t *testing.T) {
+		f := newFixture(t)
+		f.ecs.completeAfter = 1
+		f.ecs.onPoll = func(n int, _ *fakeECS) error {
+			if n == 2 || n == 3 {
+				return errors.New("throttled")
+			}
+			return nil
+		}
+		f.want(f.run(), "succeeded")
+		// The first good read after the gap is poll 4 (15s); the window ends at poll 7.
+		if f.ecs.polls != 7 {
+			t.Errorf("ended after %d polls, want 7", f.ecs.polls)
+		}
+	})
 }
 
 func TestDesiredZeroNeedsNoStableWindow(t *testing.T) {

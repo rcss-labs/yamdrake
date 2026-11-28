@@ -496,7 +496,7 @@ func (r *leg) updateService() *queue.Outcome {
 	cancelled := func() *queue.Outcome {
 		r.env.Log("warn", "Cancelled before the service was updated.")
 		return r.stopped("failed", "cancelled before the service was updated",
-			"The service was not changed. Revision "+arn+" is registered and unused.")
+			"The service was not changed; revision "+arn+" was not applied.")
 	}
 	if !r.hasKey(key) && r.env.CancelRequested(r.ctx) {
 		return cancelled()
@@ -523,7 +523,11 @@ func (r *leg) updateService() *queue.Outcome {
 	if out := r.refused(a, "update", "UpdateService"); out != nil {
 		return out
 	}
-	r.env.Log("info", fmt.Sprintf("Updated %s to %s.", r.ref.Service, arn))
+	if a.fnRan {
+		r.env.Log("info", fmt.Sprintf("Updated %s to %s.", r.ref.Service, arn))
+	} else {
+		r.env.Log("info", fmt.Sprintf("An earlier attempt updated %s to %s.", r.ref.Service, arn))
+	}
 	return nil
 }
 
@@ -579,6 +583,7 @@ func (r *leg) wait() queue.Outcome {
 			return r.interrupted()
 		case err != nil:
 			r.lastReadErr = err
+			stableSince = time.Time{} // a round that saw nothing cannot count towards stability
 			if !failing {
 				failing, failingSince = true, clock.Now()
 				r.env.Log("warn", fmt.Sprintf("The service could not be read (%s); trying again.", codeOf(err)))
@@ -598,9 +603,14 @@ func (r *leg) wait() queue.Outcome {
 				since = *deployment.CreatedAt
 			}
 			r.logEvents(svc, deployment != nil, since, seen)
-			obs.StoppedTasks = r.stoppedTasks(ours, since)
+			var tasksRead bool
+			obs.StoppedTasks, tasksRead = r.stoppedTasks(ours, since)
 			v := Judge(obs, ours, r.timeout)
-			if v.State == "succeeded" && svc.DesiredCount > 0 {
+			if v.State == "succeeded" && svc.DesiredCount > 0 && !tasksRead {
+				// Nothing was seen of the stopped tasks this round: it cannot count.
+				stableSince = time.Time{}
+				v = Verdict{State: "waiting"}
+			} else if v.State == "succeeded" && svc.DesiredCount > 0 {
 				// A revision can look steady for a moment between crashes: the
 				// verdict must hold for StableFor with no new stopped task of ours.
 				now, crashes := clock.Now(), len(unreplacedStops(obs.StoppedTasks, ours))
@@ -659,8 +669,9 @@ func (r *leg) logEvents(svc ecstypes.Service, haveDeployment bool, since time.Ti
 }
 
 // stoppedTasks returns the tasks of our task definition that stopped at or
-// after since, newest first. A failed read only loses this part of the round.
-func (r *leg) stoppedTasks(ours string, since time.Time) []ecstypes.Task {
+// after since, newest first. A failed read only loses this part of the round;
+// read is false then, and the stable window must not count the round.
+func (r *leg) stoppedTasks(ours string, since time.Time) (tasks []ecstypes.Task, read bool) {
 	var arns []string
 	var token *string
 	for page := 0; page < maxTaskPages; page++ {
@@ -669,18 +680,17 @@ func (r *leg) stoppedTasks(ours string, since time.Time) []ecstypes.Task {
 			DesiredStatus: ecstypes.DesiredStatusStopped, NextToken: token,
 		})
 		if err != nil {
-			return nil
+			return nil, false
 		}
 		arns = append(arns, list.TaskArns...)
 		if token = list.NextToken; token == nil {
 			break
 		}
 	}
-	var tasks []ecstypes.Task
 	for chunk := range slices.Chunk(arns, 100) {
 		out, err := r.client.DescribeTasks(r.ctx, &ecs.DescribeTasksInput{Cluster: aws.String(r.ref.Cluster), Tasks: chunk})
 		if err != nil {
-			return nil
+			return nil, false
 		}
 		for _, t := range out.Tasks {
 			if aws.ToString(t.TaskDefinitionArn) != ours {
@@ -702,7 +712,7 @@ func (r *leg) stoppedTasks(ours string, since time.Time) []ecstypes.Task {
 		}
 		return a.After(*b)
 	})
-	return tasks
+	return tasks, true
 }
 
 // finish logs and returns the outcome for a verdict that ends the wait.

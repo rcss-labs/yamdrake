@@ -319,7 +319,7 @@ func (s *server) routes() []routeDef {
 		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
 		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
 		{"GET /api/v1/jobs/{id}/versions", auth.View, s.getJobVersions},
-	}, append(s.runRoutes(), append(s.accessRoutes(), append(s.freezeRoutes(), s.slackRoutes()...)...)...)...)
+	}, append(s.runRoutes(), append(s.accessRoutes(), append(s.freezeRoutes(), append(s.slackRoutes(), s.overviewRoutes()...)...)...)...)...)
 }
 
 type errorBody struct {

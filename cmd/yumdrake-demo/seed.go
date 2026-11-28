@@ -105,6 +105,7 @@ func seed(ctx context.Context, cfg seedConfig) error {
 	}{
 		{"the admin user", s.ensureAdmin},
 		{"the GitHub connection", s.ensureConnection},
+		{"the AWS accounts", s.ensureAWSAccounts},
 		{"the inventory source", s.ensureInventorySource},
 		{"the folders", s.ensureFolders},
 		{"the jobs", s.ensureJobs},
@@ -152,6 +153,29 @@ func (s *seeder) ensureConnection(ctx context.Context) error {
 	}
 	return s.api.call(ctx, http.MethodPost, "/api/v1/admin/github-connections",
 		map[string]any{"owner": demoOwner, "method": "token", "token": demoGitHubToken}, nil)
+}
+
+// demoAWSAccounts are the made-up accounts of environments.yaml. The engine
+// refuses runs whose accounts are not connected, so they are connected with
+// role credentials and no secrets; the demo's steps are fake and never use them.
+var demoAWSAccounts = []struct{ name, id string }{
+	{"demo-primary", "111111111111"},
+	{"demo-secondary", "222222222222"},
+}
+
+func (s *seeder) ensureAWSAccounts(ctx context.Context) error {
+	for _, account := range demoAWSAccounts {
+		if _, err := store.AWSAccountByAccountID(ctx, s.pool, account.id); err == nil {
+			continue
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		role := store.AWSCredential{Method: "role", RoleARN: "arn:aws:iam::" + account.id + ":role/yumdrake-demo"}
+		if _, err := store.CreateAWSAccount(ctx, s.pool, store.AWSAccount{Name: account.name, AccountID: account.id, Discovery: role, Deploy: role}, nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *seeder) ensureInventorySource(ctx context.Context) error {

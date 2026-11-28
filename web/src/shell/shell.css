@@ -129,3 +129,11 @@
   margin: 15vh auto 0;
   padding: 0 16px;
 }
+.shell-count {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--wait-b);
+  color: var(--wait-t);
+  font: 500 12px/20px 'IBM Plex Mono', ui-monospace, monospace;
+}

@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	usage = `usage: webstack [--binary bin/yumdrake-orchestrator] [--fixture internal/spec/testdata/valid]
+	usage = `usage: webstack [--binary bin/yumdrake-orchestrator] [--runner-binary bin/yumdrake-runner] [--fixture internal/spec/testdata/valid]
 
 Needs YUMDRAKE_TEST_DATABASE_URL and YUMDRAKE_TEST_VALKEY_ADDR (see make dev-up).
 Exit codes: 0 stopped normally, 1 failure, 2 usage.
@@ -73,6 +73,7 @@ func run() int {
 	flags := flag.NewFlagSet("webstack", flag.ContinueOnError)
 	flags.Usage = func() { _, _ = io.WriteString(os.Stderr, usage) }
 	binary := flags.String("binary", "bin/yumdrake-orchestrator", "path to the orchestrator binary built by make build")
+	runnerBinary := flags.String("runner-binary", "bin/yumdrake-runner", "path to the runner binary built by make build; it runs with the fake steps")
 	fixture := flags.String("fixture", "internal/spec/testdata/valid", "directory committed to the fake GitHub repository")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -103,7 +104,7 @@ func run() int {
 	cleanup := &cleaner{}
 	defer cleanup.run()
 
-	out, err := bringUp(ctx, cleanup, *binary, *fixture, adminURL, valkeyAddr)
+	out, err := bringUp(ctx, cleanup, *binary, *runnerBinary, *fixture, adminURL, valkeyAddr)
 	if err != nil {
 		logf("%v", err)
 		return 1
@@ -159,7 +160,7 @@ func freeAddr() (string, error) {
 	return ln.Addr().String(), nil
 }
 
-func bringUp(ctx context.Context, cleanup *cleaner, binary, fixture, adminURL, valkeyAddr string) (ready, error) {
+func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixture, adminURL, valkeyAddr string) (ready, error) {
 	suffix, err := randomHex(6)
 	if err != nil {
 		return ready{}, err
@@ -225,9 +226,36 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, fixture, adminURL, v
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- svc.Wait() }()
-	cleanup.add(func() { stopChild(svc, exited) })
+	cleanup.add(func() { stopChild("orchestrator", svc, exited) })
 
-	if err := waitReady(ctx, base+"/readyz", exited); err != nil {
+	if err := waitReady(ctx, "the orchestrator", base+"/readyz", exited); err != nil {
+		return ready{}, err
+	}
+
+	// The real runner with the fake steps (allowed only in dev). It shares the database, Valkey and key
+	// prefix, so the runs the browser starts are executed for real, with short polling. The fake step
+	// times are fixed in the runner (2s a step, 30s for a "slow" version).
+	runnerHealthAddr, err := freeAddr()
+	if err != nil {
+		return ready{}, fmt.Errorf("find a free port: %w", err)
+	}
+	runnerEnv := append(append([]string{}, env...),
+		"YUMDRAKE_HEALTH_ADDR="+runnerHealthAddr,
+		"YUMDRAKE_ENV=dev",
+		"YUMDRAKE_FAKE_STEPS=true",
+		"YUMDRAKE_RUNNER_ID=web-e2e-runner",
+		"YUMDRAKE_RUNNER_POLL=500ms",
+	)
+	runnerCmd := exec.Command(runnerBinary) //nolint:gosec // the binary path is an operator-given flag
+	runnerCmd.Env = runnerEnv
+	runnerCmd.Stdout, runnerCmd.Stderr = os.Stderr, os.Stderr
+	if err := runnerCmd.Start(); err != nil {
+		return ready{}, fmt.Errorf("start %s: %w", runnerBinary, err)
+	}
+	runnerExited := make(chan error, 1)
+	go func() { runnerExited <- runnerCmd.Wait() }()
+	cleanup.add(func() { stopChild("runner", runnerCmd, runnerExited) })
+	if err := waitReady(ctx, "the runner", "http://"+runnerHealthAddr+"/readyz", runnerExited); err != nil {
 		return ready{}, err
 	}
 
@@ -332,19 +360,19 @@ func createDatabase(ctx context.Context, cleanup *cleaner, adminURL, name string
 	return u.String(), nil
 }
 
-// stopChild asks the orchestrator to stop and kills it if it does not.
-func stopChild(cmd *exec.Cmd, exited <-chan error) {
+// stopChild asks a child process to stop and kills it if it does not.
+func stopChild(name string, cmd *exec.Cmd, exited <-chan error) {
 	if cmd.Process == nil {
 		return
 	}
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 	select {
 	case err := <-exited:
-		logf("orchestrator stopped: %v", err)
+		logf("%s stopped: %v", name, err)
 	case <-time.After(25 * time.Second):
-		logf("orchestrator ignored SIGTERM, killing it")
+		logf("%s ignored SIGTERM, killing it", name)
 		_ = cmd.Process.Kill()
-		logf("orchestrator killed: %v", <-exited)
+		logf("%s killed: %v", name, <-exited)
 	}
 }
 
@@ -369,11 +397,12 @@ func waitUntil(ctx context.Context, what string, cond func() (bool, error)) erro
 	}
 }
 
-func waitReady(ctx context.Context, readyURL string, exited <-chan error) error {
-	return waitUntil(ctx, "the orchestrator to answer /readyz", func() (bool, error) {
+// waitReady waits for the named service ("the orchestrator", "the runner") to answer /readyz.
+func waitReady(ctx context.Context, service, readyURL string, exited <-chan error) error {
+	return waitUntil(ctx, service+" to answer /readyz", func() (bool, error) {
 		select {
 		case err := <-exited:
-			return false, fmt.Errorf("the orchestrator exited early: %w", err)
+			return false, fmt.Errorf("%s exited early: %w", service, err)
 		default:
 		}
 		resp, err := http.Get(readyURL) //nolint:gosec,noctx // local service

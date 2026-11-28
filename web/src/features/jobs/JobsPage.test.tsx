@@ -51,13 +51,50 @@ describe('JobsPage', () => {
     expect(backend.getByText('1 service')).toBeInTheDocument()
     expect(backend.getByText('prod')).toBeInTheDocument()
     expect(backend.getByText('Runnable')).toBeInTheDocument()
-    expect(backend.getByText('No runs yet')).toBeInTheDocument()
+    expect(await backend.findByText('Succeeded')).toBeInTheDocument()
     const portal = within(jobRowOf('Portal services'))
     expect(portal.getByText('2 services')).toBeInTheDocument()
     expect(portal.getByText('None')).toBeInTheDocument()
     expect(portal.getByText('Has problems (2)')).toBeInTheDocument()
     const billing = within(jobRowOf('Billing service only'))
     expect(billing.getByText('1 service')).toBeInTheDocument()
+  })
+
+  it("shows each job's newest run with its status and time, from one request for all jobs", async () => {
+    renderJobs()
+    await screen.findByRole('link', { name: 'Portal services' })
+    const backend = within(jobRowOf('Backend and microservices'))
+    expect(await backend.findByText('Succeeded')).toBeInTheDocument()
+    expect(backend.getByText(/ago$/)).toBeInTheDocument()
+    expect(within(jobRowOf('Portal services')).getByText('Needs reconciliation')).toBeInTheDocument()
+    expect(within(jobRowOf('Billing service only')).getByText('Plan out of date')).toBeInTheDocument()
+    const asked = requests.filter((request) => request.path === '/api/v1/runs')
+    expect(asked).toHaveLength(1)
+    expect(new URLSearchParams(asked[0]!.search).has('job')).toBe(false)
+  })
+
+  it('says a job that never ran has no runs yet', async () => {
+    renderJobs()
+    const link = await screen.findByRole('link', { name: 'release/yumdrake.yaml' })
+    expect(await within(link.closest('tr') as HTMLElement).findByText('No runs yet')).toBeInTheDocument()
+  })
+
+  it('says "No recent runs" for a job that has none in the newest runs, when older runs exist', async () => {
+    const template = mockState().runs.find((run) => run.id === 109)!
+    for (let index = 0; index < 100; index += 1) {
+      mockState().runs.push({ ...template, id: 400 + index })
+    }
+    renderJobs()
+    await screen.findByRole('link', { name: 'Portal services' })
+    expect(await within(jobRowOf('Portal services')).findByText('No recent runs')).toBeInTheDocument()
+    expect(within(jobRowOf('Backend and microservices')).getByText('Succeeded')).toBeInTheDocument()
+  })
+
+  it('still lists the jobs when the runs cannot be loaded', async () => {
+    failNext('GET', '/api/v1/runs', 500, 'internal')
+    renderJobs()
+    expect(await screen.findByRole('link', { name: 'Portal services' })).toBeInTheDocument()
+    await waitFor(() => expect(within(jobRowOf('Portal services')).getByText('Not available')).toBeInTheDocument())
   })
 
   it('says a job that was never read cannot run, deploys no services and needs no approval', async () => {

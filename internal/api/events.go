@@ -35,6 +35,9 @@ type eventStream struct {
 	// lastState is the last state event body, so unchanged state is not resent.
 	cursor    logs.Cursor
 	lastState []byte
+	// session keeps what a paged read of the log needs between pages (decoded
+	// archived legs), so the whole log is read in linear time.
+	session *logs.Session
 }
 
 // streamEvents serves GET /runs/{id}/events as Server-Sent Events.
@@ -62,7 +65,8 @@ func (s *server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	stream := &eventStream{s: s, run: run, steps: steps, withLogs: principal.Can(auth.ViewLogs, targetOfRun(run))}
+	stream := &eventStream{s: s, run: run, steps: steps, withLogs: principal.Can(auth.ViewLogs, targetOfRun(run)),
+		session: s.Logs.NewSession(run.ID)}
 	// The header is what a reconnecting browser sends; ?after= is for clients
 	// that start a stream at a known position.
 	if id := r.Header.Get("Last-Event-ID"); id != "" {
@@ -74,34 +78,41 @@ func (s *server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	// The first round runs before any header is sent, so a bad cursor or a
-	// database failure is still an ordinary error answer.
-	var out bytes.Buffer
-	final, err := stream.collect(ctx, &out)
-	switch {
-	case errors.Is(err, logs.ErrBadCursor):
-		invalid(w, "the cursor is not one this log produced")
-		return
-	case err != nil:
-		s.internalError(w, r, err)
-		return
-	}
-
 	// A stream is open for as long as the run runs: lift any write deadline.
 	controller := http.NewResponseController(w)
 	_ = controller.SetWriteDeadline(time.Time{})
-	header := w.Header()
-	header.Set("Content-Type", "text/event-stream")
-	header.Set("Cache-Control", "no-cache")
-	header.Set("X-Accel-Buffering", "no") // nginx: do not buffer the stream
-	w.WriteHeader(http.StatusOK)
+	started := false
 	send := func(data []byte) bool {
+		if !started {
+			header := w.Header()
+			header.Set("Content-Type", "text/event-stream")
+			header.Set("Cache-Control", "no-cache")
+			header.Set("X-Accel-Buffering", "no") // nginx: do not buffer the stream
+			w.WriteHeader(http.StatusOK)
+			started = true
+		}
 		if _, err := w.Write(data); err != nil {
 			return false
 		}
 		return controller.Flush() == nil
 	}
-	if !send(out.Bytes()) {
+
+	// The first round writes each page as it reads it. Nothing is sent before
+	// the first page has been read, so a bad cursor or a database failure there
+	// is still an ordinary error answer.
+	var out bytes.Buffer
+	final, err := stream.collect(ctx, &out, send)
+	switch {
+	case !started && errors.Is(err, logs.ErrBadCursor):
+		invalid(w, "the cursor is not one this log produced")
+		return
+	case !started && err != nil && !errors.Is(err, errClientGone):
+		s.internalError(w, r, err)
+		return
+	case err != nil:
+		if !errors.Is(err, errClientGone) && ctx.Err() == nil {
+			s.Log.Error("event stream ended", "run", run.ID, "error", err.Error())
+		}
 		return
 	}
 
@@ -145,28 +156,37 @@ func (s *server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		case <-poll.C:
 		}
-		out.Reset()
-		final, err = stream.collect(ctx, &out)
-		// Whatever was collected before an error is valid and the cursor
-		// moved past it: send it, then end the stream; the browser reconnects
-		// with Last-Event-ID and carries on.
-		if out.Len() > 0 && !send(out.Bytes()) {
-			return
-		}
+		// Pages already written are valid and the cursor moved past them; on an
+		// error the stream ends and the browser reconnects with Last-Event-ID.
+		final, err = stream.collect(ctx, &out, send)
 		if err != nil {
-			if ctx.Err() == nil {
-				s.Log.Error("event stream ended", "run", run.ID, "error", err.Error())
+			if !errors.Is(err, errClientGone) {
+				if out.Len() > 0 {
+					send(out.Bytes()) // a state change read before the failure
+				}
+				if ctx.Err() == nil {
+					s.Log.Error("event stream ended", "run", run.ID, "error", err.Error())
+				}
 			}
 			return
 		}
 	}
 }
 
-// collect appends to out the events for what changed since the last call: a
-// state event when the state differs, then log events until the log is read to
-// its end. It reports whether the run was final when its state was read; the
-// log is read after the state, so a final run's lines are all included.
-func (e *eventStream) collect(ctx context.Context, out *bytes.Buffer) (final bool, err error) {
+// errClientGone means a write to the client failed: the stream is over.
+var errClientGone = errors.New("event stream client is gone")
+
+// collect writes the events for what changed since the last call through send:
+// a state event when the state differs, then log events one page at a time
+// until the log is read to its end. It reports whether the run was final when
+// its state was read; the log is read after the state, so a final run's lines
+// are all included. out is scratch space reused between calls: it holds the
+// state event and then one page, never more.
+//
+// The state event is held back until the first page is read (or there is none),
+// so that an error reading the first page is reported before any byte is sent.
+func (e *eventStream) collect(ctx context.Context, out *bytes.Buffer, send func([]byte) bool) (final bool, err error) {
+	out.Reset()
 	run, err := store.GetRun(ctx, e.s.Pool, e.run.ID)
 	if err != nil {
 		return false, err
@@ -179,32 +199,56 @@ func (e *eventStream) collect(ctx context.Context, out *bytes.Buffer) (final boo
 	if err != nil {
 		return false, err
 	}
-	if !bytes.Equal(body, e.lastState) {
-		e.lastState = body
+	changed := !bytes.Equal(body, e.lastState)
+	if changed {
 		out.Write(frame("state", "", body))
 	}
 	final = finalRuns[run.State]
-	if !e.withLogs {
-		return final, nil
+	flush := func() error {
+		if out.Len() == 0 {
+			return nil
+		}
+		ok := send(out.Bytes())
+		out.Reset()
+		if !ok {
+			return errClientGone
+		}
+		return nil
 	}
-	for {
-		page, err := e.s.Logs.Read(ctx, run.ID, logs.Filter{}, e.cursor, e.s.StreamBatchLines)
-		if err != nil {
-			return false, err
-		}
-		if len(page.Lines) == 0 {
-			return final, nil
-		}
-		data, err := json.Marshal(shapeLogPage(page))
-		if err != nil {
-			return false, err
-		}
-		e.cursor = page.Next
-		out.Write(frame("log", string(page.Next), data))
-		if len(page.Lines) < e.s.StreamBatchLines {
-			return final, nil
+	if e.withLogs {
+		for {
+			page, err := e.session.Read(ctx, logs.Filter{}, e.cursor, e.s.StreamBatchLines)
+			if err != nil {
+				return false, err
+			}
+			if len(page.Lines) == 0 {
+				break
+			}
+			data, err := json.Marshal(shapeLogPage(page))
+			if err != nil {
+				return false, err
+			}
+			out.Write(frame("log", string(page.Next), data))
+			if err := flush(); err != nil {
+				return false, err
+			}
+			e.cursor = page.Next
+			if changed {
+				e.lastState = body // sent together with the first page
+				changed = false
+			}
+			if len(page.Lines) < e.s.StreamBatchLines {
+				break
+			}
 		}
 	}
+	if err := flush(); err != nil {
+		return false, err
+	}
+	if changed {
+		e.lastState = body
+	}
+	return final, nil
 }
 
 // frame is one Server-Sent Event. data is compact JSON, which has no line

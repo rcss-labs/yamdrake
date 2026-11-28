@@ -811,3 +811,44 @@ func TestUpdateRunStateKeepsStampOnSameStateAndRefusesFinalRuns(t *testing.T) {
 		t.Fatalf("refused updates changed the run: %+v", after)
 	}
 }
+
+// A queued leg with an intended operation may have changed something; the
+// queued-to-cancelled move must refuse it even when the operation was recorded
+// after the caller read the leg. A queued leg with only settled operations, or
+// none, can be cancelled.
+func TestSetLegStateWillNotCancelAQueuedLegWithAnIntendedOperation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := newPool(t)
+	fx := newRunFixture(t, pool)
+	run := fx.insert(t, pool, "running")
+	at := nanosecondNow()
+	mk := func(opState string) Leg {
+		l, err := InsertLeg(ctx, pool, Leg{RunID: run.ID, Kind: "step", State: "queued", Attempt: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if opState != "" {
+			if _, err := pool.Exec(ctx, `INSERT INTO operations (leg_id, seq, name, key, state, at) VALUES ($1, 1, 'deploy', 'k', $2, now())`, l.ID, opState); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return l
+	}
+	intended := mk("intended")
+	if err := SetLegState(ctx, pool, intended.ID, "cancelled", at); !errors.Is(err, ErrLegMoved) {
+		t.Fatalf("queued leg with an intended operation: %v, want ErrLegMoved", err)
+	}
+	for _, opState := range []string{"", "done", "failed"} {
+		leg := mk(opState)
+		if err := SetLegState(ctx, pool, leg.ID, "cancelled", at); err != nil {
+			t.Fatalf("queued leg with operation %q: %v, want it cancelled", opState, err)
+		}
+	}
+	legs, _ := LegsOfRun(ctx, pool, run.ID)
+	for _, l := range legs {
+		if l.ID == intended.ID && l.State != "queued" {
+			t.Fatalf("leg with an intended operation is %s, want queued", l.State)
+		}
+	}
+}

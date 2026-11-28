@@ -399,7 +399,7 @@ func (s *flociStack) startRunner(databaseURL, keyPrefix, valkeyAddr string) {
 		bus.Publish(context.Background(), wake.TopicLogs, runID)
 	}, quiet)
 	r := runner.New(queue.New(pool, 10*time.Second, nil), sink, cfg.RunnerID, 8, 2*time.Second, 100*time.Millisecond, quiet).
-		WithShutdownTimeout(10 * time.Second).
+		WithShutdownTimeout(10*time.Second).
 		WithRegistry(pool, 500*time.Millisecond).
 		WithSettledNotifier(func(runID int64) { bus.Publish(context.Background(), wake.TopicRuns, runID) })
 	ctx, cancel := context.WithCancel(context.Background())

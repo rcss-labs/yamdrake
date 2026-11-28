@@ -260,7 +260,7 @@ const awsTestSessionName = "yumdrake-orchestrator-test"
 func (s *server) checkAWSDiscovery(ctx context.Context, account store.AWSAccount) awsTestResult {
 	ctx, cancel := context.WithTimeout(ctx, awsTestTimeout)
 	defer cancel()
-	cfg, err := s.Discovery.For(ctx, account.AccountID, "", awsTestSessionName)
+	cfg, err := s.Discovery.ForUncached(ctx, account.AccountID, "", awsTestSessionName)
 	if err != nil {
 		return awsFailure(err)
 	}

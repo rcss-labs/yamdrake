@@ -19,7 +19,7 @@ import (
 	"github.com/aws/smithy-go"
 
 	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/awsx/credsource"
+	"github.com/rcss-labs/yamdrake/internal/awsx/internal/credsource"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/test/awstest"
 )

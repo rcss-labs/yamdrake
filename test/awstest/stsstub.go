@@ -18,6 +18,8 @@ type STSStub struct {
 	Expires time.Time
 	// FailCode, when set, makes every AssumeRole fail with that AWS error code.
 	FailCode string
+	// RequestID, when set, is returned as the x-amzn-RequestId of every answer.
+	RequestID string
 
 	mu    sync.Mutex
 	calls []url.Values
@@ -40,20 +42,20 @@ func (s *STSStub) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	form, err := url.ParseQuery(string(body))
 	if err != nil || form.Get("Action") != "AssumeRole" {
-		return reply(r, http.StatusBadRequest, errorXML("InvalidAction", "only AssumeRole is stubbed")), nil
+		return s.reply(r, http.StatusBadRequest, errorXML("InvalidAction", "only AssumeRole is stubbed")), nil
 	}
 	s.mu.Lock()
 	s.calls = append(s.calls, form)
 	n := len(s.calls)
 	s.mu.Unlock()
 	if s.FailCode != "" {
-		return reply(r, http.StatusForbidden, errorXML(s.FailCode, "stubbed failure")), nil
+		return s.reply(r, http.StatusForbidden, errorXML(s.FailCode, "stubbed failure")), nil
 	}
 	expires := s.Expires
 	if expires.IsZero() {
 		expires = time.Now().Add(time.Hour)
 	}
-	return reply(r, http.StatusOK, fmt.Sprintf(`<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleResult><Credentials>`+
+	return s.reply(r, http.StatusOK, fmt.Sprintf(`<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleResult><Credentials>`+
 		`<AccessKeyId>ASIASTUB%07d</AccessKeyId><SecretAccessKey>stub-secret-%d</SecretAccessKey><SessionToken>stub-token-%d</SessionToken>`+
 		`<Expiration>%s</Expiration></Credentials><AssumedRoleUser><AssumedRoleId>AROASTUB:s</AssumedRoleId><Arn>arn:aws:sts::123456789012:assumed-role/stub/s</Arn></AssumedRoleUser>`+
 		`</AssumeRoleResult><ResponseMetadata><RequestId>stub</RequestId></ResponseMetadata></AssumeRoleResponse>`,
@@ -64,7 +66,11 @@ func errorXML(code, message string) string {
 	return fmt.Sprintf(`<ErrorResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><Error><Type>Sender</Type><Code>%s</Code><Message>%s</Message></Error><RequestId>stub</RequestId></ErrorResponse>`, code, message)
 }
 
-func reply(r *http.Request, status int, body string) *http.Response {
+func (s *STSStub) reply(r *http.Request, status int, body string) *http.Response {
+	header := http.Header{"Content-Type": {"text/xml"}}
+	if s.RequestID != "" {
+		header.Set("X-Amzn-Requestid", s.RequestID)
+	}
 	return &http.Response{StatusCode: status, Status: http.StatusText(status), Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
-		Header: http.Header{"Content-Type": {"text/xml"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}
+		Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: r}
 }

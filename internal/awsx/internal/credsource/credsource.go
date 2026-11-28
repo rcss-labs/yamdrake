@@ -3,12 +3,20 @@
 // internal/awsx/discovery and internal/awsx/deploy and knows nothing about
 // either: it never reads or decrypts a secret itself, the caller hands it a
 // loader for the one secret of its own purpose.
+//
+// It sits under internal/awsx/internal so that only the two services can use
+// it. For the role method the separation between discovery and deployment
+// rests on the distinct IAM identities of the orchestrator and the runner and
+// on the trust policy of the deploy role (design spec D8), not on this code:
+// the code boundary (internal/awsx/boundary_test.go) only keeps the
+// orchestrator from reaching a deployment key stored in the database.
 package credsource
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -37,14 +45,26 @@ type Request struct {
 	Credential                     store.AWSCredential
 }
 
+// Causes a secret loader reports when the secret cannot be obtained. Only the
+// category is logged: the underlying error could carry key material.
+var (
+	ErrSecretRead    = errors.New("credsource: secret could not be read")
+	ErrSecretDecrypt = errors.New("credsource: secret could not be decrypted")
+)
+
 // Error is a failure to obtain credentials. It names the service and the
 // account and carries the AWS error code, never a message from AWS, a key, a
 // secret or a session token. It satisfies smithy.APIError so callers that
 // report AWS error codes need no special case.
-type Error struct{ Service, AccountID, Code string }
+// RequestID is the AWS request id when AWS answered, for support cases.
+type Error struct{ Service, AccountID, Code, RequestID string }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("%s credentials for account %s: AWS error %s", e.Service, e.AccountID, e.Code)
+	text := fmt.Sprintf("%s credentials for account %s: AWS error %s", e.Service, e.AccountID, e.Code)
+	if e.RequestID != "" {
+		text += " (request id " + e.RequestID + ")"
+	}
+	return text
 }
 
 // ErrorCode is the AWS error code, "Timeout" or "RequestFailed" when AWS gave none.
@@ -113,12 +133,46 @@ func (s *Source) Config(ctx context.Context, req Request, secret func(context.Co
 		return s.credentials(ctx, e, req, secret)
 	})
 	if _, err := provider(ctx); err != nil {
+		s.forget(key{req.AccountID, region, req.SessionName}, e)
 		return aws.Config{}, err
 	}
 	cfg := s.base.Copy()
 	cfg.Region = region
 	cfg.Credentials = provider
 	return cfg, nil
+}
+
+// ConfigUncached is Config without the cache: it always asks AWS for new
+// credentials and stores nothing, so a caller that must see AWS as it is now
+// (the connection test) never gets an earlier answer. The configuration it
+// returns holds those credentials until they expire.
+func (s *Source) ConfigUncached(ctx context.Context, req Request, secret func(context.Context) (string, error)) (aws.Config, error) {
+	if req.Region == "" {
+		req.Region = s.base.Region
+	}
+	if req.Region == "" {
+		req.Region = defaultRegion
+	}
+	creds, err := s.fetch(ctx, req, secret)
+	if err != nil {
+		return aws.Config{}, err
+	}
+	cfg := s.base.Copy()
+	cfg.Region = req.Region
+	cfg.Credentials = aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) { return creds, nil })
+	return cfg, nil
+}
+
+// forget drops the entry of a fetch that failed, so failures do not pile up.
+func (s *Source) forget(k key, e *entry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries[k] == e && e.mu.TryLock() {
+		defer e.mu.Unlock()
+		if !e.have {
+			delete(s.entries, k)
+		}
+	}
 }
 
 // entry returns the cache entry of k, dropping long-expired ones so a runner
@@ -128,7 +182,7 @@ func (s *Source) entry(k key) *entry {
 	defer s.mu.Unlock()
 	now := s.now()
 	for other, e := range s.entries {
-		if other != k && e.expiredBefore(now.Add(-time.Hour)) {
+		if other != k && e.stale(now.Add(-time.Hour)) {
 			delete(s.entries, other)
 		}
 	}
@@ -140,12 +194,14 @@ func (s *Source) entry(k key) *entry {
 	return e
 }
 
-func (e *entry) expiredBefore(t time.Time) bool {
+// stale reports an entry nobody holds that never got credentials or whose
+// credentials ran out before t.
+func (e *entry) stale(t time.Time) bool {
 	if !e.mu.TryLock() {
 		return false // in use
 	}
 	defer e.mu.Unlock()
-	return e.have && e.refreshAt.Before(t)
+	return !e.have || e.refreshAt.Before(t)
 }
 
 func (s *Source) credentials(ctx context.Context, e *entry, req Request, secret func(context.Context) (string, error)) (aws.Credentials, error) {
@@ -174,13 +230,20 @@ func (s *Source) fetch(ctx context.Context, req Request, secret func(context.Con
 	case "key":
 		plain, err := secret(ctx)
 		if err != nil {
-			return aws.Credentials{}, s.failure(req, "SecretUnavailable")
+			cause := "unknown"
+			switch {
+			case errors.Is(err, ErrSecretRead):
+				cause = "read"
+			case errors.Is(err, ErrSecretDecrypt):
+				cause = "decrypt"
+			}
+			return aws.Credentials{}, s.failure(req, "SecretUnavailable", "cause", cause)
 		}
 		return aws.Credentials{AccessKeyID: c.AccessKeyID, SecretAccessKey: plain, Source: "yumdrake-" + s.service + "-key"}, nil
 	case "role":
 		return s.assume(ctx, req)
 	default:
-		return aws.Credentials{}, s.failure(req, "UnsupportedMethod")
+		return aws.Credentials{}, s.failure(req, "UnsupportedMethod", "method", c.Method)
 	}
 }
 
@@ -198,7 +261,7 @@ func (s *Source) assume(ctx context.Context, req Request) (aws.Credentials, erro
 	}
 	out, err := sts.NewFromConfig(cfg).AssumeRole(ctx, input)
 	if err != nil {
-		return aws.Credentials{}, s.failure(req, errorCode(err))
+		return aws.Credentials{}, s.failureFrom(req, err)
 	}
 	got := out.Credentials
 	if got == nil || got.AccessKeyId == nil || got.SecretAccessKey == nil || got.SessionToken == nil || got.Expiration == nil {
@@ -210,8 +273,25 @@ func (s *Source) assume(ctx context.Context, req Request) (aws.Credentials, erro
 	}, nil
 }
 
-func (s *Source) failure(req Request, code string) *Error {
-	return &Error{Service: s.service, AccountID: req.AccountID, Code: code}
+// failure builds the error and logs it with the details that help diagnosis
+// (extra is key/value pairs of non-secret facts).
+func (s *Source) failure(req Request, code string, extra ...any) *Error {
+	return s.log(&Error{Service: s.service, AccountID: req.AccountID, Code: code}, extra...)
+}
+
+func (s *Source) failureFrom(req Request, err error) *Error {
+	failure := &Error{Service: s.service, AccountID: req.AccountID, Code: errorCode(err)}
+	var withID interface{ ServiceRequestID() string }
+	if errors.As(err, &withID) {
+		failure.RequestID = withID.ServiceRequestID()
+	}
+	return s.log(failure)
+}
+
+func (s *Source) log(e *Error, extra ...any) *Error {
+	attrs := append([]any{"service", e.Service, "account", e.AccountID, "code", e.Code, "request_id", e.RequestID}, extra...)
+	slog.Warn("AWS credentials could not be obtained", attrs...)
+	return e
 }
 
 // errorCode is the AWS error code of err; the text of an SDK error can carry

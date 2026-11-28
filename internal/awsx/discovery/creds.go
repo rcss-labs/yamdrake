@@ -3,6 +3,11 @@
 // (encryption purpose awsx.PurposeDiscovery) and has no way to reach the
 // deployment credential, which lives in internal/awsx/deploy. The boundary
 // test in internal/awsx keeps it that way.
+//
+// For the role method that separation rests on the distinct IAM identities of
+// the orchestrator and the runner and on the trust policy of the deploy role
+// (design spec D8); the code boundary only keeps the orchestrator from
+// reaching a deployment key stored in the database.
 package discovery
 
 import (
@@ -14,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/awsx/credsource"
+	"github.com/rcss-labs/yamdrake/internal/awsx/internal/credsource"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -43,6 +48,19 @@ func New(pool *pgxpool.Pool, c secrets.Cipher, base aws.Config, o awsx.Options) 
 // ErrNotConnected for an unknown account and a *credsource.Error, which names
 // the account and the AWS error code and nothing secret, for an AWS failure.
 func (p *Provider) For(ctx context.Context, accountID, region, sessionName string) (aws.Config, error) {
+	return p.build(ctx, accountID, region, sessionName, p.src.Config)
+}
+
+// ForUncached is For without the cache: every call asks AWS for new
+// credentials and stores nothing. The connection test uses it, so a trust
+// policy broken since the last call shows at once.
+func (p *Provider) ForUncached(ctx context.Context, accountID, region, sessionName string) (aws.Config, error) {
+	return p.build(ctx, accountID, region, sessionName, p.src.ConfigUncached)
+}
+
+type configBuilder func(context.Context, credsource.Request, func(context.Context) (string, error)) (aws.Config, error)
+
+func (p *Provider) build(ctx context.Context, accountID, region, sessionName string, config configBuilder) (aws.Config, error) {
 	account, err := store.AWSAccountByAccountID(ctx, p.pool, accountID)
 	if errors.Is(err, store.ErrNotFound) {
 		return aws.Config{}, fmt.Errorf("account %s: %w", accountID, ErrNotConnected)
@@ -53,12 +71,15 @@ func (p *Provider) For(ctx context.Context, accountID, region, sessionName strin
 	secret := func(ctx context.Context) (string, error) {
 		ciphertext, err := store.DiscoverySecret(ctx, p.pool, accountID)
 		if err != nil {
-			return "", err
+			return "", credsource.ErrSecretRead
 		}
 		plain, err := p.cipher.Decrypt(ctx, awsx.PurposeDiscovery, ciphertext)
-		return string(plain), err
+		if err != nil {
+			return "", credsource.ErrSecretDecrypt
+		}
+		return string(plain), nil
 	}
-	return p.src.Config(ctx, credsource.Request{
+	return config(ctx, credsource.Request{
 		AccountID: accountID, Region: region, SessionName: sessionName, Credential: account.Discovery,
 	}, secret)
 }

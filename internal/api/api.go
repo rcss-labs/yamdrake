@@ -55,7 +55,9 @@ type Syncer interface {
 
 // DiscoveryCredentials is implemented by *discovery.Provider.
 type DiscoveryCredentials interface {
-	For(ctx context.Context, accountID, region, sessionName string) (aws.Config, error)
+	// ForUncached skips the credential cache: the connection test must see
+	// AWS as it is now.
+	ForUncached(ctx context.Context, accountID, region, sessionName string) (aws.Config, error)
 }
 
 // Deps are the collaborators of the API.

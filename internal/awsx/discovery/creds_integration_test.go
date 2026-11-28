@@ -3,8 +3,10 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -140,5 +142,99 @@ func TestSecretOfTheOtherPurposeIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "555555555555") {
 		t.Errorf("error %q does not name the account", err)
+	}
+}
+
+// captureLogs routes the default logger into the returned buffer for the test.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &logs
+}
+
+// A failure is diagnosable from the error and the log: account, AWS code and
+// request id, and never the external id, a secret or a session token.
+func TestFailureCarriesRequestIDInErrorAndLog(t *testing.T) {
+	e := newEnv(t)
+	logs := captureLogs(t)
+	stub := &awstest.STSStub{FailCode: "AccessDenied", RequestID: "req-7f3a-0001"}
+	p := New(e.pool, e.cipher, stubbedBase(stub), awsx.Options{})
+	e.createAccount(t, "666666666666", roleCredential("666666666666", "ext-secret-value"), "", "")
+
+	_, err := p.For(context.Background(), "666666666666", "us-east-1", "yumdrake-test")
+	if err == nil {
+		t.Fatal("For succeeded against a failing STS")
+	}
+	for name, text := range map[string]string{"error": err.Error(), "log": logs.String()} {
+		for _, want := range []string{"666666666666", "AccessDenied", "req-7f3a-0001"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s %q does not contain %q", name, text, want)
+			}
+		}
+		for _, bad := range []string{"ext-secret-value", "stub-secret", "stub-token", "stubbed failure"} {
+			if strings.Contains(text, bad) {
+				t.Errorf("%s %q contains %q", name, text, bad)
+			}
+		}
+	}
+	if !strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("log %q is not a warning", logs.String())
+	}
+}
+
+// An unreadable secret is logged with its category (read or decrypt), never
+// the cause text, the key id or the secret.
+func TestUnreadableSecretLogsItsCategory(t *testing.T) {
+	e := newEnv(t)
+	logs := captureLogs(t)
+	p := New(e.pool, e.cipher, stubbedBase(&awstest.STSStub{}), awsx.Options{})
+	const secret = "category-secret-0123456789"
+	e.createAccount(t, "777777777777", store.AWSCredential{Method: "key", AccessKeyID: "AKIACATEGORY0000001"}, secret, otherPurpose)
+
+	_, err := p.For(context.Background(), "777777777777", "us-east-1", "yumdrake-test")
+	if err == nil || !strings.Contains(err.Error(), "SecretUnavailable") {
+		t.Fatalf("For = %v, want SecretUnavailable", err)
+	}
+	if !strings.Contains(logs.String(), "777777777777") || !strings.Contains(logs.String(), "cause=decrypt") {
+		t.Errorf("log %q must name the account and cause=decrypt", logs.String())
+	}
+	for _, bad := range []string{secret, "AKIACATEGORY0000001"} {
+		if strings.Contains(logs.String(), bad) || strings.Contains(err.Error(), bad) {
+			t.Errorf("log or error contains %q", bad)
+		}
+	}
+}
+
+// The connection test must see AWS now, not credentials cached by an earlier
+// call: a trust policy broken since then has to show.
+func TestUncachedCallsAssumeRoleEveryTime(t *testing.T) {
+	e := newEnv(t)
+	stub := &awstest.STSStub{}
+	p := New(e.pool, e.cipher, stubbedBase(stub), awsx.Options{})
+	e.createAccount(t, "888888888888", roleCredential("888888888888", ""), "", "")
+	ctx := context.Background()
+
+	for range 2 {
+		if _, err := p.For(ctx, "888888888888", "us-east-1", "yumdrake-test"); err != nil {
+			t.Fatalf("For: %v", err)
+		}
+	}
+	if n := len(stub.Calls()); n != 1 {
+		t.Fatalf("cached For made %d AssumeRole calls, want 1", n)
+	}
+	for range 2 {
+		if _, err := p.ForUncached(ctx, "888888888888", "us-east-1", "yumdrake-test"); err != nil {
+			t.Fatalf("ForUncached: %v", err)
+		}
+	}
+	if n := len(stub.Calls()); n != 3 {
+		t.Errorf("AssumeRole calls after two ForUncached = %d, want 3", n)
+	}
+	stub.FailCode = "AccessDenied" // the trust policy breaks
+	if _, err := p.ForUncached(ctx, "888888888888", "us-east-1", "yumdrake-test"); err == nil {
+		t.Error("ForUncached reported success on a failing STS because of a cached credential")
 	}
 }

@@ -1,0 +1,23 @@
+# Placeholders only. Copy to terraform.tfvars (which is git-ignored), replace every
+# value, and review the whole configuration before using it. Nothing here is real.
+
+region      = "REGION"            # for example the region your VPC is in
+environment = "ENVIRONMENT"       # for example prod
+owner       = "TEAM-OR-LIST-NAME" # for the owner tag
+
+vpc_id             = "vpc-REPLACE-ME"
+private_subnet_ids = ["subnet-REPLACE-ME-1", "subnet-REPLACE-ME-2"]
+client_cidr_blocks = ["CIDR-OF-YOUR-CLIENT-NETWORK"]
+
+orchestrator_hostname = "yumdrake.REPLACE-ME.example"
+certificate_arn       = "arn:aws:acm:REGION:ACCOUNT-ID:certificate/REPLACE-ME"
+
+image_repository = "REGISTRY/OWNER" # images are REGISTRY/OWNER/yumdrake-orchestrator:<tag>
+image_version    = "vX.Y.Z"
+
+kms_key_administrator_arns = ["arn:aws:iam::ACCOUNT-ID:role/REPLACE-ME"]
+alarm_topic_arn            = "arn:aws:sns:REGION:ACCOUNT-ID:REPLACE-ME"
+
+# Fill these in after applying the target-account module (see the README).
+discovery_role_arns  = []
+deployment_role_arns = []

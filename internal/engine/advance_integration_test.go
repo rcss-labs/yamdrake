@@ -1167,3 +1167,31 @@ func TestCancelReconcilesALegThatWasAttemptedBefore(t *testing.T) {
 		t.Fatalf("locks released although the leg is unknown")
 	}
 }
+
+// TestRunHeldBackByTheEnvironmentLimitSaysSoAndClearsItWhenLegsAreQueued shows
+// the wait reason reaches the run row and is removed again.
+func TestRunHeldBackByTheEnvironmentLimitSaysSoAndClearsItWhenLegsAreQueued(t *testing.T) {
+	h := newHarness(t, harnessOptions{limits: Limits{PerEnvironment: 1, PerAccount: 20}})
+	a := h.running("s1")
+	h.pastRevalidation(a.ID) // A's one config leg is queued and fills the environment
+	b := h.running("s2")
+	h.pastRevalidation(b.ID)
+
+	held := h.expectState(b.ID, "running")
+	if want := "waiting for capacity in " + testEnvironment; held.WaitReason != want {
+		t.Fatalf("wait reason = %q, want %q", held.WaitReason, want)
+	}
+	if got := h.stepLeg(b.ID, "config", "s2").State; got != "pending" {
+		t.Fatalf("B's leg is %s, want pending while the environment is full", got)
+	}
+
+	h.setLeg(h.stepLeg(a.ID, "config", "s1").ID, "succeeded") // room appears
+	h.advance(b.ID)
+	freed := h.expectState(b.ID, "running")
+	if freed.WaitReason != "" {
+		t.Fatalf("wait reason = %q after legs were queued, want it cleared", freed.WaitReason)
+	}
+	if got := h.stepLeg(b.ID, "config", "s2").State; got != "queued" {
+		t.Fatalf("B's leg is %s, want queued", got)
+	}
+}

@@ -583,3 +583,40 @@ func TestCancelFlagsAQueuedLegThatWasAttemptedInsteadOfCancellingIt(t *testing.T
 	d := Decide(View{Run: cancelled(run("resolving")), Legs: []store.Leg{resolve}})
 	wantIDs(t, "resolving CancelLegs", d.CancelLegs, 1)
 }
+
+func TestRunHeldBackByCapacityShowsAWaitReasonAndClearsIt(t *testing.T) {
+	full := func(reason string) View {
+		r := run("running")
+		r.Environment = "prod-eu"
+		r.WaitReason = reason
+		legs := withRevalidated(stepLeg(100, 10, "s", "pending"))
+		return View{Run: r, LocksHeld: true, Steps: []store.RunStep{{ID: 10, Name: "a"}}, Legs: legs,
+			Limits: Limits{PerEnvironment: 10}, RunningInEnv: 10}
+	}
+	const reason = "waiting for capacity in prod-eu"
+
+	d := Decide(full(""))
+	wantIDs(t, "QueueLegs", d.QueueLegs)
+	if d.WaitReason != reason {
+		t.Fatalf("WaitReason = %q, want %q", d.WaitReason, reason)
+	}
+	if d := Decide(full(reason)); d.WaitReason != "" || d.ClearWaitReason {
+		t.Fatalf("an unchanged reason was set again or cleared: %+v", d)
+	}
+
+	// Room appears: the leg is queued and the reason goes.
+	v := full(reason)
+	v.RunningInEnv = 3
+	d = Decide(v)
+	wantIDs(t, "QueueLegs", d.QueueLegs, 100)
+	if !d.ClearWaitReason || d.WaitReason != "" {
+		t.Fatalf("got %+v, want the capacity reason cleared once a leg is queued", d)
+	}
+
+	// Another kind of reason is not ours to clear.
+	v = full("waiting for run #4")
+	v.RunningInEnv = 3
+	if d := Decide(v); d.ClearWaitReason {
+		t.Fatalf("cleared a reason it did not set: %+v", d)
+	}
+}

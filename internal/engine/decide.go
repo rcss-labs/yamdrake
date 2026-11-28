@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -46,6 +47,9 @@ type Decision struct {
 	// WaitReason is also set), so a stale reason such as a freeze never
 	// outlives the state it explained.
 	NewState, WaitReason string
+	// ClearWaitReason empties the run's wait reason without a state change (a
+	// reason Decide set earlier, such as waiting for capacity, no longer holds).
+	ClearWaitReason bool
 	// Reason says in plain words why NewState was chosen when it is a final
 	// state that needs explaining (for example a resolve that ended unknown).
 	Reason       string
@@ -361,8 +365,10 @@ func scheduleStepLegs(v View) Decision {
 
 	envRoom := room(v.Limits.PerEnvironment, v.RunningInEnv+activeOwn)
 	accountRoom := room(v.Limits.PerAccount, v.RunningInAccount+activeOwn)
+	heldBack := false
 	for _, l := range ready {
 		if envRoom == 0 || accountRoom == 0 {
+			heldBack = true
 			break
 		}
 		step := stepsByID[*l.StepID]
@@ -377,6 +383,18 @@ func scheduleStepLegs(v View) Decision {
 		if accountRoom > 0 {
 			accountRoom--
 		}
+	}
+
+	// Say why the run is idle when a limit alone holds its ready legs back, and
+	// take the reason away as soon as a leg is queued or none is held back.
+	capacityReason := "waiting for capacity in " + v.Run.Environment
+	switch {
+	case heldBack && len(d.QueueLegs) == 0:
+		if v.Run.WaitReason != capacityReason {
+			d.WaitReason = capacityReason
+		}
+	case strings.HasPrefix(v.Run.WaitReason, "waiting for capacity in "):
+		d.ClearWaitReason = true
 	}
 	return d
 }

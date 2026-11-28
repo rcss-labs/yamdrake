@@ -249,7 +249,7 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 		o.legsQueued = true
 	}
 
-	if d.NewState != "" || d.WaitReason != "" {
+	if d.NewState != "" || d.WaitReason != "" || d.ClearWaitReason {
 		newState, wait := run.State, d.WaitReason
 		entersFinal := d.NewState != "" && isFinalRunState(d.NewState)
 		if d.NewState != "" {

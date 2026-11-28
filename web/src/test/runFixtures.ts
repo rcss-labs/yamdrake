@@ -456,7 +456,7 @@ function runsFixture(): { runs: RunDetail[]; plans: Record<number, Plan> } {
     requestedBy: omer,
     createdAt: '2026-11-27T11:30:00Z',
     waitReason: 'Planned. Nothing runs until someone starts it.',
-    selection: { billing: { version: '2.5.0' } },
+    selection: { billing: { version: '2.5.0', services: { billing: '2.5.0' } } },
   })
   add(
     failedCheck,
@@ -482,7 +482,7 @@ function runsFixture(): { runs: RunDetail[]; plans: Record<number, Plan> } {
     createdAt: '2026-11-27T11:15:00Z',
     startedAt: null,
     waitReason: 'Waiting for someone with approval rights in prod',
-    selection: { backends: { version: '1.9.4' } },
+    selection: { backends: { version: '1.9.4', services: { 'backend-api': '1.9.4' } } },
     approval: {
       requested_by_name: yael.name,
       requested_at: '2026-11-27T11:20:00Z',
@@ -600,7 +600,7 @@ function runsFixture(): { runs: RunDetail[]; plans: Record<number, Plan> } {
     startedAt: '2026-11-27T08:05:00Z',
     finishedAt: '2026-11-27T08:06:00Z',
     endReason: 'billing changed after the plan was made',
-    selection: { billing: { version: '2.4.0' } },
+    selection: { billing: { version: '2.4.0', services: { billing: '2.4.0' } } },
   })
   add(invalidated, buildPlan(invalidated, [{ name: 'billing', version: '2.4.0', previous: '2.3.9' }]))
 
@@ -616,7 +616,7 @@ function runsFixture(): { runs: RunDetail[]; plans: Record<number, Plan> } {
     createdAt: '2026-11-26T15:00:00Z',
     startedAt: '2026-11-26T15:01:00Z',
     finishedAt: '2026-11-26T15:06:00Z',
-    selection: { backends: { version: '1.9.4' } },
+    selection: { backends: { version: '1.9.4', services: { 'backend-api': '1.9.4' } } },
   })
   const restore = buildRun({
     id: 108,

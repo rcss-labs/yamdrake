@@ -93,7 +93,7 @@ const routes: Route[] = [
   { method: 'GET', path: '/api/v1/runs/104', allowed: 'anyone', success: 200 },
   { method: 'GET', path: '/api/v1/runs/101/plan', allowed: 'anyone', success: 200 },
   { method: 'GET', path: '/api/v1/runs/109/log', allowed: grantee('view_logs'), success: 200 },
-  { method: 'POST', path: '/api/v1/jobs/1/runs', body: { environment: 'hetzner-01', selection: { backends: { version: '1.9.4' } }, start: false }, allowed: grantee('run'), success: 201 },
+  { method: 'POST', path: '/api/v1/jobs/1/runs', body: { environment: 'hetzner-01', selection: { backends: { version: '1.9.4', services: { 'backend-api': '' } } }, start: false }, allowed: grantee('run'), success: 201 },
   { method: 'GET', path: '/api/v1/jobs/1/versions?environment=hetzner-01', allowed: 'anyone', success: 200 },
   { method: 'POST', path: '/api/v1/runs/101/start', body: { manifest_id: fakeHash(101) }, allowed: grantee('run'), success: 200 },
   { method: 'POST', path: '/api/v1/runs/101/cancel', allowed: grantee('cancel'), success: 200 },
@@ -241,7 +241,7 @@ describe('the mock run routes keep state and answer like the server', () => {
 
   it('sends a started run of an approval label to waiting_approval with a pending approval', async () => {
     signInAs(adminMe)
-    const created = await api<RunDetail>('POST', '/api/v1/jobs/1/runs', { environment: 'prod-01', selection: { backends: { version: '1.9.4' } }, start: true })
+    const created = await api<RunDetail>('POST', '/api/v1/jobs/1/runs', { environment: 'prod-01', selection: { backends: { version: '1.9.4', services: { 'backend-api': '' } } }, start: true })
     expect(created).toMatchObject({ state: 'waiting_approval', approval_required: true, kind: 'deploy', requested_by: 1 })
     expect(created.approval?.decision).toBe('pending')
     expect(created.legs.map((leg) => leg.state)).toEqual(['succeeded', 'pending', 'pending', 'pending'])
@@ -260,6 +260,24 @@ describe('the mock run routes keep state and answer like the server', () => {
     expect(body.error.problems.map((problem) => problem.message)).toEqual(['environment "nowhere" is not in the inventory', 'nothing is selected'])
   })
 
+  it('selects only the services a group names: a group with no services (absent or empty) selects nothing, as the engine does', async () => {
+    signInAs(adminMe)
+    for (const group of [{ version: '1.9.4' }, { version: '1.9.4', services: {} }]) {
+      const wire = await fetch('/api/v1/jobs/1/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ environment: 'hetzner-01', selection: { backends: group }, start: false }),
+      })
+      expect(wire.status).toBe(422)
+    }
+    const created = await api<RunDetail>('POST', '/api/v1/jobs/1/runs', {
+      environment: 'hetzner-01',
+      selection: { backends: { version: '1.9.4', services: { 'backend-api': '1.9.5' } } },
+      start: false,
+    })
+    expect(created.legs.filter((leg) => leg.kind === 'step').map((leg) => leg.version)).toEqual(['1.9.5', '1.9.5'])
+  })
+
   it('treats a group missing from the selection as not selected, and refuses a selection of no group', async () => {
     signInAs(adminMe)
     const twoGroups = mockState().jobs[0]!.definition!
@@ -267,7 +285,7 @@ describe('the mock run routes keep state and answer like the server', () => {
       { id: 'backends', label: 'Backend services', services: ['backend-api'], line: 6 },
       { id: 'billing', label: 'Billing', services: ['billing'], line: 9 },
     ]
-    const created = await api<RunDetail>('POST', '/api/v1/jobs/1/runs', { environment: 'hetzner-01', selection: { backends: { version: '1.9.4' } }, start: false })
+    const created = await api<RunDetail>('POST', '/api/v1/jobs/1/runs', { environment: 'hetzner-01', selection: { backends: { version: '1.9.4', services: { 'backend-api': '' } } }, start: false })
     expect(created.state).toBe('planned')
     const wire = await fetch('/api/v1/jobs/1/runs', {
       method: 'POST',
@@ -335,7 +353,7 @@ describe('the mock run routes keep state and answer like the server', () => {
     signInAs(adminMe)
     const rerun = await api<RunDetail>('POST', `/api/v1/runs/${runIds.partiallySucceeded}/rerun-failed`)
     expect(rerun.state).toBe('planned')
-    expect(rerun.selection).toEqual({ portal: { version: '2.3.9' } })
+    expect(rerun.selection).toEqual({ portal: { version: '2.3.9', services: { billing: '2.3.9' } } })
     expect([...new Set(rerun.legs.filter((leg) => leg.kind === 'step').map((leg) => leg.service))]).toEqual(['billing'])
     await expect(api('POST', `/api/v1/runs/${runIds.succeeded}/rerun-failed`)).rejects.toMatchObject({ status: 409 })
   })

@@ -37,6 +37,7 @@ import type {
   Me,
   Problem,
   RunDetail,
+  JobGroup,
   RunLeg,
   RunState,
   Selection,
@@ -478,6 +479,13 @@ function createPlannedRun({ job, environment, services, stepNames, kind, restore
   return run
 }
 
+/** The services of the group that its selection entry names. */
+function namedServices(group: JobGroup, selection: Fields): string[] {
+  if (!(group.id in selection)) return []
+  const named = fields(fields(selection[group.id]).services)
+  return (group.services ?? []).filter((service) => service in named)
+}
+
 function selectionProblems(job: StoredJob, environment: string, selection: Fields): Problem[] {
   const problems: Problem[] = []
   const known = state.inventory.environments.some((candidate) => candidate.name === environment)
@@ -485,8 +493,9 @@ function selectionProblems(job: StoredJob, environment: string, selection: Field
     problems.push({ file: job.path, line: 0, message: `environment "${environment}" is not in the inventory` })
   }
   const groups = job.definition?.groups ?? []
-  // A group missing from the selection is not selected, as in Go; a selection of no group is refused.
-  const chosen = groups.filter((group) => group.id in selection)
+  // As in Go, only the services a group names are selected: a group missing from the selection, or naming no
+  // service, selects nothing, and a selection that selects no service is refused.
+  const chosen = groups.filter((group) => namedServices(group, selection).length > 0)
   if (chosen.length === 0) {
     problems.push({ file: job.path, line: 0, message: 'nothing is selected' })
   }
@@ -496,7 +505,7 @@ function selectionProblems(job: StoredJob, environment: string, selection: Field
       problems.push({ file: job.path, line: group.line, message: `group "${group.id}" needs a version` })
       continue
     }
-    for (const service of group.services ?? []) {
+    for (const service of namedServices(group, selection)) {
       const summary = state.inventory.services.find((candidate) => candidate.name === service)
       if (known && !summary?.environments.includes(environment)) {
         problems.push({ file: job.path, line: group.line, message: `service "${service}" has no block for environment "${environment}"` })
@@ -515,10 +524,9 @@ function selectionProblems(job: StoredJob, environment: string, selection: Field
 function servicesOfSelection(job: StoredJob, selection: Fields): Record<string, string> {
   const result: Record<string, string> = {}
   for (const group of job.definition?.groups ?? []) {
-    if (!(group.id in selection)) continue
     const choice = fields(selection[group.id])
     const overrides = fields(choice.services)
-    for (const service of group.services ?? []) {
+    for (const service of namedServices(group, selection)) {
       result[service] = text(overrides[service]) || text(choice.version)
     }
   }
@@ -533,8 +541,7 @@ function selectionOfServices(job: StoredJob, services: Record<string, string>): 
     const first = mine[0]
     if (first === undefined) continue
     const base = services[first] ?? ''
-    const overrides = Object.fromEntries(mine.filter((service) => services[service] !== base).map((service) => [service, services[service] ?? '']))
-    selection[group.id] = Object.keys(overrides).length > 0 ? { version: base, services: overrides } : { version: base }
+        selection[group.id] = { version: base, services: Object.fromEntries(mine.map((service) => [service, services[service] ?? base])) }
   }
   return selection
 }

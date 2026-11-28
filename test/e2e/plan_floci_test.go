@@ -217,6 +217,8 @@ type flociOpts struct {
 	// rollMaxParallel, when above zero, limits how many services the roll step
 	// deploys at once.
 	rollMaxParallel int
+	// governance makes the job need approval in prod and post to Slack #deploys.
+	governance bool
 }
 
 type flociStack struct {
@@ -357,13 +359,17 @@ func (s *flociStack) loadGitHub(o flociOpts) {
 	if o.rollMaxParallel > 0 {
 		rollLimit = fmt.Sprintf("    max_parallel: %d\n", o.rollMaxParallel)
 	}
+	governance := ""
+	if o.governance {
+		governance = "approval:\n  when:\n    labels: [prod]\nnotify:\n  slack: \"#deploys\"\n"
+	}
 	write("jobs/deploy.yaml", `apiVersion: yumdrake/v1
 kind: Job
 job: deploy
 title: "Deploy everything"
 environment:
   labels: [dev, prod]
-groups:
+`+governance+`groups:
   all:
     label: Everything
     services: [web, api, worker]

@@ -177,7 +177,13 @@ function GroupCard({ group, grants, folders, environmentNames, labels }: GroupCa
         rows={grants}
         rowKey={(grant) => grant.id}
         minWidth={520}
-        empty={<EmptyState title="No grants yet">Add one below. A group with no grants can only view.</EmptyState>}
+        empty={
+          group.admin ? (
+            <EmptyState title="Nothing to grant">Administrators can do everything. Grants are not needed for this group.</EmptyState>
+          ) : (
+            <EmptyState title="No grants yet">Add one below. A group with no grants can only view.</EmptyState>
+          )
+        }
         columns={[
           { key: 'action', header: 'Action', render: (grant) => ACTION_WORDS[grant.action] },
           {

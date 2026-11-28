@@ -138,3 +138,43 @@ func TestWriteRefusesBadInput(t *testing.T) {
 		})
 	}
 }
+
+func TestEmitterSplitsMoreThan100Durations(t *testing.T) {
+	samples := []Sample{{Name: "QueueDepth", Value: 1, Unit: "Count"}}
+	for i := range 250 {
+		samples = append(samples, Sample{Name: "RunDuration", Value: float64(i), Unit: "Seconds"})
+	}
+	samples = append(samples, Sample{Name: "SyncAge", Value: 5, Unit: "Seconds"})
+
+	lines := splitSamples(samples)
+	if len(lines) != 3 {
+		t.Fatalf("splitSamples gave %d lines, want 3", len(lines))
+	}
+	total := 0
+	for i, line := range lines {
+		var out bytes.Buffer
+		if err := Write(&out, "Yumdrake", map[string]string{"E": "p"}, time.Unix(1, 0), line); err != nil {
+			t.Fatalf("line %d is not writable: %v", i, err)
+		}
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+			t.Fatalf("line %d is not JSON: %v", i, err)
+		}
+		var durations []float64
+		if err := json.Unmarshal(doc["RunDuration"], &durations); err != nil {
+			t.Fatalf("line %d RunDuration: %v", i, err)
+		}
+		total += len(durations)
+		_, hasQueue := doc["QueueDepth"]
+		_, hasSync := doc["SyncAge"]
+		if (i == 0) != (hasQueue && hasSync) || (i > 0 && (hasQueue || hasSync)) {
+			t.Errorf("line %d: QueueDepth %v, SyncAge %v; the other metrics belong only in the first line", i, hasQueue, hasSync)
+		}
+	}
+	if total != 250 {
+		t.Errorf("durations over all lines = %d, want 250", total)
+	}
+	if n := len(splitSamples(samples[:3])); n != 1 {
+		t.Errorf("few samples gave %d lines, want 1", n)
+	}
+}

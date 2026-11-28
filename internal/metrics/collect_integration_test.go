@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
@@ -226,6 +228,21 @@ func TestCollectOnAnEmptyDatabase(t *testing.T) {
 		"LogPersistenceFailures", "NotificationFailures", "NotificationsPending"} {
 		if got := one(t, samples, name); got != 0 {
 			t.Errorf("%s = %v, want 0 on an empty database", name, got)
+		}
+	}
+	// Config refuses dimensions named like a metric, so its list must cover every name Collect emits.
+	f := newFixture(t, pool)
+	f.run(t, "succeeded", ptr(time.Now().Add(-5*time.Second)), ptr(time.Now()))
+	if _, err := pool.Exec(context.Background(), `UPDATE inventory_status SET checked_at = now() WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	all, err := Collect(context.Background(), pool, time.Now().UTC().Add(time.Second))
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for _, s := range all {
+		if !slices.Contains(config.MetricNames, s.Name) {
+			t.Errorf("Collect emits %s, which is missing from config.MetricNames", s.Name)
 		}
 	}
 	// Nothing has finished and nothing has ever synced, so these have no value.

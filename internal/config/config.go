@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -261,6 +262,14 @@ func (l *loader) publicURL(variable string) string {
 
 const maxMetricDimensions = 30
 
+// MetricNames are the metric names the orchestrator emits (internal/metrics
+// cannot be imported here: it would make an import cycle). A dimension may not
+// use one; a test in internal/metrics keeps this list in step with Collect.
+var MetricNames = []string{
+	"QueueDepth", "OldestQueuedLegAge", "ActiveRunners", "ExpiredLeases", "RunsFinished", "RunsFailed",
+	"RunDuration", "SyncAge", "LogPersistenceFailures", "NotificationFailures", "NotificationsPending",
+}
+
 var metricDimensionName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,255}$`)
 
 // metricDimensions reads "Name=value,Name=value" (empty or unset means none).
@@ -286,6 +295,10 @@ func (l *loader) metricDimensions(variable string) map[string]string {
 			return nil
 		case !metricDimensionName.MatchString(name):
 			l.fail(variable, fmt.Sprintf("entry %d: the name must match %s", i+1, metricDimensionName))
+			return nil
+		}
+		if name == "_aws" || slices.Contains(MetricNames, name) {
+			l.fail(variable, fmt.Sprintf("entry %d: the name %q is reserved for the metrics", i+1, name))
 			return nil
 		}
 		if _, dup := out[name]; dup {

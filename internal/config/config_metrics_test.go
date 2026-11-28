@@ -63,6 +63,8 @@ func TestLoadOrchestratorRejectsBadMetricsSettings(t *testing.T) {
 		{"name too long", "YUMDRAKE_METRICS_DIMENSIONS", strings.Repeat("a", 256) + "=v", "YUMDRAKE_METRICS_DIMENSIONS"},
 		{"duplicate name", "YUMDRAKE_METRICS_DIMENSIONS", "a=1,a=2", "YUMDRAKE_METRICS_DIMENSIONS"},
 		{"trailing comma", "YUMDRAKE_METRICS_DIMENSIONS", "a=1,", "YUMDRAKE_METRICS_DIMENSIONS"},
+		{"named like the EMF directive", "YUMDRAKE_METRICS_DIMENSIONS", "_aws=x", "YUMDRAKE_METRICS_DIMENSIONS"},
+		{"named like a metric", "YUMDRAKE_METRICS_DIMENSIONS", "QueueDepth=x", "YUMDRAKE_METRICS_DIMENSIONS"},
 		{"too many", "YUMDRAKE_METRICS_DIMENSIONS", strings.Join(thirtyOne, ","), "YUMDRAKE_METRICS_DIMENSIONS"},
 	}
 	for _, c := range cases {

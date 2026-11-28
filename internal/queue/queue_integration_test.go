@@ -997,3 +997,23 @@ func TestSweepRecordsLeaseExpired(t *testing.T) {
 		t.Fatalf("lease_expired events = %d, %v; want %d (four requeues and the unknown)", n, err, MaxLeaseExpiries)
 	}
 }
+
+func TestSweepSurvivesEventRecordingFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newEnv(t)
+	leg := e.addLeg("svc", e.clock.Now())
+	e.claim("dead")
+	// Every insert into system_events now fails.
+	if _, err := e.pool.Exec(ctx, `ALTER TABLE system_events ADD CONSTRAINT never CHECK (false) NOT VALID`); err != nil {
+		t.Fatalf("break system_events: %v", err)
+	}
+	e.clock.Advance(testLease + time.Second)
+	requeued, unknown, err := e.q.Sweep(ctx)
+	if err != nil || requeued != 1 || unknown != 0 {
+		t.Fatalf("Sweep = %d, %d, %v; want the leg requeued and no error", requeued, unknown, err)
+	}
+	if got := e.get(leg.ID); got.State != "queued" {
+		t.Fatalf("leg state = %q, want queued", got.State)
+	}
+}

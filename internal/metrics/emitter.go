@@ -151,7 +151,28 @@ func (e *Emitter) emit(ctx context.Context) {
 		}
 		return
 	}
-	if err := Write(e.out, e.namespace, e.dims, at, samples); err != nil {
-		e.log.Error("could not write metrics", "error", err.Error())
+	for _, line := range splitSamples(samples) {
+		if err := Write(e.out, e.namespace, e.dims, at, line); err != nil {
+			e.log.Error("could not write metrics", "error", err.Error())
+		}
 	}
+}
+
+// splitSamples divides samples into lines so that no name has more than
+// maxValuesPerMetric values in one line (Write refuses more). Line k holds the
+// k-th chunk of every name that has one, so with up to 100 durations there is
+// one line, and with more the first line has every metric and the later ones
+// only the remaining durations.
+func splitSamples(samples []Sample) [][]Sample {
+	var lines [][]Sample
+	seen := map[string]int{}
+	for _, s := range samples {
+		k := seen[s.Name] / maxValuesPerMetric
+		seen[s.Name]++
+		for len(lines) <= k {
+			lines = append(lines, nil)
+		}
+		lines[k] = append(lines[k], s)
+	}
+	return lines
 }

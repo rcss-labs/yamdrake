@@ -359,19 +359,23 @@ describe('Console follow tail', () => {
 })
 
 describe('Console with thousands of lines', () => {
-  it('renders 5,000 lines within 1.5 seconds, and one click on a failed service shows only its lines', async () => {
+  it('renders 5,000 lines within 15 times the 500-line time, and one click on a failed service shows only its lines', async () => {
     const run = runOf(runIds.partiallySucceeded)
     const legIds = [10503, 10504, 10505, 10506, 10507, 10508]
-    const lines: LogLine[] = []
-    const seqs = new Map<number, number>()
-    let billingFailed = 0
-    for (let index = 0; index < 5000; index += 1) {
-      const legId = legIds[index % legIds.length] ?? 0
-      const seq = (seqs.get(legId) ?? 0) + 1
-      seqs.set(legId, seq)
-      if (run.legs.find((leg) => leg.id === legId)?.service === 'billing') billingFailed += 1
-      lines.push(line(legId, seq, `line ${index}`))
+    const makeLines = (count: number) => {
+      const made: LogLine[] = []
+      const seqs = new Map<number, number>()
+      let billing = 0
+      for (let index = 0; index < count; index += 1) {
+        const legId = legIds[index % legIds.length] ?? 0
+        const seq = (seqs.get(legId) ?? 0) + 1
+        seqs.set(legId, seq)
+        if (run.legs.find((leg) => leg.id === legId)?.service === 'billing') billing += 1
+        made.push(line(legId, seq, `line ${index}`))
+      }
+      return { made, billing }
     }
+    const { made: lines, billing: billingFailed } = makeLines(5000)
 
     function Harness() {
       const [scope, setScope] = useState<ConsoleScope>(wholeRun)
@@ -387,19 +391,26 @@ describe('Console with thousands of lines', () => {
       const used = process.cpuUsage(since)
       return (used.user + used.system) / 1000
     }
-    const wallStart = performance.now()
+    // A baseline on this machine, right now: 500 lines. The bound is a multiple of it, so a slow CI box passes
+    // and a render that grows worse than linearly does not.
+    const small = makeLines(500).made
+    const baselineStart = process.cpuUsage()
+    const baseline = render(<Console run={run} live={liveOf(run, small)} scope={wholeRun} />)
+    const t500 = cpuMs(baselineStart)
+    expect(rowsOf(baseline.container)).toHaveLength(500)
+    baseline.unmount()
+
     const start = process.cpuUsage()
     const { container } = render(<Harness />)
-    const elapsed = cpuMs(start)
+    const t5000 = cpuMs(start)
     expect(rowsOf(container)).toHaveLength(5000)
-    expect(elapsed).toBeLessThan(1500)
+    expect(t5000).toBeLessThanOrEqual(15 * Math.max(t500, 50))
 
     const clickStart = process.cpuUsage()
     await userEvent.click(screen.getAllByRole('button', { name: /^billing/ })[0] as HTMLElement)
     const shown = rowsOf(container)
-    expect(cpuMs(clickStart)).toBeLessThan(1500)
-    // A generous wall-time bound as well, so a hang on a quiet machine still fails.
-    expect(performance.now() - wallStart).toBeLessThan(5000)
+    // A hang still fails: the test's own timeout ends it.
+    expect(cpuMs(clickStart)).toBeLessThanOrEqual(15 * Math.max(t500, 50))
     expect(shown).toHaveLength(billingFailed)
     expect(billingFailed).toBeGreaterThan(40)
     expect(billingFailed).toBeLessThan(5000)

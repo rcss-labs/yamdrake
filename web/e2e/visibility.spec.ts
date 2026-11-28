@@ -136,6 +136,9 @@ test('the overview, versions, service, queue and health screens tell the truth a
   await shots(page, 'queue')
 
   // ---- System health: the runner stops, and the screen says so ----
+  await page.goto(`${baseURL}/admin/health`)
+  await expect(page.getByRole('region', { name: 'Runners' })).toBeVisible()
+  await expect(page.getByText('No runner has reported', { exact: false })).toHaveCount(0)
   stopRunner()
   await expect
     .poll(async () => ((await (await page.request.get(`${baseURL}/api/v1/system/health`)).json()) as { problems: string[] }).problems, {

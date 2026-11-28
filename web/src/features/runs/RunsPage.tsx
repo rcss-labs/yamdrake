@@ -1,6 +1,11 @@
 import { PageHeader } from '../../ui'
+import { RunsList } from './RunsList'
 
-// Placeholder: Task 3 of Plan 8b fills this in.
 export function RunsPage() {
-  return <PageHeader title="Runs" />
+  return (
+    <>
+      <PageHeader title="Runs" lead="Every run of every job, started from the web or the CLI" />
+      <RunsList search noRunsText="No runs yet" />
+    </>
+  )
 }

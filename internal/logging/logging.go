@@ -5,7 +5,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/rcss-labs/yamdrake/internal/version"
+	"github.com/rcss-labs/yumdrake/internal/version"
 )
 
 // New returns a JSON logger that tags every line with the service name and build version.

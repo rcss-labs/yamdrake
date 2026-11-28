@@ -24,12 +24,12 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/rcss-labs/yamdrake/internal/artifacts"
-	"github.com/rcss-labs/yamdrake/internal/manifest"
-	"github.com/rcss-labs/yamdrake/internal/queue"
-	"github.com/rcss-labs/yamdrake/internal/steps/resolve"
-	"github.com/rcss-labs/yamdrake/internal/steps/revalidate"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/artifacts"
+	"github.com/rcss-labs/yumdrake/internal/manifest"
+	"github.com/rcss-labs/yumdrake/internal/queue"
+	"github.com/rcss-labs/yumdrake/internal/steps/resolve"
+	"github.com/rcss-labs/yumdrake/internal/steps/revalidate"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 const (

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 func seedOptions() awstest.StackOptions {

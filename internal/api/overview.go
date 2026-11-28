@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/analytics"
-	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/analytics"
+	"github.com/rcss-labs/yumdrake/internal/auth"
 )
 
 const defaultOverviewDays = 14

@@ -13,15 +13,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/adminuser"
-	"github.com/rcss-labs/yamdrake/internal/api"
-	"github.com/rcss-labs/yamdrake/internal/app"
-	"github.com/rcss-labs/yamdrake/internal/audit"
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/cache"
-	"github.com/rcss-labs/yamdrake/internal/config"
-	"github.com/rcss-labs/yamdrake/internal/db"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/adminuser"
+	"github.com/rcss-labs/yumdrake/internal/api"
+	"github.com/rcss-labs/yumdrake/internal/app"
+	"github.com/rcss-labs/yumdrake/internal/audit"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/cache"
+	"github.com/rcss-labs/yumdrake/internal/config"
+	"github.com/rcss-labs/yumdrake/internal/db"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 const (

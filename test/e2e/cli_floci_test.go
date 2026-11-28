@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 const (
@@ -47,7 +47,7 @@ type cliTool struct {
 func buildCLI(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "yumdrake")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/rcss-labs/yamdrake/cmd/yumdrake")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/rcss-labs/yumdrake/cmd/yumdrake")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build the CLI: %v\n%s", err, out)
 	}

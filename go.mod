@@ -1,4 +1,4 @@
-module github.com/rcss-labs/yamdrake
+module github.com/rcss-labs/yumdrake
 
 go 1.26.0
 

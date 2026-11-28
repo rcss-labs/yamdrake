@@ -20,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
 )
 
 // Archive stores the compressed log of settled legs.

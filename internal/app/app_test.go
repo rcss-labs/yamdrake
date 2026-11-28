@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/health"
+	"github.com/rcss-labs/yumdrake/internal/health"
 )
 
 func discardLogger() *slog.Logger {

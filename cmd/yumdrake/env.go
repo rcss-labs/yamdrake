@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/cli"
 )
 
 // env is everything a command takes from the machine it runs on. Tests replace

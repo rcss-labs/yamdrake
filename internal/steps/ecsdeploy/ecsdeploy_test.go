@@ -20,13 +20,13 @@ import (
 	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/manifest"
-	"github.com/rcss-labs/yamdrake/internal/queue"
-	"github.com/rcss-labs/yamdrake/internal/runner/runnertest"
-	"github.com/rcss-labs/yamdrake/internal/steps/ecsdeploy"
-	"github.com/rcss-labs/yamdrake/internal/steps/resolve"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/manifest"
+	"github.com/rcss-labs/yumdrake/internal/queue"
+	"github.com/rcss-labs/yumdrake/internal/runner/runnertest"
+	"github.com/rcss-labs/yumdrake/internal/steps/ecsdeploy"
+	"github.com/rcss-labs/yumdrake/internal/steps/resolve"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 const (

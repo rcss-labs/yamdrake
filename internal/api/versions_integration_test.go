@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
 
-	"github.com/rcss-labs/yamdrake/internal/versions"
+	"github.com/rcss-labs/yumdrake/internal/versions"
 )
 
 // repoImages answers DescribeImages with fixed tags per repository name.

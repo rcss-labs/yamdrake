@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/cli"
 )
 
 // watchOptions are the choices of a watch.

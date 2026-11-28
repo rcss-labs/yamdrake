@@ -16,9 +16,9 @@ import (
 	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx/discovery"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/versions"
+	"github.com/rcss-labs/yumdrake/internal/awsx/discovery"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/versions"
 )
 
 // fleetECR answers DescribeImages for several repositories, by name. A

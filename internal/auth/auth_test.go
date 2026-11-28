@@ -3,7 +3,7 @@ package auth
 import (
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 var allActions = []Action{View, ViewLogs, Run, Cancel, Approve, Restore, ManageJobs, ManageConnections, ManageAccess, ViewAudit}

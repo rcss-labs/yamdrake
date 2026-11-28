@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 func TestTokenPlaintextReturnedOnceAndListNeverShowsIt(t *testing.T) {

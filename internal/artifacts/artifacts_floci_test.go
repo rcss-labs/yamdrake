@@ -15,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"github.com/rcss-labs/yamdrake/internal/artifacts"
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/internal/artifacts"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 const region = "us-east-1"

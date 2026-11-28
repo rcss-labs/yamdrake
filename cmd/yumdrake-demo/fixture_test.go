@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 // demoDir is the sample inventory and jobs the demo serves; the image copies them to /demo/platform.

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/github"
-	"github.com/rcss-labs/yamdrake/test/e2e/fakegithub"
+	"github.com/rcss-labs/yumdrake/internal/github"
+	"github.com/rcss-labs/yumdrake/test/e2e/fakegithub"
 )
 
 const (

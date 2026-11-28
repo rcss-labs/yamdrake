@@ -7,9 +7,9 @@ import (
 	"io"
 	"os"
 
-	"github.com/rcss-labs/yamdrake/internal/app"
-	"github.com/rcss-labs/yamdrake/internal/config"
-	"github.com/rcss-labs/yamdrake/internal/version"
+	"github.com/rcss-labs/yumdrake/internal/app"
+	"github.com/rcss-labs/yumdrake/internal/config"
+	"github.com/rcss-labs/yumdrake/internal/version"
 )
 
 const (

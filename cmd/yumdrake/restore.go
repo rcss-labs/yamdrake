@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/cli"
 )
 
 const restoreHelp = `usage: yumdrake restore RUN [--service NAME]... [--yes] [--watch] [--logs] [--wait-for-approval] [-o json]

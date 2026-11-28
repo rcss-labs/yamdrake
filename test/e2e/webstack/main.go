@@ -34,8 +34,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/rcss-labs/yamdrake/test/awstest"
-	"github.com/rcss-labs/yamdrake/test/e2e/fakegithub"
+	"github.com/rcss-labs/yumdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/test/e2e/fakegithub"
 )
 
 const (

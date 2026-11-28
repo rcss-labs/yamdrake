@@ -17,8 +17,8 @@ import (
 
 	"github.com/crewjam/saml"
 
-	"github.com/rcss-labs/yamdrake/internal/secrets"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // lockedBuffer is a log destination that several requests may write at once.

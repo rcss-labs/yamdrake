@@ -10,10 +10,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/rcss-labs/yamdrake/internal/github"
-	"github.com/rcss-labs/yamdrake/internal/secrets"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
+	"github.com/rcss-labs/yumdrake/internal/github"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	yumsync "github.com/rcss-labs/yumdrake/internal/sync"
 )
 
 // connectionPurpose must match the purpose the API encrypts connection

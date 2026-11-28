@@ -20,11 +20,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	valkey "github.com/valkey-io/valkey-go"
 
-	"github.com/rcss-labs/yamdrake/internal/cache"
-	"github.com/rcss-labs/yamdrake/internal/config"
-	"github.com/rcss-labs/yamdrake/internal/db"
-	"github.com/rcss-labs/yamdrake/internal/health"
-	"github.com/rcss-labs/yamdrake/internal/logging"
+	"github.com/rcss-labs/yumdrake/internal/cache"
+	"github.com/rcss-labs/yumdrake/internal/config"
+	"github.com/rcss-labs/yumdrake/internal/db"
+	"github.com/rcss-labs/yumdrake/internal/health"
+	"github.com/rcss-labs/yumdrake/internal/logging"
 )
 
 // Exit codes returned by the service entry points.

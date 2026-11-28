@@ -5,7 +5,7 @@ package auth
 import (
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // Action is something a principal may be allowed to do.

@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
-	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/spec"
 )
 
 // selectionGroup is one group's choice in the body of POST /jobs/{id}/runs.

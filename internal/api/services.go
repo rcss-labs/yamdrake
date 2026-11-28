@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/manifest"
-	"github.com/rcss-labs/yamdrake/internal/running"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/manifest"
+	"github.com/rcss-labs/yumdrake/internal/running"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // serviceHistoryLimit is how many deployments and config changes the service

@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/rcss-labs/yamdrake/internal/config"
+	"github.com/rcss-labs/yumdrake/internal/config"
 )
 
 const (

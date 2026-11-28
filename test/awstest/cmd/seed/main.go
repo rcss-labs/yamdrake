@@ -17,7 +17,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 const usage = `usage: seed [--endpoint URL] [--suffix S] [--dev-account ID] [--prod-account ID] [--platform-account ID] [--repair]

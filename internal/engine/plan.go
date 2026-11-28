@@ -7,8 +7,8 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // GroupSelection is what a person chose in one group of the job.

@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/cli"
 )
 
 const selectionHelp = `Choosing what to deploy:

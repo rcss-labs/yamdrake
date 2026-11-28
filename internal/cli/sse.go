@@ -25,17 +25,30 @@ var ErrStopFollowing = errors.New("stop following")
 
 const maxEventLineBytes = 16 << 20
 
+// pingEvent is the named keep-alive event the server sends on a quiet stream.
+const pingEvent = "ping"
+
 // ReadEvents parses a Server-Sent Events stream and calls handle for every
 // complete frame. A frame the stream ended in the middle of is not delivered.
 // Comment lines (": keep-alive") are ignored. It returns nil at the end of the
 // stream, or the handler's error.
 func ReadEvents(r io.Reader, handle func(Event) error) error {
+	return readEvents(r, nil, handle)
+}
+
+// readEvents is ReadEvents that also calls onLine for every line received,
+// comments and keep-alives included, so a caller can tell a quiet stream from a
+// dead one.
+func readEvents(r io.Reader, onLine func(), handle func(Event) error) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), maxEventLineBytes)
 	var name, id string
 	var data []string
 	seen := false
 	for scanner.Scan() {
+		if onLine != nil {
+			onLine()
+		}
 		line := scanner.Text()
 		if line == "" {
 			if seen {
@@ -187,9 +200,11 @@ func (c *Client) followOnce(ctx context.Context, o FollowOptions, lastID *string
 	idle := time.AfterFunc(o.Idle, cancel)
 	defer idle.Stop()
 	var handlerErr error
-	err = ReadEvents(body, func(e Event) error {
-		idle.Reset(o.Idle)
+	err = readEvents(body, func() { idle.Reset(o.Idle) }, func(e Event) error {
 		*lostSince, *backoff = time.Time{}, firstBackoff
+		if e.Name == pingEvent {
+			return nil // the server's keep-alive, not a run event
+		}
 		if e.ID != "" {
 			*lastID = e.ID
 		}

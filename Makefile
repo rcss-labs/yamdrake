@@ -10,7 +10,7 @@ BINARY_PACKAGES := orchestrator runner
 # Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
 export VERSION COMMIT
 
-.PHONY: help build lint test dev-up dev-down test-integration test-floci floci-clean test-e2e images smoke compose-check demo demo-down demo-check tf-check web-install web-lint web-test web-build web-e2e
+.PHONY: help build cli-dist lint test dev-up dev-down test-integration test-floci floci-clean test-e2e images smoke compose-check demo demo-down demo-check tf-check web-install web-lint web-test web-build web-e2e
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -25,6 +25,29 @@ build: web-build ## Build yumdrake-orchestrator, yumdrake-runner and the yumdrak
 			echo "skipping cmd/$$pkg (directory does not exist yet)"; \
 		fi; \
 	done
+
+CLI_DIST_TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+
+cli-dist: ## Cross-compile the yumdrake CLI into dist/ (tar.gz, zip for windows) with checksums.txt
+	@rm -rf dist
+	@mkdir -p dist
+	@set -euo pipefail; \
+	for target in $(CLI_DIST_TARGETS); do \
+		os="$${target%/*}"; arch="$${target#*/}"; \
+		name="yumdrake_$${os}_$${arch}"; \
+		stage="dist/$$name"; \
+		bin=yumdrake; [ "$$os" = windows ] && bin=yumdrake.exe; \
+		mkdir -p "$$stage"; \
+		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" go build -trimpath -ldflags "$(LDFLAGS)" -o "$$stage/$$bin" ./cmd/yumdrake; \
+		if [ "$$os" = windows ]; then \
+			(cd dist && zip -q -r "$$name.zip" "$$name"); \
+		else \
+			tar -C dist -czf "dist/$$name.tar.gz" "$$name"; \
+		fi; \
+		rm -rf "$$stage"; \
+	done; \
+	cd dist && { command -v sha256sum >/dev/null 2>&1 && sha256sum yumdrake_* || shasum -a 256 yumdrake_*; } > checksums.txt
+	@cat dist/checksums.txt
 
 lint: ## Check gofmt, go vet and golangci-lint
 	@command -v golangci-lint >/dev/null 2>&1 || { \

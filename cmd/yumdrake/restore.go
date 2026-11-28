@@ -216,7 +216,11 @@ func runsReconcile(args []string, stdout, stderr io.Writer, e env) int {
 		if !e.StdinIsTerminal {
 			return fail(stderr, usageError("there is no terminal to ask on: check the service yourself, then pass --yes"))
 		}
-		if !s.confirm(fmt.Sprintf("Record that %s in run %d %s?", legLabel(*target), id, outcome)) {
+		ok, err := s.confirm(fmt.Sprintf("Record that %s in run %d %s?", legLabel(*target), id, outcome))
+		if err != nil {
+			return s.interrupted()
+		}
+		if !ok {
 			s.progressf("Nothing was recorded.\n")
 			return cli.ExitFailed
 		}

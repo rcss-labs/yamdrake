@@ -86,13 +86,39 @@ func (s *session) findJob(jobID string) (jobSummary, error) {
 		return jobSummary{}, err
 	}
 	var ids []string
+	var exact, partial []jobSummary // the whole path; the job id or the end of the path
 	for _, j := range jobs {
-		if j.JobID == jobID {
-			return j, nil
-		}
 		ids = append(ids, j.JobID)
+		switch {
+		case j.Path != "" && j.Path == jobID:
+			exact = append(exact, j)
+		case j.JobID == jobID, j.Path != "" && strings.HasSuffix(j.Path, "/"+jobID):
+			partial = append(partial, j)
+		}
 	}
-	return jobSummary{}, usageError("unknown job %q. %s", jobID, nearby(jobID, ids))
+	matched := partial
+	if len(exact) > 0 {
+		matched = exact // a full path is never ambiguous with a suffix of another
+	}
+	switch len(matched) {
+	case 0:
+		return jobSummary{}, usageError("unknown job %q. %s", jobID, nearby(jobID, ids))
+	case 1:
+		return matched[0], nil
+	}
+	var labels []string
+	for _, j := range matched {
+		labels = append(labels, jobLabel(j))
+	}
+	return jobSummary{}, usageError("%q matches more than one job; give the full path of the one you mean:\n  %s", jobID, strings.Join(labels, "\n  "))
+}
+
+// jobLabel names a job for a list of candidates: its path, else its id.
+func jobLabel(j jobSummary) string {
+	if j.Path == "" {
+		return j.JobID
+	}
+	return fmt.Sprintf("%s (job %s, %s)", j.Path, j.JobID, orDash(j.Folder))
 }
 
 // nearby describes the ids that look like what was typed, else all of them.

@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ---- fixtures for the plan, run and watch flow ----
@@ -608,5 +612,95 @@ func TestPlanRunAndWatchHelpHaveAnExample(t *testing.T) {
 		if code != 0 || !strings.Contains(stdout, "Example:") {
 			t.Errorf("%v -h: exit %d stdout %q", args, code, stdout)
 		}
+	}
+}
+
+// blockingReader never returns: a terminal where nobody has typed yet.
+type blockingReader struct{ release chan struct{} }
+
+func (b blockingReader) Read([]byte) (int, error) {
+	<-b.release
+	return 0, io.EOF
+}
+
+// lockedBuffer is a buffer another goroutine can poll while the command writes.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func TestPromptReturnsOnInterrupt(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	ctx, cancel := context.WithCancel(context.Background())
+	var stderr bytes.Buffer
+	s := &session{ctx: ctx, stderr: &stderr, e: env{Stdin: blockingReader{release}}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.confirm("Start this run?")
+		done <- err
+	}()
+	cancel() // Ctrl-C while the question waits
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the prompt kept waiting for Enter after the interrupt")
+	}
+}
+
+func TestRunInterruptedAtThePromptExits130WithOnlyANewline(t *testing.T) {
+	h, f := newFlow(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.ctx, h.stdinTerminal = ctx, true
+	release := make(chan struct{})
+	defer close(release)
+	var out bytes.Buffer
+	errOut := &lockedBuffer{}
+	e := env{Getenv: func(string) string { return "" }, Stdin: blockingReader{release}, StdinIsTerminal: true,
+		ConfigPath: h.configPath, Ctx: ctx,
+		Wait: func(context.Context, time.Duration) error { return nil }, Now: func() time.Time { return h.clock }}
+	go func() {
+		for !strings.Contains(errOut.String(), "[y/N]") {
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+	}()
+	code := runEnv(planArgs("run"), &out, errOut, e)
+	if code != 130 || f.started() {
+		t.Errorf("exit %d started %v, want 130 and not started", code, f.started())
+	}
+	if !strings.HasSuffix(errOut.String(), "[y/N] \n") || strings.Contains(errOut.String(), "Stopped") {
+		t.Errorf("stderr ends %q", errOut.String())
+	}
+}
+
+func TestRunDeclinedJSONPrintsOneDocument(t *testing.T) {
+	h, f := newFlow(t)
+	h.stdinTerminal, h.stdin = true, "n\n"
+	code, stdout, _ := h.run(append(planArgs("run"), "-o", "json")...)
+	var out struct {
+		Run     map[string]any `json:"run"`
+		Plan    map[string]any `json:"plan"`
+		Started *bool          `json:"started"`
+	}
+	decodeOne(t, stdout, &out)
+	if code != 5 || f.started() || out.Run["id"] == nil || out.Plan["id"] != "abc123" || out.Started == nil || *out.Started {
+		t.Errorf("exit %d started %v out %+v", code, f.started(), out)
 	}
 }

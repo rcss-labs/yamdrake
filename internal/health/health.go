@@ -21,8 +21,22 @@ type Check struct {
 	Fn   func(context.Context) error
 }
 
+type detail struct {
+	name string
+	fn   func(context.Context) (any, error)
+}
+
 type options struct {
-	logger *slog.Logger
+	logger  *slog.Logger
+	details []detail
+}
+
+// WithDetail adds a top-level field to the /readyz response, filled by fn on
+// each request (for numbers an operator wants to see, such as how many
+// notifications are waiting). It never affects readiness: when fn fails the
+// field is left out and the failure is logged.
+func WithDetail(name string, fn func(context.Context) (any, error)) Option {
+	return func(o *options) { o.details = append(o.details, detail{name: name, fn: fn}) }
 }
 
 // Option configures Handler.
@@ -63,7 +77,18 @@ func Handler(checks []Check, opts ...Option) http.Handler {
 				break
 			}
 		}
-		writeJSON(w, code, map[string]any{"status": status, "checks": results})
+		body := map[string]any{"status": status, "checks": results}
+		for _, d := range cfg.details {
+			detailCtx, cancel := context.WithTimeout(r.Context(), checkTimeout)
+			value, err := d.fn(detailCtx)
+			cancel()
+			if err != nil {
+				cfg.logger.Warn("readiness detail unavailable", "detail", d.name, "error", err)
+				continue
+			}
+			body[d.name] = value
+		}
+		writeJSON(w, code, body)
 	})
 	return mux
 }

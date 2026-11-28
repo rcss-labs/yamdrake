@@ -102,6 +102,8 @@ var notAListResponse = map[string]bool{
 	"GET /api/v1/admin/sso": true,
 	// sourceRequest holds only three strings.
 	"GET /api/v1/admin/inventory-source": true,
+	// slackResponse holds a bool and two nullable scalars: no slice fields.
+	"GET /api/v1/admin/slack": true,
 	// The run routes need runs, so TestGetRunIncludesFailureSummary,
 	// TestListRunsFilters and TestLogEndpointFiltersPagesAndNeedsViewLogs check
 	// their lists with nullSlices; the event stream is not JSON.
@@ -148,7 +150,7 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 			Tokens []tokenResponse `json:"tokens"`
 		}]()),
 		list("GET /api/v1/freezes", "/api/v1/freezes", reflect.TypeFor[freezeListResponse]()),
-		list("GET /api/v1/approvals", "/api/v1/approvals", reflect.TypeFor[[]approvalItemView]()),
+		list("GET /api/v1/approvals", "/api/v1/approvals", reflect.TypeFor[approvalListResponse]()),
 	}
 	check := func(stage string, routes []listRoute) {
 		t.Helper()

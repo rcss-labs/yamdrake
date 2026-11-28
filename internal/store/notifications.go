@@ -119,11 +119,17 @@ func ClaimDueNotifications(ctx context.Context, db DBTX, now time.Time, limit in
 	return claimed, nil
 }
 
+// The Mark functions only touch a pending message. A sender that stalled past
+// its lease and finds the message already settled by another sender must not
+// overwrite that result, so for a message that is not pending they change
+// nothing and return ErrNotFound, as for an unknown id.
+
 // MarkNotificationSent records a delivered message and releases its claim.
-// ErrNotFound for an unknown id.
+// ErrNotFound for an unknown id or a message that is no longer pending.
 func MarkNotificationSent(ctx context.Context, db DBTX, id int64, at time.Time) error {
 	tag, err := db.Exec(ctx,
-		`UPDATE notifications SET state = 'sent', sent_at = $2, claimed_until = NULL, last_error = '' WHERE id = $1`,
+		`UPDATE notifications SET state = 'sent', sent_at = $2, claimed_until = NULL, last_error = ''
+		 WHERE id = $1 AND state = 'pending'`,
 		id, dbTime(at))
 	if err != nil {
 		return fmt.Errorf("mark notification sent: %w", mapError(err))
@@ -137,7 +143,8 @@ func MarkNotificationSent(ctx context.Context, db DBTX, id int64, at time.Time) 
 // MarkNotificationRetry records a failed attempt (Attempts goes up by one) and
 // releases the claim. With failed false the message stays pending and is tried
 // again at next; with failed true it is given up on (state "failed") and no
-// longer holds back later messages of its run. ErrNotFound for an unknown id.
+// longer holds back later messages of its run. ErrNotFound for an unknown id
+// or a message that is no longer pending.
 func MarkNotificationRetry(ctx context.Context, db DBTX, id int64, lastError string, next time.Time, failed bool) error {
 	state := "pending"
 	if failed {
@@ -145,12 +152,29 @@ func MarkNotificationRetry(ctx context.Context, db DBTX, id int64, lastError str
 	}
 	tag, err := db.Exec(ctx,
 		`UPDATE notifications SET state = $2, attempts = attempts + 1, last_error = $3, next_attempt_at = $4, claimed_until = NULL
-		 WHERE id = $1`, id, state, lastError, dbTime(next))
+		 WHERE id = $1 AND state = 'pending'`, id, state, lastError, dbTime(next))
 	if err != nil {
 		return fmt.Errorf("mark notification retry: %w", mapError(err))
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("mark notification retry: %w", ErrNotFound)
+	}
+	return nil
+}
+
+// DeferNotification releases a claim and moves the next attempt to next
+// without counting an attempt: for a message that could not be tried (no Slack
+// connection) or whose try was cut short (shutdown). ErrNotFound for an
+// unknown id or a message that is no longer pending.
+func DeferNotification(ctx context.Context, db DBTX, id int64, next time.Time) error {
+	tag, err := db.Exec(ctx,
+		`UPDATE notifications SET next_attempt_at = $2, claimed_until = NULL WHERE id = $1 AND state = 'pending'`,
+		id, dbTime(next))
+	if err != nil {
+		return fmt.Errorf("defer notification: %w", mapError(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("defer notification: %w", ErrNotFound)
 	}
 	return nil
 }

@@ -354,6 +354,18 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		"POST /api/v1/tokens":                          auth.View,
 		"DELETE /api/v1/tokens/{id}":                   auth.View,
 		"POST /api/v1/cli/login/confirm":               auth.View,
+		// Run permissions depend on the run's target (a grant may be scoped),
+		// so they are checked in the handlers; the route itself needs view.
+		"POST /api/v1/jobs/{id}/runs":                   auth.View,
+		"GET /api/v1/runs":                              auth.View,
+		"GET /api/v1/runs/{id}":                         auth.View,
+		"GET /api/v1/runs/{id}/log":                     auth.View,
+		"GET /api/v1/runs/{id}/events":                  auth.View,
+		"POST /api/v1/runs/{id}/start":                  auth.View,
+		"POST /api/v1/runs/{id}/cancel":                 auth.View,
+		"POST /api/v1/runs/{id}/legs/{leg}/reconcile":   auth.View,
+		"POST /api/v1/runs/{id}/legs/{leg}/check-again": auth.View,
+		"POST /api/v1/admin/runs/{id}/release-locks":    auth.ManageAccess,
 	}
 	if len(routes) != len(expected) {
 		t.Fatalf("routes() has %d routes, the expected table %d", len(routes), len(expected))
@@ -370,7 +382,7 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 	granted := map[auth.Action]string{}
 	for _, route := range routes {
 		method, pattern, _ := strings.Cut(route.pattern, " ")
-		path := strings.NewReplacer("{name}", "x", "{idpGroup}", "x", "{id}", "999999").Replace(pattern)
+		path := strings.NewReplacer("{name}", "x", "{idpGroup}", "x", "{id}", "999999", "{leg}", "999999").Replace(pattern)
 		name := route.pattern
 
 		if rec := h.send(sent{method: method, path: path}); rec.Code != http.StatusUnauthorized {

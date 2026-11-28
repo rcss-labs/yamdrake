@@ -14,6 +14,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/engine"
+	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
@@ -61,6 +62,20 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 		}
 		sources := newGitHubSources(pool, cipher, cfg.GitHubAPIURL, log)
 		syncEngine := yumsync.NewEngine(pool, sources.For, log, time.Now)
+		bus := wake.New(client, log, wake.WithKeyPrefix(cfg.ValkeyKeyPrefix))
+		runEngine := engine.New(engine.Deps{
+			DB:        pool,
+			Limits:    engine.Limits{PerEnvironment: cfg.LimitPerEnvironment, PerAccount: cfg.LimitPerAccount},
+			Log:       log,
+			Publisher: bus,
+		})
+		// Archived legs are read back from the same directory they were written to.
+		var archive logs.Archive
+		if cfg.LogArchiveDir != "" {
+			if archive, err = logs.NewDirArchive(cfg.LogArchiveDir); err != nil {
+				return Extension{}, fmt.Errorf("log archive: %w", err)
+			}
+		}
 		handler := api.New(api.Deps{
 			Pool:                pool,
 			Engine:              syncEngine,
@@ -71,13 +86,9 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Valkey:              client,
 			KeyPrefix:           cfg.ValkeyKeyPrefix,
 			PublicURL:           cfg.PublicURL,
-		})
-		bus := wake.New(client, log, wake.WithKeyPrefix(cfg.ValkeyKeyPrefix))
-		runEngine := engine.New(engine.Deps{
-			DB:        pool,
-			Limits:    engine.Limits{PerEnvironment: cfg.LimitPerEnvironment, PerAccount: cfg.LimitPerAccount},
-			Log:       log,
-			Publisher: bus,
+			Runs:                runEngine,
+			Logs:                logs.NewReader(pool, archive),
+			Wake:                bus,
 		})
 		// The queue is used only for Sweep, which compares against the database
 		// clock (nil) and does not need a lease length.

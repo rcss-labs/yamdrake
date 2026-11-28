@@ -102,12 +102,12 @@ describe('the Run tab', () => {
     })
   })
 
-  it('posts the group version alone when nothing is overridden or unticked, and goes to the new run', async () => {
+  it('names every selected service even when nothing is overridden or unticked (the engine selects only named services), and goes to the new run', async () => {
     const view = renderRunTab(1)
     await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Backend services version' }), '1.9.2')
     await userEvent.click(await planButton())
     expect(await screen.findByText('Run page')).toBeInTheDocument()
-    expect(created()[0]!.body).toEqual({ environment: 'hetzner-01', selection: { backends: { version: '1.9.2' } }, start: false })
+    expect(created()[0]!.body).toEqual({ environment: 'hetzner-01', selection: { backends: { version: '1.9.2', services: { 'backend-api': '1.9.2' } } }, start: false })
     expect(view.location().pathname).toBe('/runs/110')
   })
 

@@ -49,12 +49,12 @@ export function WhatFailed({ run, onShowLog }: WhatFailedProps) {
           <tbody>
             {failures.map((failure) => (
               <tr key={failure.leg_id}>
-                <td>
+                <td data-label="Failed">
                   <span className="mono run-fail-what">{failure.service || failure.step || 'Run'}</span>
                   <div className="run-fail-sub">{failure.state === 'unknown' ? 'Outcome not confirmed' : failure.service ? 'Service' : 'Step'}</div>
                 </td>
-                <td className="mono">{failure.step || failure.kind}</td>
-                <td className="run-fail-why">{failure.detail || failure.short}</td>
+                <td className="mono" data-label="In step">{failure.step || failure.kind}</td>
+                <td className="run-fail-why" data-label="Why">{failure.detail || failure.short}</td>
                 <td>
                   <Button size="sm" onClick={() => onShowLog(scopeOf(failure.service, failure.step))}>
                     Show its log

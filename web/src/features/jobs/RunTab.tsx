@@ -50,12 +50,8 @@ function buildSelection(groups: JobGroup[], data: JobVersions, choices: Choices)
     if (version === '') missingVersion = true
     const effective = (service: string) => choices.overrides[serviceKey(group, service)] || version
     const overrides = selected.filter((service) => effective(service) !== version).map((service): [string, string] => [service, effective(service)])
-    // The group's version covers every service of the group; a partial selection or an override names each selected service.
-    const partial = selected.length < (group.services ?? []).length
-    selection[group.id] = {
-      version,
-      ...(partial || overrides.length > 0 ? { services: Object.fromEntries(selected.map((service) => [service, effective(service)])) } : {}),
-    }
+    // The engine selects only the services a group names (an absent `services` selects none), so every selected service is named.
+    selection[group.id] = { version, services: Object.fromEntries(selected.map((service) => [service, effective(service)])) }
     lines.push({ group, version, count: selected.length, overrides })
   }
   return { selection, lines, missingVersion }
@@ -152,10 +148,10 @@ function RunForm({ job, groups, environment, environments, onEnvironment }: RunF
               <div className="run-group-head">
                 <Checkbox
                   label={
-                    <>
+                    <span className="run-group-label">
                       <span className="run-group-name">{group.label}</span>
                       <span className="job-sub">{`${selected.length} of ${members.length} selected`}</span>
-                    </>
+                    </span>
                   }
                   checked={available.length > 0 && selected.length === available.length}
                   disabled={!allowed || available.length === 0}

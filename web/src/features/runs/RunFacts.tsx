@@ -13,7 +13,6 @@ export function RunFacts({ run }: { run: RunDetail }) {
   const services = serviceProgress(run)
   const versions = Array.from(new Set(services.map((service) => service.version).filter(Boolean)))
   const duration = runningMilliseconds(run)
-  const who = [run.requested_by_name, run.via].filter(Boolean).join(', ')
   const items: Fact[] = [
     {
       label: 'Environment',
@@ -23,7 +22,15 @@ export function RunFacts({ run }: { run: RunDetail }) {
         </>
       ),
     },
-    { label: 'Started by', value: who || 'Not available' },
+    {
+      label: 'Started by',
+      value: (
+        <>
+          <div>{run.requested_by_name || `user #${run.requested_by}`}</div>
+          {run.via && <div className="run-fact-sub">{`via ${run.via}`}</div>}
+        </>
+      ),
+    },
     { label: 'Started', value: <Time iso={run.started_at} fallback="Not started yet" /> },
     { label: 'Duration', value: duration === undefined ? 'Not started yet' : formatDuration(duration) },
     { label: 'Versions', value: versions.length > 0 ? <span className="mono">{versions.join(', ')}</span> : 'Not available' },
@@ -31,7 +38,7 @@ export function RunFacts({ run }: { run: RunDetail }) {
   if (services.length > 0) {
     const updated = updatedCount(run)
     items.push({
-      label: `Services, ${updated} updated`,
+      label: `${plural(services.length, 'service')}, ${updated} updated`,
       value: (
         <ServiceStrip
           size="lg"

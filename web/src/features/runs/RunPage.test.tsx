@@ -14,9 +14,29 @@ describe('the run page header', () => {
     expect(within(crumbs).getByRole('link', { name: 'Jobs' })).toHaveAttribute('href', '/jobs')
     const facts = screen.getByText('Environment').closest('dl') as HTMLElement
     expect(within(facts).getByText('hetzner-02')).toBeInTheDocument()
-    expect(within(facts).getByText(/Dana Levi, web/)).toBeInTheDocument()
+    expect(within(facts).getByText('Dana Levi')).toBeInTheDocument()
+    expect(within(facts).getByText('via web')).toBeInTheDocument()
     expect(within(facts).getByText('7m 30s')).toBeInTheDocument()
     expect(within(facts).getByRole('img', { name: /services/ })).toBeInTheDocument()
+  })
+
+  it('falls back to the person number when the starter has no name', async () => {
+    storedRun(runIds.partiallySucceeded).requested_by_name = undefined
+    storedRun(runIds.partiallySucceeded).requested_by = 42
+    renderRun(runIds.partiallySucceeded)
+    const facts = (await screen.findByText('Started by')).closest('dl') as HTMLElement
+    expect(within(facts).getByText('user #42')).toBeInTheDocument()
+    expect(within(facts).getByText('via web')).toBeInTheDocument()
+  })
+
+  it('says "service" in the singular for a run of one service', async () => {
+    const run = storedRun(runIds.partiallySucceeded)
+    const failedService = run.legs.find((leg) => leg.state === 'failed')?.service
+    run.legs = run.legs.filter((leg) => leg.service === failedService)
+    renderRun(runIds.partiallySucceeded)
+    expect(await lead()).toHaveTextContent(/^0 of 1 service updated$/)
+    const facts = screen.getByText('Environment').closest('dl') as HTMLElement
+    expect(within(facts).getByText('1 service, 0 updated')).toBeInTheDocument()
   })
 
   it('says the run cannot be found for an unknown id', async () => {

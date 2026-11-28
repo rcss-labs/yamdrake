@@ -351,7 +351,11 @@ function findRun(idText: string): RunDetail | undefined {
 
 /** The run as the server sends it. Whether this person may decide the approval is in GET /approvals, not here. */
 function runView(run: RunDetail): RunDetail {
-  return structuredClone(run)
+  // Go sends neither the chosen selection nor who cancelled; the mock keeps them in its state only.
+  const { selection: _selection, cancelled_by_name: _cancelledBy, ...wire } = structuredClone(run)
+  void _selection
+  void _cancelledBy
+  return wire
 }
 
 /** Who may approve: the grant in the run's label, and not the person who started it (an admin may). */
@@ -405,13 +409,15 @@ function runJobInfo(job: StoredJob): RunJob {
   }
 }
 
-function approvalFor(requestedBy: Me, expiresInMs: number): Approval {
+function approvalFor(requestedBy: Me, expiresInMs: number, manifestId: string): Approval {
   return {
     requested_by: requestedBy.id,
     requested_by_name: requestedBy.name,
     requested_at: now(),
     expires_at: new Date(Date.parse(now()) + expiresInMs).toISOString(),
+    manifest_id: manifestId,
     decision: '',
+    decided_by: null,
     decided_by_name: null,
     decided_at: null,
     comment: '',
@@ -423,7 +429,7 @@ function startRun(run: RunDetail, me: Me): void {
   if (run.approval_required) {
     const job = state.jobs.find((candidate) => candidate.id === run.job_source_id)
     const expires = job?.definition?.approval?.expires ? job.definition.approval.expires / 1e6 : 4 * 3600 * 1000
-    run.approval = approvalFor(me, expires)
+    run.approval = approvalFor(me, expires, run.manifest_id)
     moveRun(run, 'waiting_approval', 'Waiting for someone with approval rights in ' + run.label)
   } else {
     moveRun(run, 'queued', 'Waiting for its turn')
@@ -1655,10 +1661,13 @@ export const handlers: HttpHandler[] = [
       return conflict('This run was already decided.')
     }
     const request = fields(body)
+    if (text(request.manifest_id) === '') {
+      return invalid('manifest_id is required')
+    }
     if (text(request.manifest_id) !== run.manifest_id) {
       return conflict('The plan changed. Reload and review it again.')
     }
-    run.approval = { ...run.approval, decision: 'approved', decided_by_name: me.name, decided_at: now(), comment: text(request.comment) }
+    run.approval = { ...run.approval, decision: 'approved', decided_by: me.id, decided_by_name: me.name, decided_at: now(), comment: text(request.comment) }
     moveRun(run, 'queued', 'Waiting for its turn')
     appendRunLine(run, 'ok', `Approved by ${me.name}.`)
     recordAudit('run.approve', 'run', run.id, { manifest_id: run.manifest_id })
@@ -1672,7 +1681,7 @@ export const handlers: HttpHandler[] = [
     if (run.state !== 'waiting_approval' || run.approval?.decision !== '') {
       return conflict('This run was already decided.')
     }
-    run.approval = { ...run.approval, decision: 'rejected', decided_by_name: me.name, decided_at: now(), comment: text(fields(body).comment) }
+    run.approval = { ...run.approval, decision: 'rejected', decided_by: me.id, decided_by_name: me.name, decided_at: now(), comment: text(fields(body).comment) }
     moveRun(run, 'rejected', `Rejected by ${me.name}`)
     appendRunLine(run, 'warn', `Rejected by ${me.name}.`)
     recordAudit('run.reject', 'run', run.id)

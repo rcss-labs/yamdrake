@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { adminMe, delayNext, eventSources, failNext, jobManagerMe, mockState, qaMe, requests, runIds, server, viewerMe } from '../../test/server'
 import type { ApprovalItem, Me } from '../../api/types'
+import { selectionToRepeat } from './runModel'
 import { actionNames, moveStoredRun, renderRun, storedRun } from './runTestUtils'
 
 const grantee = (id: number, ...actions: Me['grants'][number]['action'][]): Me => ({
@@ -364,13 +365,13 @@ describe('Re-run failed', () => {
 })
 
 describe('Plan again', () => {
-  it('posts the stored selection, not started, and goes to the new run', async () => {
+  it('posts the selection rebuilt from the legs (the server sends none), not started, and goes to the new run', async () => {
     const view = renderRun(runIds.invalidated, adminMe)
     await userEvent.click(await screen.findByRole('button', { name: 'Plan again' }))
     const run = storedRun(runIds.invalidated)
     await waitFor(() => expect(requests.some((request) => request.method === 'POST' && request.path === `/api/v1/jobs/${run.job_source_id}/runs`)).toBe(true))
     const request = requests.find((seen) => seen.method === 'POST' && seen.path === `/api/v1/jobs/${run.job_source_id}/runs`)!
-    expect(request.body).toEqual({ environment: run.environment, selection: run.selection, start: false })
+    expect(request.body).toEqual({ environment: run.environment, selection: selectionToRepeat({ ...run, selection: undefined }), start: false })
     await waitFor(() => expect(view.location().pathname).toBe('/runs/110'))
   })
 

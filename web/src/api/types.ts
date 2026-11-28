@@ -672,7 +672,7 @@ export interface RunBase {
   job_name: string
   /** Who asked: their name, else their email. */
   requested_by_name: string
-  /** Assumed: for a restore run, the run it undoes. */
+  /** For a restore run, the run it undoes. */
   restore_of?: number | null
 }
 
@@ -726,11 +726,11 @@ export interface RunDetail extends RunBase {
   /** Names of the locks the run holds. */
   locks: string[]
   summary: RunSummaryCounts
-  /** Assumed: what was chosen, so Plan again and Re-run can repeat it. */
+  /** Assumed, not sent by Go: what was chosen. The screens rebuild it from the legs when absent. */
   selection?: Selection
-  /** Assumed: null or absent when the run never asked for approval. */
+  /** null when the run never asked for approval. */
   approval?: Approval | null
-  /** Assumed: who cancelled the run; absent until the API sends it. */
+  /** Assumed, not sent by Go: who cancelled the run; absent until the API sends it. */
   cancelled_by_name?: string
 }
 
@@ -857,7 +857,7 @@ export interface RejectRequest {
   comment?: string
 }
 
-// ---- Versions (Plan 5 Task 4, assumed) -------------------------------------------------
+// ---- Versions (Plan 5 Task 4) -------------------------------------------------
 
 export interface ImageVersion {
   tag: string
@@ -879,7 +879,7 @@ export interface JobVersions {
   groups: Record<string, GroupVersions>
 }
 
-// ---- The plan (Plan 5 Tasks 6 and 9, assumed) ---------------------------------------------
+// ---- The plan (Plan 5 Tasks 6 and 9) ---------------------------------------------
 
 /** 'unknown': the plan failed before it could tell. */
 export type ConfigChange = 'new' | 'changed' | 'unchanged' | 'unknown'
@@ -952,7 +952,7 @@ export interface Plan {
   restore_of?: number
 }
 
-// ---- Approvals (Plan 7 Task 2, assumed) -----------------------------------------------------
+// ---- Approvals (Plan 7 Task 2) -----------------------------------------------------
 
 /** A row of GET /approvals. The names follow the command-line tool (`approvalItem`); the optional ones are web extras. */
 export interface ApprovalItem {
@@ -975,7 +975,7 @@ export interface ApprovalsResponse {
   approvals: ApprovalItem[]
 }
 
-// ---- Freezes (Plan 7 Task 3, assumed) --------------------------------------------------------
+// ---- Freezes (Plan 7 Task 3) --------------------------------------------------------
 
 export interface Freeze {
   id: number
@@ -1005,7 +1005,7 @@ export interface CreateFreezeRequest {
   expires_at: string
 }
 
-// ---- Slack (Plan 7 Task 5, assumed) ------------------------------------------------------------
+// ---- Slack (Plan 7 Task 5) ------------------------------------------------------------
 
 export interface SlackSettings {
   token_set: boolean

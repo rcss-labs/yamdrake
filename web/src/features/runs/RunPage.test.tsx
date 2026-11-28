@@ -99,10 +99,10 @@ describe('the sentence that says where the run stands', () => {
     expect((await lead()).textContent).toBe('Cancelled. 1 service had already been updated')
   })
 
-  it('cancelled names who when the server sends it, and keeps a more specific reason', async () => {
-    moveStoredRun(runIds.partiallySucceeded, 'cancelled', { end_reason: 'the deploy window closed', cancelled_by_name: 'Dana Levi' })
+  it('cancelled keeps a more specific reason (the server does not say who cancelled)', async () => {
+    moveStoredRun(runIds.partiallySucceeded, 'cancelled', { end_reason: 'the deploy window closed' })
     renderRun(runIds.partiallySucceeded)
-    expect((await lead()).textContent).toBe('Cancelled by Dana Levi. The deploy window closed. 1 service had already been updated')
+    expect((await lead()).textContent).toBe('Cancelled. The deploy window closed. 1 service had already been updated')
   })
 
   it('invalidated gives the detail', async () => {

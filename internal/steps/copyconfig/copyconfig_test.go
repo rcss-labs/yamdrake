@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -26,6 +27,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner/runnertest"
 	"github.com/rcss-labs/yamdrake/internal/steps/copyconfig"
+	"github.com/rcss-labs/yamdrake/internal/steps/resolve"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
@@ -52,6 +54,8 @@ type fakeS3 struct {
 	// mangle stores something other than what was sent (a bad read-back).
 	mangle bool
 	getErr func(key string) error
+	// blockPut makes PutObject wait until its context ends, like a stalled connection.
+	blockPut bool
 }
 
 func newFakeS3() *fakeS3 { return &fakeS3{objects: map[string][]byte{}} }
@@ -72,7 +76,11 @@ func (f *fakeS3) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*
 	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(data))}, nil
 }
 
-func (f *fakeS3) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+func (f *fakeS3) PutObject(ctx context.Context, in *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	if f.blockPut {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := aws.ToString(in.Bucket) + "/" + aws.ToString(in.Key)
@@ -522,6 +530,21 @@ func TestRefusalIsFailedButUncertainWriteIsUnknown(t *testing.T) {
 				t.Errorf("ops = %+v, want one %s op", ops, wantState)
 			}
 		})
+	}
+}
+
+func TestStalledPutIsCutByTheCallDeadlineAndIsUnknown(t *testing.T) {
+	old := resolve.CallTimeout
+	resolve.CallTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { resolve.CallTimeout = old })
+	f := newFixture(t, file{"web.env", "web.env", "A=1\n"})
+	f.s3.blockPut = true
+	out := f.run()
+	if out.State != "unknown" || out.FailureShort != "could not confirm the write of web.env" {
+		t.Fatalf("outcome = %q %q, want unknown", out.State, out.FailureShort)
+	}
+	if ops := f.env.OpsSnapshot(); len(ops) != 1 || ops[0].State != "intended" {
+		t.Errorf("ops = %+v, want one intended op", ops)
 	}
 }
 

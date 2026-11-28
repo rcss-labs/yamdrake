@@ -118,13 +118,15 @@ export function RunActions({ run, reload }: RunActionsProps) {
   }
   const progress = serviceProgress(run)
   const changed = changedServices(run)
-  if (mayRerun.includes(state) && mayRun && progress.some((service) => !service.updated)) {
+  // The server refuses both on a restore run: it is restored again, not re-run or re-planned.
+  const isRestore = run.kind === 'restore'
+  if (!isRestore && mayRerun.includes(state) && mayRun && progress.some((service) => !service.updated)) {
     buttons.push({ name: 'Re-run failed', onClick: () => void perform(() => rerun.mutateAsync({}), true) })
   }
   if (restorable.includes(state) && mayRestore && changed.length > 0) {
     buttons.push({ name: 'Restore', onClick: () => setConfirming('restore') })
   }
-  if (mayPlanAgain.includes(state) && mayRun) {
+  if (!isRestore && mayPlanAgain.includes(state) && mayRun) {
     buttons.push({
       name: 'Plan again',
       onClick: () =>

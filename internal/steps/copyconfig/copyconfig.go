@@ -315,7 +315,11 @@ func (r *leg) put(item manifest.ConfigItem, data []byte, key string) attempt {
 	intent := map[string]any{"destination": item.Destination, "sha256": item.SHA256, "size": len(data)}
 	_, a.err = r.env.Do(r.ctx, opName, key, intent, func() (any, error) {
 		a.fnRan = true
-		_, err := r.client.PutObject(r.ctx, &s3.PutObjectInput{
+		// A call cut by its deadline is not a refusal: isRefusal is false for it,
+		// so it is wrapped as maybe applied and the leg ends unknown.
+		callCtx, cancel := context.WithTimeout(r.ctx, resolve.CallTimeout)
+		defer cancel()
+		_, err := r.client.PutObject(callCtx, &s3.PutObjectInput{
 			Bucket: aws.String(ref.Bucket), Key: aws.String(ref.Key), Body: bytes.NewReader(data),
 		})
 		if err != nil {
@@ -362,7 +366,10 @@ func (r *leg) read(destination string) (data []byte, missing bool, err error) {
 	if err != nil {
 		return nil, false, err
 	}
-	out, err := r.client.GetObject(r.ctx, &s3.GetObjectInput{Bucket: aws.String(ref.Bucket), Key: aws.String(ref.Key)})
+	// The deadline covers the body read too, so it is released after ReadAll.
+	callCtx, cancel := context.WithTimeout(r.ctx, resolve.CallTimeout)
+	defer cancel()
+	out, err := r.client.GetObject(callCtx, &s3.GetObjectInput{Bucket: aws.String(ref.Bucket), Key: aws.String(ref.Key)})
 	if err != nil {
 		if isMissing(err) {
 			return nil, true, nil

@@ -250,9 +250,11 @@ func (r *leg) settleTaskDefinition() *queue.Outcome {
 		return r.stopped("failed", "cancelled before the service was updated", "No task definition was registered for this leg.")
 	}
 
-	prev, err := r.client.DescribeTaskDefinition(r.ctx, &ecs.DescribeTaskDefinitionInput{
+	callCtx, cancel := r.callContext()
+	prev, err := r.client.DescribeTaskDefinition(callCtx, &ecs.DescribeTaskDefinitionInput{
 		TaskDefinition: aws.String(r.service.PreviousTaskDefinition), Include: []ecstypes.TaskDefinitionField{ecstypes.TaskDefinitionFieldTags},
 	})
+	cancel()
 	if err != nil || prev.TaskDefinition == nil {
 		code := codeOf(err)
 		r.env.Log("error", fmt.Sprintf("The previous task definition could not be read (%s).", code))
@@ -329,17 +331,21 @@ func (r *leg) lookupFailed(err error, interrupted bool) *queue.Outcome {
 // findTagged returns the newest of the family's latest revisions that was
 // registered for this run and leg, or "".
 func (r *leg) findTagged(family string) (string, error) {
-	list, err := r.client.ListTaskDefinitions(r.ctx, &ecs.ListTaskDefinitionsInput{
+	callCtx, cancel := r.callContext()
+	list, err := r.client.ListTaskDefinitions(callCtx, &ecs.ListTaskDefinitionsInput{
 		FamilyPrefix: aws.String(family), Sort: ecstypes.SortOrderDesc, MaxResults: aws.Int32(lookupRevisions),
 	})
+	cancel()
 	if err != nil {
 		return "", err
 	}
 	run, legID := strconv.FormatInt(r.task.Run.ID, 10), strconv.FormatInt(r.task.Leg.ID, 10)
 	for _, arn := range list.TaskDefinitionArns {
-		d, err := r.client.DescribeTaskDefinition(r.ctx, &ecs.DescribeTaskDefinitionInput{
+		callCtx, cancel := r.callContext()
+		d, err := r.client.DescribeTaskDefinition(callCtx, &ecs.DescribeTaskDefinitionInput{
 			TaskDefinition: aws.String(arn), Include: []ecstypes.TaskDefinitionField{ecstypes.TaskDefinitionFieldTags},
 		})
+		cancel()
 		if err != nil {
 			return "", err
 		}
@@ -391,7 +397,11 @@ func (r *leg) registerOnce(in *ecs.RegisterTaskDefinitionInput, key string) atte
 	intent := map[string]string{"family": aws.ToString(in.Family), "image": imagesOf(in.ContainerDefinitions)}
 	op, err := r.env.Do(r.ctx, registerOp, key, intent, func() (any, error) {
 		a.fnRan = true
-		out, err := r.client.RegisterTaskDefinition(r.ctx, in)
+		// A call cut by its deadline is not a refusal: classify wraps it as
+		// maybe applied, so the leg ends unknown.
+		callCtx, cancel := r.callContext()
+		defer cancel()
+		out, err := r.client.RegisterTaskDefinition(callCtx, in)
 		if err != nil {
 			return nil, r.classify(&a, err)
 		}
@@ -418,7 +428,9 @@ func (r *leg) updateOnce(arn, key string) attempt {
 	intent := map[string]string{"cluster": r.ref.Cluster, "service": r.ref.Service, "task_definition": arn}
 	_, err := r.env.Do(r.ctx, updateOp, key, intent, func() (any, error) {
 		a.fnRan = true
-		_, err := r.client.UpdateService(r.ctx, &ecs.UpdateServiceInput{
+		callCtx, cancel := r.callContext()
+		defer cancel()
+		_, err := r.client.UpdateService(callCtx, &ecs.UpdateServiceInput{
 			Cluster: aws.String(r.ref.Cluster), Service: aws.String(r.ref.Service), TaskDefinition: aws.String(arn),
 		})
 		if err != nil {
@@ -428,6 +440,11 @@ func (r *leg) updateOnce(arn, key string) attempt {
 	})
 	a.err = err
 	return r.settle(a)
+}
+
+// callContext bounds one AWS call, so a stalled connection cannot hold the leg.
+func (r *leg) callContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.ctx, resolve.CallTimeout)
 }
 
 // classify marks a call's error as a refusal (HTTP 4xx: ECS looked at the
@@ -544,7 +561,9 @@ func usesRevision(svc ecstypes.Service, arn string) bool {
 }
 
 func (r *leg) describeService() (ecstypes.Service, error) {
-	out, err := r.client.DescribeServices(r.ctx, &ecs.DescribeServicesInput{
+	callCtx, cancel := r.callContext()
+	defer cancel()
+	out, err := r.client.DescribeServices(callCtx, &ecs.DescribeServicesInput{
 		Cluster: aws.String(r.ref.Cluster), Services: []string{r.ref.Service},
 	})
 	if err != nil {
@@ -701,10 +720,12 @@ func (r *leg) stoppedTasks(ours string, since time.Time) (tasks []ecstypes.Task,
 	var arns []string
 	var token *string
 	for page := 0; page < maxTaskPages; page++ {
-		list, err := r.client.ListTasks(r.ctx, &ecs.ListTasksInput{
+		callCtx, cancel := r.callContext()
+		list, err := r.client.ListTasks(callCtx, &ecs.ListTasksInput{
 			Cluster: aws.String(r.ref.Cluster), ServiceName: aws.String(r.ref.Service),
 			DesiredStatus: ecstypes.DesiredStatusStopped, NextToken: token,
 		})
+		cancel()
 		if err != nil {
 			return nil, resolve.ErrorDetail("ecs:ListTasks", err)
 		}
@@ -714,7 +735,9 @@ func (r *leg) stoppedTasks(ours string, since time.Time) (tasks []ecstypes.Task,
 		}
 	}
 	for chunk := range slices.Chunk(arns, 100) {
-		out, err := r.client.DescribeTasks(r.ctx, &ecs.DescribeTasksInput{Cluster: aws.String(r.ref.Cluster), Tasks: chunk})
+		callCtx, cancel := r.callContext()
+		out, err := r.client.DescribeTasks(callCtx, &ecs.DescribeTasksInput{Cluster: aws.String(r.ref.Cluster), Tasks: chunk})
+		cancel()
 		if err != nil {
 			return nil, resolve.ErrorDetail("ecs:DescribeTasks", err)
 		}

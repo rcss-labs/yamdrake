@@ -45,6 +45,22 @@ describe('which buttons each state shows an admin', () => {
     }
   })
 
+  it('offers no Re-run failed on a failed restore run, which the server always refuses', async () => {
+    moveStoredRun(runIds.partiallySucceeded, 'failed', { kind: 'restore' })
+    renderRun(runIds.partiallySucceeded, adminMe)
+    await screen.findByTestId('run-lead')
+    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/plan'))).toBe(true))
+    expect(screen.queryByRole('button', { name: 'Re-run failed' })).not.toBeInTheDocument()
+  })
+
+  it('offers no Plan again on an invalidated restore run, which the server always refuses', async () => {
+    moveStoredRun(runIds.invalidated, 'invalidated', { kind: 'restore' })
+    renderRun(runIds.invalidated, adminMe)
+    await screen.findByTestId('run-lead')
+    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/plan'))).toBe(true))
+    expect(screen.queryByRole('button', { name: 'Plan again' })).not.toBeInTheDocument()
+  })
+
   it('hides Restore when nothing was updated', async () => {
     const run = moveStoredRun(runIds.partiallySucceeded, 'failed')
     for (const leg of run.legs) if (leg.kind === 'step') leg.state = leg.state === 'succeeded' ? 'failed' : leg.state

@@ -25,6 +25,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner/runnertest"
 	"github.com/rcss-labs/yamdrake/internal/steps/ecsdeploy"
+	"github.com/rcss-labs/yamdrake/internal/steps/resolve"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
@@ -96,6 +97,11 @@ type fakeECS struct {
 	registerThenErr error // registers, then returns this
 	updateErr       error
 	updateThenErr   error
+
+	// blockUpdate and blockPolls make that call wait until its context ends,
+	// like a stalled connection (polls: only after the update).
+	blockUpdate bool
+	blockPolls  bool
 
 	registers []*ecs.RegisterTaskDefinitionInput
 	updates   []*ecs.UpdateServiceInput
@@ -182,7 +188,11 @@ func (f *fakeECS) RegisterTaskDefinition(_ context.Context, in *ecs.RegisterTask
 	return &ecs.RegisterTaskDefinitionOutput{TaskDefinition: &f.tds[len(f.tds)-1].td}, nil
 }
 
-func (f *fakeECS) UpdateService(_ context.Context, in *ecs.UpdateServiceInput, _ ...func(*ecs.Options)) (*ecs.UpdateServiceOutput, error) {
+func (f *fakeECS) UpdateService(ctx context.Context, in *ecs.UpdateServiceInput, _ ...func(*ecs.Options)) (*ecs.UpdateServiceOutput, error) {
+	if f.blockUpdate {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.updates = append(f.updates, in)
@@ -216,8 +226,13 @@ func (f *fakeECS) complete() {
 	f.svc.RunningCount = 2
 }
 
-func (f *fakeECS) DescribeServices(_ context.Context, _ *ecs.DescribeServicesInput, _ ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error) {
+func (f *fakeECS) DescribeServices(ctx context.Context, _ *ecs.DescribeServicesInput, _ ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error) {
 	f.mu.Lock()
+	if f.updated && f.blockPolls {
+		f.mu.Unlock()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	defer f.mu.Unlock()
 	if f.updated {
 		f.polls++
@@ -681,6 +696,30 @@ func TestReadFailuresForTwoMinutesGiveUnknown(t *testing.T) {
 	}
 	if f.result(out).TaskDefinition != tdARN(8) {
 		t.Errorf("result = %s", out.Result)
+	}
+}
+
+func shortenCallTimeout(t *testing.T) {
+	old := resolve.CallTimeout
+	resolve.CallTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { resolve.CallTimeout = old })
+}
+
+func TestStalledUpdateIsCutByTheCallDeadlineAndIsUnknown(t *testing.T) {
+	shortenCallTimeout(t)
+	f := newFixture(t)
+	f.ecs.blockUpdate = true
+	f.want(f.run(), "unknown")
+}
+
+func TestStalledPollCountsAsAReadFailure(t *testing.T) {
+	shortenCallTimeout(t)
+	f := newFixture(t)
+	f.ecs.blockPolls = true
+	out := f.run()
+	f.want(out, "unknown")
+	if out.FailureShort != "could not read the service for 2 minutes" {
+		t.Errorf("short = %q", out.FailureShort)
 	}
 }
 

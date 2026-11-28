@@ -1,0 +1,20 @@
+# Placeholders only. Copy to terraform.tfvars (git-ignored), replace every value
+# and review the whole configuration before using it. Nothing here is real.
+# The external ids are NOT in this file: pass them with TF_VAR_discovery_external_id
+# and TF_VAR_deployment_external_id from your secret store.
+
+region      = "REGION"
+environment = "ENVIRONMENT"
+owner       = "TEAM-OR-LIST-NAME"
+
+yumdrake_orchestrator_task_role_arn = "arn:aws:iam::YUMDRAKE-ACCOUNT-ID:role/REPLACE-ME-orchestrator-task"
+yumdrake_runner_task_role_arn       = "arn:aws:iam::YUMDRAKE-ACCOUNT-ID:role/REPLACE-ME-runner-task"
+
+ecs_cluster_names        = ["REPLACE-ME-cluster"]
+ecr_repository_arns      = ["arn:aws:ecr:REGION:TARGET-ACCOUNT-ID:repository/REPLACE-ME"]
+config_bucket_names      = ["REPLACE-ME-config-bucket"]
+task_definition_families = ["REPLACE-ME-family"]
+passable_role_arns = [
+  "arn:aws:iam::TARGET-ACCOUNT-ID:role/REPLACE-ME-task-role",
+  "arn:aws:iam::TARGET-ACCOUNT-ID:role/REPLACE-ME-execution-role",
+]

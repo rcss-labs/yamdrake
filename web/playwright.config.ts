@@ -5,6 +5,8 @@ import { defineConfig, devices } from '@playwright/test'
 export default defineConfig({
   testDir: 'e2e',
   testMatch: '*.spec.ts',
+  // The demo's browser test runs through playwright.demo.config.ts, against a demo that is already up.
+  testIgnore: 'demo.spec.ts',
   globalSetup: './e2e/global-setup.ts',
   fullyParallel: false,
   workers: 1,

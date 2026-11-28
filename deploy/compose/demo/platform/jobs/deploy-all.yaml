@@ -1,0 +1,29 @@
+apiVersion: yumdrake/v1
+kind: Job
+job: deploy-all
+title: "Deploy the whole platform"
+
+environment:
+  labels: [dev, preprod, prod]
+
+groups:
+  all:
+    label: Everything
+    services: [web, api, worker]
+
+approval:
+  when:
+    labels: [prod]
+  expires: 24h
+
+steps:
+  - name: config
+    use: copy-config
+    group: all
+  - name: roll
+    use: ecs-deploy
+    group: all
+    timeout: 15m
+    needs:
+      - step: config
+        scope: service

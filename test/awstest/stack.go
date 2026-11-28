@@ -59,17 +59,32 @@ type StackOptions struct {
 	// never meet.
 	Suffix                                   string
 	DevAccount, ProdAccount, PlatformAccount string
+	// Environments, when set, replace the default pair (DevEnvironment in
+	// DevAccount, ProdEnvironment in ProdAccount). Environments may share an
+	// account; the resource names carry the environment's name.
+	Environments []EnvironmentSpec
+}
+
+// EnvironmentSpec places one environment in an AWS account.
+type EnvironmentSpec struct {
+	Name, Label, Account string
 }
 
 func (o StackOptions) withDefaults() StackOptions {
 	if o.Suffix == "" {
 		o.Suffix = RandomSuffix()
 	}
-	if o.DevAccount == "" {
-		o.DevAccount = RandomAccountID()
-	}
-	if o.ProdAccount == "" {
-		o.ProdAccount = RandomAccountID()
+	if len(o.Environments) == 0 {
+		if o.DevAccount == "" {
+			o.DevAccount = RandomAccountID()
+		}
+		if o.ProdAccount == "" {
+			o.ProdAccount = RandomAccountID()
+		}
+		o.Environments = []EnvironmentSpec{
+			{DevEnvironment, "dev", o.DevAccount},
+			{ProdEnvironment, "prod", o.ProdAccount},
+		}
 	}
 	if o.PlatformAccount == "" {
 		o.PlatformAccount = RandomAccountID()
@@ -123,11 +138,8 @@ func SeedStack(w *World, opts StackOptions) *Stack {
 		ArtifactBucket:  artifactBucketName(opts.Suffix),
 		Environments:    map[string]*Environment{},
 	}
-	for _, env := range []struct{ name, label, account string }{
-		{DevEnvironment, "dev", opts.DevAccount},
-		{ProdEnvironment, "prod", opts.ProdAccount},
-	} {
-		stack.Environments[env.name] = seedEnvironment(w, opts.Suffix, env.name, env.label, env.account)
+	for _, env := range opts.Environments {
+		stack.Environments[env.Name] = seedEnvironment(w, opts.Suffix, env.Name, env.Label, env.Account)
 	}
 	return stack
 }
@@ -138,15 +150,15 @@ func seedEnvironment(w *World, suffix, name, label, accountID string) *Environme
 	acct := w.Account(accountID)
 	e := &Environment{
 		Name: name, Label: label, Account: accountID,
-		SourceBucket:      fmt.Sprintf("yd-src-%s-%s", suffix, label),
-		DestinationBucket: fmt.Sprintf("yd-dst-%s-%s", suffix, label),
+		SourceBucket:      fmt.Sprintf("yd-src-%s-%s", suffix, name),
+		DestinationBucket: fmt.Sprintf("yd-dst-%s-%s", suffix, name),
 		Services:          map[string]*ServiceSeeded{},
 	}
 	for _, service := range Services {
 		s := &ServiceSeeded{
-			Repository:    fmt.Sprintf("yd-%s-%s-%s", service, suffix, label),
-			Cluster:       fmt.Sprintf("yd-c-%s-%s-%s", service, suffix, label),
-			RepositoryURI: fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com/yd-%s-%s-%s", accountID, Region, service, suffix, label),
+			Repository:    fmt.Sprintf("yd-%s-%s-%s", service, suffix, name),
+			Cluster:       fmt.Sprintf("yd-c-%s-%s-%s", service, suffix, name),
+			RepositoryURI: fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com/yd-%s-%s-%s", accountID, Region, service, suffix, name),
 		}
 		acct.EnsureRepoTags(Region, s.Repository, RunningVersion, NewVersion)
 		if service == "api" {
@@ -169,9 +181,10 @@ func seedEnvironment(w *World, suffix, name, label, accountID string) *Environme
 // the good image, as a person fixing the image and pushing it again would.
 func RepairCrashingVersion(w *World, opts StackOptions) {
 	w.t.Helper()
-	for _, env := range []struct{ label, account string }{{"dev", opts.DevAccount}, {"prod", opts.ProdAccount}} {
-		repo := fmt.Sprintf("yd-api-%s-%s", opts.Suffix, env.label)
-		w.Account(env.account).RepoImage(Region, repo, CrashVersion, "base")
+	opts = opts.withDefaults()
+	for _, env := range opts.Environments {
+		repo := fmt.Sprintf("yd-api-%s-%s", opts.Suffix, env.Name)
+		w.Account(env.Account).RepoImage(Region, repo, CrashVersion, "base")
 	}
 }
 
@@ -223,6 +236,11 @@ func (a *Account) ensureRepository(region, name string) {
 	if _, err := client.CreateRepository(context.Background(), &ecr.CreateRepositoryInput{
 		RepositoryName: aws.String(name), ImageTagMutability: ecrtypes.ImageTagMutabilityMutable,
 	}); err != nil {
+		// A Floci that lost its records but kept its registry (a restart) reports the repository as existing.
+		var exists *ecrtypes.RepositoryAlreadyExistsException
+		if errors.As(err, &exists) {
+			return
+		}
 		a.w.t.Fatalf("awstest: CreateRepository %s: %v", name, err)
 	}
 }

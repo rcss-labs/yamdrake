@@ -1,0 +1,29 @@
+apiVersion: yumdrake/v1
+kind: Service
+name: api
+versions:
+  pattern: '^v?\d+\.\d+\.\d+$'
+  sort: semver
+  limit: 50
+environments:
+  dev:
+    ecs_service: arn:aws:ecs:us-east-1:111111111111:service/yd-c-api-demo-dev/api
+    ecr_repository: 111111111111.dkr.ecr.us-east-1.amazonaws.com/yd-api-demo-dev
+    env_files:
+      - name: api.env
+        source_env_path: demo-org/config/envs/dev/api.env
+        destination_env_path: s3://yd-dst-demo-dev/api.env
+  qa:
+    ecs_service: arn:aws:ecs:us-east-1:111111111111:service/yd-c-api-demo-qa/api
+    ecr_repository: 111111111111.dkr.ecr.us-east-1.amazonaws.com/yd-api-demo-qa
+    env_files:
+      - name: api.env
+        source_env_path: demo-org/config/envs/qa/api.env
+        destination_env_path: s3://yd-dst-demo-qa/api.env
+  prod:
+    ecs_service: arn:aws:ecs:us-east-1:222222222222:service/yd-c-api-demo-prod/api
+    ecr_repository: 222222222222.dkr.ecr.us-east-1.amazonaws.com/yd-api-demo-prod
+    env_files:
+      - name: api.env
+        source_env_path: demo-org/config/envs/prod/api.env
+        destination_env_path: s3://yd-dst-demo-prod/api.env

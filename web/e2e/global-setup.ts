@@ -108,7 +108,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   process.env.YUMDRAKE_E2E_RUNNER_PID = String(ready.runner_pid)
 
   // A second stack for aws-runs.spec.ts: the production runner and real steps against Floci. It is started only
-  // when an endpoint is given (CI and `make web-e2e` give one); in CI a missing endpoint is an error, not a skip.
+  // when YUMDRAKE_E2E_AWS_ENDPOINT is set (the CI web-e2e job sets it; `make web-e2e` does not, so set it yourself
+  // when running locally); in CI a missing endpoint is an error, not a skip.
   const awsEndpoint = process.env.YUMDRAKE_E2E_AWS_ENDPOINT ?? ''
   if (awsEndpoint === '' && process.env.CI) {
     await stop(child)

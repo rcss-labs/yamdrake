@@ -1,0 +1,17 @@
+apiVersion: yumdrake/v1
+kind: Service
+name: worker
+versions:
+  pattern: '^v?\d+\.\d+\.\d+$'
+  sort: semver
+  limit: 50
+environments:
+  dev:
+    ecs_service: arn:aws:ecs:us-east-1:111111111111:service/yd-c-worker-demo-dev/worker
+    ecr_repository: 111111111111.dkr.ecr.us-east-1.amazonaws.com/yd-worker-demo-dev
+  qa:
+    ecs_service: arn:aws:ecs:us-east-1:111111111111:service/yd-c-worker-demo-qa/worker
+    ecr_repository: 111111111111.dkr.ecr.us-east-1.amazonaws.com/yd-worker-demo-qa
+  prod:
+    ecs_service: arn:aws:ecs:us-east-1:222222222222:service/yd-c-worker-demo-prod/worker
+    ecr_repository: 222222222222.dkr.ecr.us-east-1.amazonaws.com/yd-worker-demo-prod

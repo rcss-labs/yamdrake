@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -27,19 +29,22 @@ const (
 	exitFailure = 1
 	exitUsage   = 2
 
-	usage = `usage: yumdrake-demo [healthcheck]
+	usage = `usage: yumdrake-demo [healthcheck | idle | crash CODE]
 
-Serves a fake GitHub with the sample data and prepares Yumdrake for the demo.
+Serves a fake GitHub with the sample data, seeds the demo's local AWS (Floci) and prepares Yumdrake for the demo.
 With "healthcheck" it asks the running helper whether it has finished (for the image HEALTHCHECK).
+"idle" and "crash CODE" are what the demo's container images run inside the local AWS: sleep forever, or exit
+with CODE at once (the demo's crashing version).
 
 Environment:
   YUMDRAKE_DEMO_LISTEN            address to listen on (default :9000)
-  YUMDRAKE_DEMO_DATA              directory with the sample data (default /demo)
+  YUMDRAKE_DEMO_DATA              directory with the sample inventory and jobs (default /demo/platform)
   YUMDRAKE_DEMO_ORCHESTRATOR_URL  where the orchestrator answers, for example http://orchestrator:8080 (required)
+  YUMDRAKE_DEMO_AWS_ENDPOINT      where the local AWS answers, for example http://floci:4566 (required)
   YUMDRAKE_PUBLIC_URL             the address people open (required)
   YUMDRAKE_DATABASE_URL, PGPASSWORD  the orchestrator's database (required)
 
-Exit codes: 0 done (or healthy), 1 failure (or not ready), 2 usage.
+Exit codes: 0 done (or healthy), 1 failure (or not ready), 2 usage; "crash" exits with CODE.
 `
 )
 
@@ -68,6 +73,16 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	case "healthcheck":
 		if flags.NArg() == 1 {
 			return healthcheck(listen, stderr)
+		}
+	case "idle":
+		if flags.NArg() == 1 {
+			// The demo's images run this: a service that stays up. A bare select{} would end in Go's
+			// "all goroutines are asleep" crash, which the local AWS reads as a crashed service.
+			time.Sleep(time.Duration(1<<63 - 1))
+		}
+	case "crash":
+		if code, err := strconv.Atoi(flags.Arg(1)); err == nil && flags.NArg() == 2 && code > 0 && code < 256 {
+			return code
 		}
 	case "help":
 		_, _ = io.WriteString(stdout, usage)
@@ -102,11 +117,12 @@ func healthcheck(listen string, stderr io.Writer) int {
 func serve(getenv func(string) string, listen string, stdout, stderr io.Writer) int {
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	orchestratorURL, publicURL, databaseURL := getenv("YUMDRAKE_DEMO_ORCHESTRATOR_URL"), getenv("YUMDRAKE_PUBLIC_URL"), getenv("YUMDRAKE_DATABASE_URL")
-	if orchestratorURL == "" || publicURL == "" || databaseURL == "" {
-		_, _ = io.WriteString(stderr, "yumdrake-demo: YUMDRAKE_DEMO_ORCHESTRATOR_URL, YUMDRAKE_PUBLIC_URL and YUMDRAKE_DATABASE_URL are required\n\n"+usage)
+	awsEndpoint := getenv("YUMDRAKE_DEMO_AWS_ENDPOINT")
+	if orchestratorURL == "" || publicURL == "" || databaseURL == "" || awsEndpoint == "" {
+		_, _ = io.WriteString(stderr, "yumdrake-demo: YUMDRAKE_DEMO_ORCHESTRATOR_URL, YUMDRAKE_DEMO_AWS_ENDPOINT, YUMDRAKE_PUBLIC_URL and YUMDRAKE_DATABASE_URL are required\n\n"+usage)
 		return exitUsage
 	}
-	gh, err := newDemoGitHub(valueOr(getenv, "YUMDRAKE_DEMO_DATA", "/demo"))
+	gh, err := newDemoGitHub(filepath.Clean(valueOr(getenv, "YUMDRAKE_DEMO_DATA", "/demo/platform")))
 	if err != nil {
 		log.Error("fake GitHub", "error", err.Error())
 		return exitFailure
@@ -136,7 +152,10 @@ func serve(getenv func(string) string, listen string, stdout, stderr io.Writer) 
 	defer stop()
 	seedDone := make(chan error, 1)
 	go func() {
-		seedDone <- seed(ctx, seedConfig{OrchestratorURL: orchestratorURL, PublicURL: publicURL, DatabaseURL: databaseURL, Log: log})
+		seedDone <- seed(ctx, seedConfig{
+			OrchestratorURL: orchestratorURL, PublicURL: publicURL, DatabaseURL: databaseURL, Log: log,
+			AWSEndpoint: awsEndpoint, AWS: demoAWS, BinaryImages: true,
+		})
 	}()
 
 	code := exitOK
@@ -169,7 +188,7 @@ func printSignIns(w io.Writer, publicURL string) {
 Yumdrake demo is ready: %s
 
   admin     %s   %s    everything
-  deployer  %s   %s   run in dev and qa
+  deployer  %s   %s   run and restore in dev and qa, approve prod
   viewer    %s   %s     look only
 
 These passwords are public. The demo works only on localhost.

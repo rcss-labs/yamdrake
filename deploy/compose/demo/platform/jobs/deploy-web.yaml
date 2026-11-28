@@ -9,10 +9,16 @@ environment:
 groups:
   web:
     label: Web frontend
-    services: [web-frontend]
+    services: [web]
 
 steps:
-  - name: roll-web
+  - name: config
+    use: copy-config
+    group: web
+  - name: roll
     use: ecs-deploy
     group: web
     timeout: 10m
+    needs:
+      - step: config
+        scope: service

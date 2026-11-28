@@ -173,9 +173,10 @@ docker compose logs --tail 100 runner caddy
 
 The demo is a self-contained Yumdrake on your own machine for trying it out. It
 is not the setup above: it builds the images from this checkout, needs no DNS
-name, no secrets and no AWS, and every deployment step is a fake that changes
-nothing. Docker with Compose v2.24 or newer is all it needs. Run these from the
-repository root.
+name, no secrets and no real AWS. It brings its own local AWS (Floci), with two
+accounts holding services that really run in containers, and the runner runs the
+real deployment steps against it. Docker with Compose v2.24 or newer is all it
+needs. Run these from the repository root.
 
 Start it (the first build takes a few minutes):
 
@@ -189,26 +190,38 @@ public, see "Why it refuses to run elsewhere"):
 | Person | Email | Password | May |
 | --- | --- | --- | --- |
 | Admin | `admin@demo.yumdrake.test` | `demo-admin-password` | everything |
-| Deployer | `deployer@demo.yumdrake.test` | `demo-deployer-password` | plan and run in `dev` and `qa`, read logs |
+| Deployer | `deployer@demo.yumdrake.test` | `demo-deployer-password` | plan, run, cancel and restore in `dev` and `qa`, approve `prod`, read logs |
 | Viewer | `viewer@demo.yumdrake.test` | `demo-viewer-password` | look only |
 
-It comes with five environments (`dev`, `qa`, `staging`, `preprod`, `prod`),
-five services and three jobs, read from a fake GitHub that the `demo` service
-serves. Browse the inventory and the jobs in the web app, then start a run
-with the command line tool (build it with `make build`; it is `bin/yumdrake`):
+It comes with three environments (`dev` and `qa` in one AWS account, `prod` in
+another), three services (`web`, `api`, `worker`) and three jobs, read from a
+fake GitHub that the `demo` service serves. In the local AWS every service runs
+version 1.4.1; images for 1.4.2 and a 1.4.3 of the `api` exist, and the 1.4.3
+image exits at once, so you can see a deployment succeed and one fail. Every
+environment has buckets with env files and a TOML, so a plan shows which keys of
+a file change.
+
+Open the job "Deploy the whole platform" (or "Deploy the web frontend"), choose
+an environment, pick a version in the version picker, plan, read the plan and
+start. To see a failure, open "Choose services" and set the `api` to 1.4.3: the
+run ends partly succeeded, "What failed" names the `api` and the exit code, and
+"Restore" puts the other services back. Or use the command line tool (build it
+with `make build`; it is `bin/yumdrake`):
 
 ```sh
 export YUMDRAKE_SERVER=http://localhost:18280
 bin/yumdrake login
-bin/yumdrake run deploy-platform --env dev \
-  --set backends=v1.5.0 --set workers=v1.5.0 --set frontend=v1.5.0 --watch
+bin/yumdrake run deploy-all --env dev --set all=1.4.2 --watch
 ```
 
-The run then shows live in the web app too. A version containing `fail`,
-`slow` or `unknown` makes the fake step fail, take 30 seconds or end with an
-unknown outcome, so you can see each case. The web app's own version picker
-needs a version source that arrives with the real steps (see "Not yet in the
-demo"), so for now runs are started from the command line.
+Starting the demo seeds the local AWS and takes a few minutes after the images
+are built. The demo's Floci is published on `127.0.0.1:18566` (loopback only),
+because the Docker daemon must pull the task images through it; demo-check uses
+`127.0.0.1:18666`. It is an unauthenticated emulator with the Docker socket
+mounted, so never expose it beyond loopback. Its ECS tasks and image
+registry are containers Compose does not know about (named `floci-aws-*`); they
+are on the demo's Compose network, so `make demo-down` removes exactly those and
+the development Floci's are never touched.
 
 Stop it and delete its data (this touches only the Compose project
 `yumdrake-demo`):
@@ -218,8 +231,10 @@ make demo-down
 ```
 
 `make demo-check` runs the demo for real on another port and project
-(`yumdrake-demo-check`, port 18380) and checks the sign-ins, the permissions
-and a fake deployment through the API and the command line tool.
+(`yumdrake-demo-check`, port 18380) and checks the sign-ins, the permissions,
+the version lists, a failure (the crashing version), a restore and a deployment
+in the local AWS through the API and the command line tool, then a browser test
+(`web/e2e/demo.spec.ts`). It needs Node and Chromium for that last step.
 
 ### Why it refuses to run elsewhere
 
@@ -228,10 +243,3 @@ this repository. Both services therefore refuse that key unless
 `YUMDRAKE_ENV=dev`, and the orchestrator refuses `YUMDRAKE_ENV=dev` unless
 `YUMDRAKE_PUBLIC_URL` is on `localhost` or `127.0.0.1`. A demo copied to a
 server does not start. Never put the demo's values into a real setup.
-
-### Not yet in the demo
-
-A local AWS emulator (Floci) with seeded accounts, images, buckets and config
-files, AWS account connections and real deployment steps against it come
-later. Until then the runner runs with `YUMDRAKE_FAKE_STEPS=true`, and the
-marked comment in `compose.demo.yaml` is where they will be added.

@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && floci
 
 package main
 
@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
+	"github.com/rcss-labs/yamdrake/test/awstest"
 )
 
 // startOrchestrator runs a real orchestrator in this process (as cmd/orchestrator does) on its own
@@ -86,6 +88,11 @@ func countRows(t *testing.T, pool *pgxpool.Pool, tables ...string) map[string]in
 	return counts
 }
 
+// TestSeedIsIdempotent seeds the demo twice into the same Yumdrake and the same Floci. The second run must create
+// nothing: no row in Yumdrake, and nothing in AWS (the same services, task definition revisions, image tags and
+// digests). It needs Docker, because the images are built and pushed with it (the demo itself, which has no
+// Docker, writes them over the registry API). The accounts and names are random, so a Floci shared with other
+// tests is not disturbed; the Yumdrake side connects whichever accounts it is given.
 func TestSeedIsIdempotent(t *testing.T) {
 	gh, err := newDemoGitHub(demoDir)
 	if err != nil {
@@ -95,7 +102,17 @@ func TestSeedIsIdempotent(t *testing.T) {
 	t.Cleanup(ghServer.Close)
 
 	baseURL, databaseURL := startOrchestrator(t, ghServer.URL)
-	cfg := seedConfig{OrchestratorURL: baseURL, PublicURL: baseURL, DatabaseURL: databaseURL}
+	world := awstest.New(t)
+	aws := awstest.StackOptions{Suffix: awstest.RandomSuffix(), PlatformAccount: awstest.RandomAccountID()}
+	accounts := map[string]string{} // the demo's fixed account ids -> random ones of this test
+	for _, env := range demoEnvironments {
+		if accounts[env.Account] == "" {
+			accounts[env.Account] = awstest.RandomAccountID()
+		}
+		env.Account = accounts[env.Account]
+		aws.Environments = append(aws.Environments, env)
+	}
+	cfg := seedConfig{OrchestratorURL: baseURL, PublicURL: baseURL, DatabaseURL: databaseURL, AWSEndpoint: world.Endpoint, AWS: aws}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -114,8 +131,12 @@ func TestSeedIsIdempotent(t *testing.T) {
 		t.Fatalf("after the first seed the counts are %v; want 3 users, 1 GitHub connection, 2 AWS accounts, jobs, grants and audit entries", first)
 	}
 
+	awsFirst := awstest.SeedStack(world, aws)
 	if err := seed(ctx, cfg); err != nil {
 		t.Fatalf("second seed: %v", err)
+	}
+	if awsSecond := awstest.SeedStack(world, aws); !reflect.DeepEqual(awsFirst, awsSecond) {
+		t.Errorf("the second seed changed the local AWS:\nbefore: %+v\nafter:  %+v", awsFirst, awsSecond)
 	}
 	second := countRows(t, pool, tables...)
 	for _, table := range tables {

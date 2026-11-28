@@ -137,6 +137,10 @@ func (w *World) registryHost() string {
 
 func (a *Account) push(region, repo, tag, marker string) {
 	a.w.t.Helper()
+	if a.w.binaryImages {
+		a.w.pushBinaryImage(a.ID, region, repo, tag, marker, "")
+		return
+	}
 	a.pushImage(region, repo, tag, a.w.localImage(marker))
 }
 
@@ -199,7 +203,11 @@ func (a *Account) RepoImage(region, name, tag, marker string) (digest string) {
 // starts under one tag of an existing repository.
 func (a *Account) RepoCrashingImage(region, name, tag, marker string, exitCode int) (digest string) {
 	a.w.t.Helper()
-	a.pushImage(region, name, tag, a.w.buildImage(marker, strconv.Itoa(exitCode)))
+	if a.w.binaryImages {
+		a.w.pushBinaryImage(a.ID, region, name, tag, marker, strconv.Itoa(exitCode))
+	} else {
+		a.pushImage(region, name, tag, a.w.buildImage(marker, strconv.Itoa(exitCode)))
+	}
 	return a.digestOf(region, name, tag)
 }
 

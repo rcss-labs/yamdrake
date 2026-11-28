@@ -51,6 +51,9 @@ type World struct {
 
 	t TB
 
+	// binaryImages: see UseBinaryImages.
+	binaryImages bool
+
 	imagesMu sync.Mutex
 	images   map[string]string // marker -> local image id
 }

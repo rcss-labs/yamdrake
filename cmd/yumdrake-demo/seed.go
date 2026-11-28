@@ -16,6 +16,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/test/awstest"
 )
 
 // The demo people. The passwords are PUBLIC by design (they are printed in the README): the demo
@@ -47,7 +48,23 @@ type seedConfig struct {
 	PublicURL   string
 	DatabaseURL string
 	Log         *slog.Logger
+	// AWSEndpoint is where the demo's local AWS (Floci) answers, for example http://floci:4566. AWS says which
+	// accounts and resources are seeded there. BinaryImages writes the images over the registry API from this
+	// program's own executable (the demo, where no Docker daemon is in reach); otherwise they are built with Docker.
+	AWSEndpoint  string
+	AWS          awstest.StackOptions
+	BinaryImages bool
 }
+
+// demoEnvironments are the environments of platform/environments.yaml and where the local AWS holds them.
+var demoEnvironments = []awstest.EnvironmentSpec{
+	{Name: "dev", Label: "dev", Account: "111111111111"},
+	{Name: "qa", Label: "preprod", Account: "111111111111"},
+	{Name: "prod", Label: "prod", Account: "222222222222"},
+}
+
+// demoAWS is what the demo seeds into its local AWS. The names are fixed: platform/services/*.yaml names them.
+var demoAWS = awstest.StackOptions{Suffix: "demo", PlatformAccount: "333333333333", Environments: demoEnvironments}
 
 type demoUser struct {
 	email, name, password, group string
@@ -58,7 +75,7 @@ var demoFolders = []struct {
 	name string
 	jobs []string
 }{
-	{"Backend", []string{"jobs/deploy-backend-api.yaml", "jobs/deploy-platform.yaml"}},
+	{"Backend", []string{"jobs/deploy-api.yaml", "jobs/deploy-all.yaml"}},
 	{"Frontend", []string{"jobs/deploy-web.yaml"}},
 }
 
@@ -69,12 +86,16 @@ var demoPeople = []demoUser{
 
 type demoGrant struct{ group, action, environment string }
 
-// The deployer may run and cancel in dev and qa only, and read logs everywhere; the viewer only reads.
+// The deployer may run, cancel and restore in dev and qa, approve in prod (so the admin's prod runs have a second
+// person), and read logs everywhere; the viewer only reads.
 var demoGrants = []demoGrant{
 	{deployersGroup, "run", "dev"},
 	{deployersGroup, "run", "qa"},
 	{deployersGroup, "cancel", "dev"},
 	{deployersGroup, "cancel", "qa"},
+	{deployersGroup, "restore", "dev"},
+	{deployersGroup, "restore", "qa"},
+	{deployersGroup, "approve", "prod"},
 	{deployersGroup, "view_logs", ""},
 	{viewersGroup, "view_logs", ""},
 }
@@ -103,6 +124,7 @@ func seed(ctx context.Context, cfg seedConfig) error {
 		what string
 		run  func(context.Context) error
 	}{
+		{"the local AWS", s.ensureLocalAWS},
 		{"the admin user", s.ensureAdmin},
 		{"the GitHub connection", s.ensureConnection},
 		{"the AWS accounts", s.ensureAWSAccounts},
@@ -155,23 +177,40 @@ func (s *seeder) ensureConnection(ctx context.Context) error {
 		map[string]any{"owner": demoOwner, "method": "token", "token": demoGitHubToken}, nil)
 }
 
-// demoAWSAccounts are the made-up accounts of environments.yaml. The engine
-// refuses runs whose accounts are not connected, so they are connected with
-// role credentials and no secrets; the demo's steps are fake and never use them.
-var demoAWSAccounts = []struct{ name, id string }{
-	{"demo-primary", "111111111111"},
-	{"demo-secondary", "222222222222"},
+// ensureLocalAWS seeds the demo's local AWS: services running 1.4.1, images for 1.4.2 and a crashing 1.4.3 of api,
+// and the buckets with the files a deployment copies. It finds what is there and creates only what is missing.
+func (s *seeder) ensureLocalAWS(_ context.Context) error {
+	program := &awstest.Program{}
+	defer program.Close()
+	return program.Run(func() {
+		world := awstest.NewWorld(s.cfg.AWSEndpoint, program)
+		if s.cfg.BinaryImages {
+			world.UseBinaryImages()
+		}
+		awstest.SeedStack(world, s.cfg.AWS)
+	})
 }
 
+// awsAccountSecret is the secret key of every demo account in the local AWS, which checks only the access key id.
+const awsAccountSecret = "test" //nolint:gosec // public: the local AWS ignores it
+
+// ensureAWSAccounts connects the accounts the environments are in, with static keys the local AWS accepts: the
+// account's id is its access key id.
 func (s *seeder) ensureAWSAccounts(ctx context.Context) error {
-	for _, account := range demoAWSAccounts {
-		if _, err := store.AWSAccountByAccountID(ctx, s.pool, account.id); err == nil {
+	connected := map[string]bool{}
+	for _, env := range s.cfg.AWS.Environments {
+		if connected[env.Account] {
+			continue
+		}
+		connected[env.Account] = true
+		if _, err := store.AWSAccountByAccountID(ctx, s.pool, env.Account); err == nil {
 			continue
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
-		role := store.AWSCredential{Method: "role", RoleARN: "arn:aws:iam::" + account.id + ":role/yumdrake-demo"}
-		if _, err := store.CreateAWSAccount(ctx, s.pool, store.AWSAccount{Name: account.name, AccountID: account.id, Discovery: role, Deploy: role}, nil, nil); err != nil {
+		key := map[string]any{"method": "key", "access_key_id": env.Account, "secret_access_key": awsAccountSecret}
+		if err := s.api.call(ctx, http.MethodPost, "/api/v1/admin/aws-accounts",
+			map[string]any{"name": "demo-" + env.Account, "account_id": env.Account, "discovery": key, "deploy": key}, nil); err != nil {
 			return err
 		}
 	}

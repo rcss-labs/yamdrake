@@ -83,7 +83,7 @@ func TestLoopAdvancesOnWake(t *testing.T) {
 
 func TestLoopMakesProgressWithoutValkey(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	client, err := cache.Open("127.0.0.1:1") // nothing listens on this port
+	client, err := cache.Open(cache.Options{Addr: "127.0.0.1:1"}) // nothing listens on this port
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}

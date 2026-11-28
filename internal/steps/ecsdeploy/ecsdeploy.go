@@ -8,7 +8,9 @@
 // registering and updating go through Env.Do. After a crash the executor finds
 // out what happened by asking ECS: a revision tagged with this run and leg is
 // adopted instead of registering another, and a service already on the revision
-// needs no second update.
+// needs no second update. A service that is not on the revision is updated
+// again only if ECS never ran a task of it: a stopped task of the revision means
+// the update went through and was rolled back, and it is not applied twice.
 //
 // The wait is Judge applied to what each poll saw. A cancel request does not
 // stop the wait once the service has been updated: the outcome must be the real
@@ -531,7 +533,21 @@ func (r *leg) updateService() *queue.Outcome {
 			r.env.Log("ok", "An earlier attempt's update of the service is in place.")
 			return nil
 		}
-		delete(r.pending, updateOp) // the service is not on it: the intended update did not happen
+		// The service is not on it. That is also what it looks like when the
+		// update went through, the rollout failed and ECS rolled the service
+		// back. A stopped task of the revision proves ECS started it, so it is
+		// not applied again.
+		ran, unread := r.stoppedTasks(arn, time.Time{})
+		if unread != "" {
+			r.env.Log("error", "An interrupted update could not be checked (stopped tasks were not readable).")
+			return r.stopped("unknown", "could not check an interrupted update", unread)
+		}
+		delete(r.pending, updateOp)
+		if len(ran) > 0 {
+			r.env.Log("error", "ECS already started "+arn+" and the service is no longer on it; it is not applied again.")
+			return r.stopped("failed", "ECS already rolled this revision back",
+				"An earlier attempt's update started "+arn+" and the service is no longer on it; the revision is not applied again.")
+		}
 		if r.env.CancelRequested(r.ctx) {
 			return cancelled()
 		}

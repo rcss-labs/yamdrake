@@ -522,6 +522,37 @@ func TestAmbiguousUpdateChecksServiceFirst(t *testing.T) {
 			t.Errorf("keys = %v", f.env.DoKeys())
 		}
 	})
+	t.Run("service not on it but our revision ran and stopped", func(t *testing.T) {
+		f := setup(t)
+		// ECS started the revision, the rollout failed and the circuit breaker
+		// rolled the service back: it is no longer on the revision.
+		task := crashedTask("ran", t0.Add(time.Second), 3)
+		task.TaskDefinitionArn = aws.String(arn8)
+		f.ecs.stopped = append(f.ecs.stopped, task)
+		out := f.run()
+		f.want(out, "failed")
+		if out.FailureShort != "ECS already rolled this revision back" {
+			t.Errorf("short = %q", out.FailureShort)
+		}
+		if len(f.ecs.updates) != 0 {
+			t.Errorf("updated again: %+v", f.ecs.updates)
+		}
+		if slices.Contains(f.env.DoKeys(), "update-service:"+arn8+":retry-2") {
+			t.Errorf("keys = %v", f.env.DoKeys())
+		}
+	})
+	t.Run("stopped tasks of an interrupted update could not be read", func(t *testing.T) {
+		f := setup(t)
+		f.ecs.listTasksErr = func(int) error { return refusal(400, "AccessDeniedException") }
+		out := f.run()
+		f.want(out, "unknown")
+		if out.FailureShort != "could not check an interrupted update" {
+			t.Errorf("short = %q", out.FailureShort)
+		}
+		if len(f.ecs.updates) != 0 {
+			t.Errorf("updated: %+v", f.ecs.updates)
+		}
+	})
 }
 
 func TestRestoreUsesTargetTaskDefinitionWithoutRegistering(t *testing.T) {

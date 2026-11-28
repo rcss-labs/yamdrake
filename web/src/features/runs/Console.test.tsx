@@ -161,10 +161,10 @@ describe('Console connection and notices', () => {
     expect(screen.queryByText('No log lines yet')).not.toBeInTheDocument()
   })
 
-  it('says live updates stopped, with the reason, for a run that is still active', () => {
+  it('leaves "live updates stopped" to the run page for a run that is still active', () => {
     const error = new ApiError(403, 'forbidden', 'You may not view this run')
     render(<Console run={run} live={liveOf(run, [], { error })} scope={wholeRun} />)
-    expect(screen.getByRole('alert')).toHaveTextContent('Live updates stopped: You may not view this run')
+    expect(screen.queryByText(/Live updates stopped/)).toBeNull()
   })
 
   it('shows "Reconnecting" while the connection retries', () => {

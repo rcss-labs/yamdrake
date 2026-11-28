@@ -240,6 +240,7 @@ describe('when the log or the live updates fail', () => {
     const note = await screen.findByTestId('live-stopped', undefined, { timeout: 5000 })
     expect(note).toHaveTextContent('Live updates stopped: You may not view this run')
     expect(note).toHaveTextContent('last known state')
+    expect(screen.getAllByText(/Live updates stopped/)).toHaveLength(1)
     expect(screen.getByTestId('run-lead')).toBeInTheDocument()
   })
 })

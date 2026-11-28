@@ -154,7 +154,9 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 	if h.Get("Content-Type") != "text/event-stream" || !strings.Contains(h.Get("Cache-Control"), "no-cache") || h.Get("X-Accel-Buffering") != "no" {
 		t.Errorf("headers = %v, want text/event-stream, Cache-Control no-cache and X-Accel-Buffering no", h)
 	}
-	first := stream.nextNamed(t, 3*time.Second)
+	// Waits are generous: they only bound a hang, a loaded CI machine must not fail the test.
+	const wait = 10 * time.Second
+	first := stream.nextNamed(t, wait)
 	if first.Name != "state" {
 		t.Fatalf("first event = %q, want state", first.Name)
 	}
@@ -171,7 +173,7 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for len(seen) < 3 { // the run-level creation line and the two lines
-		e := stream.nextNamed(t, 3*time.Second)
+		e := stream.nextNamed(t, wait)
 		if e.Name != "log" || e.ID == "" {
 			t.Fatalf("event %q id %q, want log events with the cursor as id", e.Name, e.ID)
 		}
@@ -182,24 +184,23 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 		}
 	}
 	// Idle: only `event: ping` with an empty object arrives (a comment would never reach a browser page).
-	gotPing := false
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !gotPing; {
-		e, ok := stream.next(200 * time.Millisecond)
-		if ok && !e.KeepAlive {
-			t.Fatalf("event %q while idle, want only ping events", e.Name)
+	// Two pings in a row, each waited for until it comes, with nothing else in between.
+	for pings := 0; pings < 2; pings++ {
+		e, ok := stream.next(wait)
+		if !ok {
+			t.Fatalf("no ping event on an idle stream within %s", wait)
 		}
-		if ok && e.Data != "{}" {
+		if !e.KeepAlive {
+			t.Fatalf("event %q %s while idle, want only ping events", e.Name, e.Data)
+		}
+		if e.Data != "{}" {
 			t.Fatalf("ping data = %q, want {}", e.Data)
 		}
-		gotPing = ok && e.KeepAlive
-	}
-	if !gotPing {
-		t.Error("no ping event on an idle stream")
 	}
 
 	// A state change is sent before the lines that follow it.
 	f.setRun(id, "cancelling")
-	change := stream.nextNamed(t, 3*time.Second)
+	change := stream.nextNamed(t, wait)
 	if change.Name != "state" || !strings.Contains(change.Data, `"cancelling"`) {
 		t.Fatalf("event after the state changed = %q %s, want the state event first", change.Name, change.Data)
 	}
@@ -210,24 +211,30 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 	var names []string
 	var lines []string
 	finalStateAt := -1
-	for {
-		e, ok := stream.next(3 * time.Second)
-		if !ok {
-			break
-		}
-		if e.KeepAlive {
-			continue
-		}
-		names = append(names, e.Name)
-		if e.Name == "state" && strings.Contains(e.Data, `"succeeded"`) {
-			finalStateAt = len(names) - 1
-		}
-		if e.Name == "log" {
-			var b logBatch
-			_ = json.Unmarshal([]byte(e.Data), &b)
-			for _, l := range b.Lines {
-				lines = append(lines, l.Text)
+	for closed := false; !closed; {
+		// The stream ends when the server closes it; a silence of `wait` is a failure, not an end.
+		select {
+		case e, ok := <-stream.events:
+			if !ok {
+				closed = true
+				continue
 			}
+			if e.KeepAlive {
+				continue
+			}
+			names = append(names, e.Name)
+			if e.Name == "state" && strings.Contains(e.Data, `"succeeded"`) {
+				finalStateAt = len(names) - 1
+			}
+			if e.Name == "log" {
+				var b logBatch
+				_ = json.Unmarshal([]byte(e.Data), &b)
+				for _, l := range b.Lines {
+					lines = append(lines, l.Text)
+				}
+			}
+		case <-time.After(wait):
+			t.Fatalf("the stream neither sent more nor closed within %s; events so far = %v", wait, names)
 		}
 	}
 	if len(names) < 3 || names[len(names)-1] != "end" || finalStateAt < 0 || finalStateAt > len(names)-2 {

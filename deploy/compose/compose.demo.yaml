@@ -42,6 +42,8 @@ services:
     environment:
       YUMDRAKE_ENV: dev
       YUMDRAKE_FAKE_STEPS: "true"
+      # The demo has no AWS or GitHub, so resolve and revalidate stay fake too.
+      YUMDRAKE_FAKE_RESOLVE: "true"
 
   demo:
     image: ${YUMDRAKE_IMAGE_REPO}/yumdrake-demo:${YUMDRAKE_VERSION}

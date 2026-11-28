@@ -249,7 +249,7 @@ make smoke              # builds the images and starts the Compose "app" profile
 
 ## Trying a run with fake steps
 
-With `YUMDRAKE_FAKE_STEPS=true` the runner keeps all four fake executors (`resolve`, `revalidate`, `copy-config`, `ecs-deploy`), so a dev run needs no AWS calls. The AWS account of each environment must still be connected (the engine refuses a run otherwise); the keys may be made up, as in the demo. Without fake steps, resolving and revalidating are real: they need AWS access (Floci works), a GitHub connection for the config owner and `YUMDRAKE_ARTIFACT_BUCKET` (or `YUMDRAKE_ARTIFACT_DIR`). Start the runner with both of these (it refuses `YUMDRAKE_FAKE_STEPS=true` in any other environment, and production defaults keep them off):
+Resolving and revalidating are real; with fake steps only `copy-config` and `ecs-deploy` pretend, so a dev run still needs AWS access (Floci works), a GitHub connection for the config owner and `YUMDRAKE_ARTIFACT_BUCKET`. Start the runner with both of these (it refuses `YUMDRAKE_FAKE_STEPS=true` in any other environment, and production defaults keep them off):
 
 ```sh
 YUMDRAKE_ENV=dev YUMDRAKE_FAKE_STEPS=true bin/yumdrake-runner
@@ -295,7 +295,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_MIGRATE_ON_START` | orchestrator | `true` | Must be `true` or `false`. |
 | `YUMDRAKE_HEALTH_ADDR` | runner | `127.0.0.1:8081` | `host:port`, with a port from 1 to 65535. Also read by `healthcheck`. |
 | `YUMDRAKE_RUNNER_ID` | runner | the host name | Identifies the runner in its logs. If unset and the host name cannot be determined, startup fails. |
-| `YUMDRAKE_ARTIFACT_BUCKET` | runner | empty | S3 bucket (3 to 63 lowercase letters, digits, `-`, `.`) that holds encrypted copies of the config files a run touches, under `manifests/<run>/<service>/<kind>/`. The runner needs exactly one of this and `YUMDRAKE_ARTIFACT_DIR`. |
+| `YUMDRAKE_ARTIFACT_BUCKET` | runner | empty | S3 bucket (3 to 63 lowercase letters, digits, `-`, `.`) that holds encrypted copies of the config files a run touches, under `manifests/<run>/<service>/<kind>/`. Exactly one of this and `YUMDRAKE_ARTIFACT_DIR` must be set. |
 | `YUMDRAKE_ARTIFACT_KMS_KEY_ID` | runner | empty (S3-managed encryption) | KMS key id, ARN or alias used to encrypt those copies instead of S3-managed keys. |
 | `YUMDRAKE_SECRETS_MODE` | orchestrator, runner | `local` | `local` or `kms`. With `kms` the secrets are encrypted by an AWS KMS key (`YUMDRAKE_KMS_KEY_ID`) using the default AWS credential chain and region (`AWS_REGION`); the purpose of each secret is the KMS encryption context. Any other value is a config error. |
 | `YUMDRAKE_LOCAL_SECRET_KEY` | orchestrator, runner | none (required when the mode is `local`) | Base64 of exactly 32 bytes (for example `openssl rand -base64 32`). Encrypts stored GitHub credentials. For development and tests only; never printed. |
@@ -317,10 +317,11 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_SLACK_API_URL` | orchestrator | `https://slack.com/api` | An `http://` or `https://` URL with a host. The Slack Web API that notifications are posted to. Overridden in tests. |
 | `YUMDRAKE_NOTIFY_INTERVAL` | orchestrator | `5s` | Go duration greater than zero. How often the sender looks for notifications that are due. |
 | `YUMDRAKE_ENV` | orchestrator, runner | `prod` | `dev` or `prod`. Fake steps and the public demo key of `YUMDRAKE_LOCAL_SECRET_KEY` are allowed only with `dev`, and `dev` is accepted only when `YUMDRAKE_PUBLIC_URL` is on `localhost` or `127.0.0.1` (the orchestrator refuses to start otherwise). |
-| `YUMDRAKE_ARTIFACT_DIR` | runner | empty | Absolute path of the directory for config copies (encrypted, deleted after 30 days). Compose sets it to the `artifacts` volume. The runner needs exactly one of this and `YUMDRAKE_ARTIFACT_BUCKET`. |
+| `YUMDRAKE_ARTIFACT_DIR` | runner | empty | Absolute path of the directory for config copies (encrypted, deleted after 30 days). Instead of `YUMDRAKE_ARTIFACT_BUCKET`; setting both is a configuration error. Compose sets it to the `artifacts` volume. |
 | `YUMDRAKE_METRICS` | orchestrator | empty (off) | `emf` writes CloudWatch embedded-metric-format lines to standard output every minute. Any other non-empty value is a config error. |
 | `YUMDRAKE_METRICS_DIMENSIONS` | orchestrator | empty | `Name=value,Name=value`: dimensions put on every metric (at most the number the config allows). Used with `YUMDRAKE_METRICS`. |
 | `YUMDRAKE_FAKE_STEPS` | runner | `false` | `true` or `false`. When `true` (only with `YUMDRAKE_ENV=dev`; the runner refuses to start otherwise) the runner executes pretend steps that change nothing real. See [Trying a run with fake steps](#trying-a-run-with-fake-steps). |
+| `YUMDRAKE_FAKE_RESOLVE` | runner | `false` | `true` or `false`. Keeps the fake resolve and revalidate steps instead of the real ones; only with `YUMDRAKE_FAKE_STEPS=true`. The Compose demo sets it because it has no AWS or GitHub. |
 | `YUMDRAKE_RUNNER_CONCURRENCY` | runner | `8` | Positive integer. How many legs one runner executes at once. |
 | `YUMDRAKE_LEASE` | runner | `30s` | Go duration. How long a claimed leg belongs to a runner without a heartbeat. After that another runner may take it (at most 5 times, then the leg becomes `unknown`). |
 | `YUMDRAKE_HEARTBEAT` | runner | `10s` | Go duration; must be shorter than `YUMDRAKE_LEASE`. How often the runner renews the leases of its legs. |

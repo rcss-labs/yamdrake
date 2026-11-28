@@ -13,10 +13,14 @@ setup). The ECS setup is described at the end.
    release. Change `YUMDRAKE_VERSION` in `.env` to the new tag, then:
 
    ```sh
-   docker compose pull && docker compose up -d --build
+   docker compose pull --ignore-buildable && docker compose up -d --build
    ```
 
-   (`--build` rebuilds the locally built Caddy image.)
+   `--build` is needed: Caddy is built locally from `deploy/compose/caddy` and
+   tagged `yumdrake-caddy:local`; it is not published anywhere, so a plain
+   `docker compose pull` would try to fetch that name from a registry.
+   `--ignore-buildable` leaves it out. If the images are in a private ghcr.io
+   package, run `docker login ghcr.io` first.
 
 The orchestrator applies the schema migrations once, when it starts. The runners
 start only after the orchestrator is healthy, and a runner also waits for the

@@ -100,10 +100,18 @@ compose() {
 compose_plain() { compose -f "$compose_dir/compose.yaml" "$@"; }
 compose_tls() { compose -f "$compose_dir/compose.yaml" -f "$compose_dir/compose.tls.yaml" "$@"; }
 
+# The images this check builds carry its own tags and are removed at the end.
+built_images=(
+	yumdrake-check/yumdrake-orchestrator:check
+	yumdrake-check/yumdrake-runner:check
+	yumdrake-check/yumdrake-caddy:check
+)
+
 cleanup() {
 	# Only this project, and only here.
 	compose_tls down -v --remove-orphans >/dev/null 2>&1 || true
 	compose_plain down -v --remove-orphans >/dev/null 2>&1 || true
+	docker rmi "${built_images[@]}" >/dev/null 2>&1 || true
 	rm -rf "$work_dir"
 }
 trap cleanup EXIT
@@ -143,6 +151,19 @@ for svc in orchestrator runner; do
 	}
 done
 
+# The services must refuse the unedited .env.example placeholders.
+for svc in orchestrator runner; do
+	for variable in YUMDRAKE_VALKEY_PASSWORD PGPASSWORD; do
+		out="$(docker run --rm -e "$variable=<generated-password>" \
+			"yumdrake-check/yumdrake-$svc:check" 2>&1)" && status=0 || status=$?
+		if [ "$status" -ne 0 ] && [[ "$out" == *"$variable"*"placeholder"* ]]; then
+			pass "the $svc refuses a placeholder $variable"
+		else
+			fail "the $svc did not refuse a placeholder $variable"
+		fi
+	done
+done
+
 # --- throwaway .env ---------------------------------------------------------
 admin_email="admin@example.test"
 admin_password="$(openssl rand -hex 16)"
@@ -151,6 +172,7 @@ umask 077
 	echo "YUMDRAKE_IMAGE_REPO=yumdrake-check"
 	echo "YUMDRAKE_VERSION=check"
 	echo "YUMDRAKE_PUBLIC_HOST=localhost"
+	echo "YUMDRAKE_CADDY_IMAGE=yumdrake-check/yumdrake-caddy:check"
 	echo "YUMDRAKE_HTTP_BIND=127.0.0.1"
 	echo "YUMDRAKE_HTTP_PORT=$http_port"
 	echo "YUMDRAKE_HTTPS_PORT=$tls_port"
@@ -256,6 +278,13 @@ hsts_sent() {
 	curl -fsSI "$@" | grep -qi '^strict-transport-security:'
 }
 check "TLS mode: HSTS header is sent" hsts_sent "${tls_args[@]}" "$tls_url/"
+# The redirect must point at the configured HTTPS port, not always 443.
+redirects_to_configured_port() {
+	local target
+	target="$(curl -sS -o /dev/null -w '%{redirect_url}' "http://localhost:$redirect_port/some/path")" || return 1
+	[ "$target" = "$tls_url/some/path" ]
+}
+check "TLS mode: the HTTP redirect goes to the configured HTTPS port" redirects_to_configured_port
 
 tls_published="$(published_services -f "$compose_dir/compose.yaml" -f "$compose_dir/compose.tls.yaml")"
 if [ "$tls_published" = "caddy" ]; then

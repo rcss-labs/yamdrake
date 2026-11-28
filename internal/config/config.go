@@ -99,8 +99,9 @@ type Runner struct {
 	HealthAddr string
 	RunnerID   string
 
-	// ArtifactBucket (YUMDRAKE_ARTIFACT_BUCKET, required) holds config copies;
-	// ArtifactKMSKeyID (YUMDRAKE_ARTIFACT_KMS_KEY_ID, optional) selects KMS
+	// ArtifactBucket (YUMDRAKE_ARTIFACT_BUCKET) holds config copies in S3, or
+	// ArtifactDir (YUMDRAKE_ARTIFACT_DIR) holds them as encrypted files;
+	// exactly one of the two is required. ArtifactKMSKeyID (YUMDRAKE_ARTIFACT_KMS_KEY_ID, optional) selects KMS
 	// encryption instead of S3-managed keys.
 	ArtifactBucket   string
 	ArtifactKMSKeyID string
@@ -112,9 +113,12 @@ type Runner struct {
 	ValkeyKeyPrefix string
 	// FakeSteps registers the fake step executors instead of real ones.
 	FakeSteps bool
-	// ArtifactDir is the directory for config copies (YUMDRAKE_ARTIFACT_DIR).
-	// It is optional until the S3 store arrives; then exactly one of the bucket
-	// and the directory is required.
+	// FakeResolve keeps the fake resolve and revalidate steps instead of
+	// replacing them with the real ones (YUMDRAKE_FAKE_RESOLVE; the demo has no
+	// AWS or GitHub). Only with FakeSteps.
+	FakeResolve bool
+	// ArtifactDir is the directory for config copies (YUMDRAKE_ARTIFACT_DIR),
+	// an alternative to ArtifactBucket.
 	ArtifactDir string
 	// Concurrency is how many legs one runner executes at once.
 	Concurrency int
@@ -149,6 +153,15 @@ func (l *loader) err() error {
 	return errors.Join(l.problems...)
 }
 
+// refusePlaceholder fails when a password still has the <placeholder> form of
+// deploy/compose/.env.example, so a forgotten edit cannot run with a public
+// password. The value is never echoed.
+func (l *loader) refusePlaceholder(variable, value string) {
+	if len(value) >= 2 && strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") {
+		l.fail(variable, "is still the <placeholder> from .env.example; set a generated password")
+	}
+}
+
 func (l *loader) loadCommon() Common {
 	var c Common
 
@@ -165,6 +178,8 @@ func (l *loader) loadCommon() Common {
 	}
 
 	c.ValkeyPassword = Secret(l.getenv("YUMDRAKE_VALKEY_PASSWORD"))
+	l.refusePlaceholder("YUMDRAKE_VALKEY_PASSWORD", c.ValkeyPassword.Reveal())
+	l.refusePlaceholder("PGPASSWORD", l.getenv("PGPASSWORD"))
 	switch raw := l.valueOr("YUMDRAKE_VALKEY_TLS", "false"); raw {
 	case "true":
 		c.ValkeyTLS = true
@@ -301,15 +316,25 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 	if cfg.FakeSteps && cfg.Env != "dev" {
 		l.fail("YUMDRAKE_FAKE_STEPS", `is allowed only with YUMDRAKE_ENV=dev`)
 	}
+	switch raw := l.valueOr("YUMDRAKE_FAKE_RESOLVE", "false"); raw {
+	case "true":
+		cfg.FakeResolve = true
+	case "false":
+	default:
+		l.fail("YUMDRAKE_FAKE_RESOLVE", `must be "true" or "false"`)
+	}
+	if cfg.FakeResolve && !cfg.FakeSteps {
+		l.fail("YUMDRAKE_FAKE_RESOLVE", `needs YUMDRAKE_FAKE_STEPS=true (and so YUMDRAKE_ENV=dev)`)
+	}
 	cfg.ArtifactDir = l.getenv("YUMDRAKE_ARTIFACT_DIR")
 	if cfg.ArtifactDir != "" && !filepath.IsAbs(cfg.ArtifactDir) {
 		l.fail("YUMDRAKE_ARTIFACT_DIR", "must be an absolute path")
 	}
 	switch {
 	case cfg.ArtifactBucket == "" && cfg.ArtifactDir == "":
-		l.fail("YUMDRAKE_ARTIFACT_BUCKET", "or YUMDRAKE_ARTIFACT_DIR is required")
+		l.fail("YUMDRAKE_ARTIFACT_BUCKET", "or YUMDRAKE_ARTIFACT_DIR is required (exactly one of them)")
 	case cfg.ArtifactBucket != "" && cfg.ArtifactDir != "":
-		l.fail("YUMDRAKE_ARTIFACT_DIR", "and YUMDRAKE_ARTIFACT_BUCKET are mutually exclusive")
+		l.fail("YUMDRAKE_ARTIFACT_BUCKET", "and YUMDRAKE_ARTIFACT_DIR cannot both be set (exactly one of them)")
 	}
 	cfg.Concurrency = l.positiveInt("YUMDRAKE_RUNNER_CONCURRENCY", "8")
 	cfg.Lease = l.duration("YUMDRAKE_LEASE", "30s")

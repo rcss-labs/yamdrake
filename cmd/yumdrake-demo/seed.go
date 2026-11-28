@@ -155,25 +155,24 @@ func (s *seeder) ensureConnection(ctx context.Context) error {
 		map[string]any{"owner": demoOwner, "method": "token", "token": demoGitHubToken}, nil)
 }
 
-// demoAWSAccounts are the account ids deploy/compose/demo/environments.yaml uses. The engine
-// refuses a run whose environment account is not connected, so each gets a placeholder.
-var demoAWSAccounts = []string{"111111111111", "222222222222"}
+// demoAWSAccounts are the made-up accounts of environments.yaml. The engine
+// refuses runs whose accounts are not connected, so they are connected with
+// role credentials and no secrets; the demo's steps are fake and never use them.
+var demoAWSAccounts = []struct{ name, id string }{
+	{"demo-primary", "111111111111"},
+	{"demo-secondary", "222222222222"},
+}
 
-// ensureAWSAccounts connects a placeholder for each demo account. Creating one makes no AWS call,
-// and the fake steps never use the keys, which are made up.
 func (s *seeder) ensureAWSAccounts(ctx context.Context) error {
-	existing, err := store.ListAWSAccounts(ctx, s.pool)
-	if err != nil {
-		return err
-	}
-	fakeKey := map[string]any{"method": "key", "access_key_id": "AKIADEMOFAKEKEY0000", "secret_access_key": "demo-fake-secret-key"} //nolint:gosec // a made-up key for the fake steps; no AWS call is ever made with it
-	for _, id := range demoAWSAccounts {
-		if slices.ContainsFunc(existing, func(a store.AWSAccount) bool { return a.AccountID == id }) {
+	for _, account := range demoAWSAccounts {
+		if _, err := store.AWSAccountByAccountID(ctx, s.pool, account.id); err == nil {
 			continue
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
 		}
-		body := map[string]any{"name": "demo-" + id, "account_id": id, "discovery": fakeKey, "deploy": fakeKey}
-		if err := s.api.call(ctx, http.MethodPost, "/api/v1/admin/aws-accounts", body, nil); err != nil {
-			return fmt.Errorf("account %s: %w", id, err)
+		role := store.AWSCredential{Method: "role", RoleARN: "arn:aws:iam::" + account.id + ":role/yumdrake-demo"}
+		if _, err := store.CreateAWSAccount(ctx, s.pool, store.AWSAccount{Name: account.name, AccountID: account.id, Discovery: role, Deploy: role}, nil, nil); err != nil {
+			return err
 		}
 	}
 	return nil

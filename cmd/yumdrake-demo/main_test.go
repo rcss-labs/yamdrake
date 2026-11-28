@@ -111,7 +111,7 @@ func TestSeedIsIdempotent(t *testing.T) {
 	tables := []string{"users", "groups", "grants", "github_connections", "aws_accounts", "folders", "job_sources", "audit_log"}
 	first := countRows(t, pool, tables...)
 	if first["users"] != 3 || first["github_connections"] != 1 || first["aws_accounts"] != 2 || first["job_sources"] < 2 || first["grants"] == 0 || first["audit_log"] == 0 {
-		t.Fatalf("after the first seed the counts are %v; want 3 users, 1 connection, 2 AWS accounts (one per demo inventory account), jobs, grants and audit entries", first)
+		t.Fatalf("after the first seed the counts are %v; want 3 users, 1 GitHub connection, 2 AWS accounts, jobs, grants and audit entries", first)
 	}
 
 	if err := seed(ctx, cfg); err != nil {

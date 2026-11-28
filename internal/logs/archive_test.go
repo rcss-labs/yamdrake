@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rcss-labs/yamdrake/internal/secrets"
@@ -91,5 +92,37 @@ func TestDirArchiveFilesAreOwnerOnly(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("file mode = %o, want 600", perm)
+	}
+}
+
+func TestASwappedArchiveFileIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	a, err := NewDirArchive(dir, archiveTestCipher(t, "0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewDirArchive: %v", err)
+	}
+	ctx := context.Background()
+	keyA, keyB := archiveKey(1, 1), archiveKey(1, 2)
+	if err := a.Put(ctx, keyA, []byte("lines of leg one")); err != nil {
+		t.Fatalf("Put A: %v", err)
+	}
+	if err := a.Put(ctx, keyB, []byte("lines of leg two")); err != nil {
+		t.Fatalf("Put B: %v", err)
+	}
+	pathA := filepath.Join(dir, filepath.FromSlash(keyA))
+	pathB := filepath.Join(dir, filepath.FromSlash(keyB))
+	rawA, err := os.ReadFile(pathA) //nolint:gosec // the test reads its own temp dir
+	if err != nil {
+		t.Fatalf("read A: %v", err)
+	}
+	if err := os.WriteFile(pathB, rawA, 0o600); err != nil { //nolint:gosec // the test writes its own temp dir
+		t.Fatalf("swap: %v", err)
+	}
+	got, err := a.Get(ctx, keyB)
+	if err == nil {
+		t.Fatalf("a swapped archive file was read: %q", got)
+	}
+	if !strings.Contains(err.Error(), keyB) || !strings.Contains(err.Error(), "cannot decrypt") {
+		t.Errorf("error = %v, want one that says %s cannot be decrypted", err, keyB)
 	}
 }

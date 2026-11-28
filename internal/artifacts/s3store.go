@@ -14,7 +14,8 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// S3Store keeps config copies in one encrypted S3 bucket.
+// S3Store reads and writes config copies in one encrypted bucket. It satisfies
+// Store, like the directory store.
 type S3Store struct {
 	client   *s3.Client
 	bucket   string
@@ -23,15 +24,14 @@ type S3Store struct {
 
 var _ Store = (*S3Store)(nil)
 
-// New returns an S3Store. With a non-empty kmsKeyID objects are encrypted with
-// that KMS key; otherwise with S3-managed keys (SSE-S3).
-func New(client *s3.Client, bucket, kmsKeyID string) *S3Store {
+// NewS3 returns an S3Store. With a non-empty kmsKeyID objects are encrypted
+// with that KMS key; otherwise with S3-managed keys (SSE-S3).
+func NewS3(client *s3.Client, bucket, kmsKeyID string) *S3Store {
 	return &S3Store{client: client, bucket: bucket, kmsKeyID: kmsKeyID}
 }
 
-// Put stores data under manifests/<run>/<service>/<kind>/<name>, or under
-// .../<kind>/previous/<name> when previous is true (the prior destination
-// content). It returns the key and the hex SHA-256 of data.
+// Put stores data under the key objectKey builds. It returns the key and the
+// hex SHA-256 of data.
 func (s *S3Store) Put(ctx context.Context, runID int64, service, kind, name string, previous bool, data []byte) (key, sha256hex string, err error) {
 	if len(data) > MaxObjectBytes {
 		return "", "", fmt.Errorf("%w: %d bytes, limit %d", ErrTooLarge, len(data), MaxObjectBytes)
@@ -40,6 +40,7 @@ func (s *S3Store) Put(ctx context.Context, runID int64, service, kind, name stri
 	if err != nil {
 		return "", "", err
 	}
+
 	sum := sha256.Sum256(data)
 	input := &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),

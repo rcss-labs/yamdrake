@@ -38,13 +38,37 @@ func TestRunnerArtifactDir(t *testing.T) {
 			t.Errorf("err = %v, want one naming YUMDRAKE_ARTIFACT_DIR", err)
 		}
 	})
+}
 
-	t.Run("bucket and directory together are refused", func(t *testing.T) {
+func TestRunnerNeedsExactlyOneArtifactStore(t *testing.T) {
+	t.Run("none is refused", func(t *testing.T) {
+		env := requiredEnv()
+		delete(env, "YUMDRAKE_ARTIFACT_BUCKET")
+		_, err := LoadRunner(envFrom(env))
+		if err == nil || !strings.Contains(err.Error(), "YUMDRAKE_ARTIFACT_BUCKET") || !strings.Contains(err.Error(), "YUMDRAKE_ARTIFACT_DIR") {
+			t.Errorf("err = %v, want one naming both variables", err)
+		}
+	})
+	t.Run("both is refused", func(t *testing.T) {
 		env := requiredEnv()
 		env["YUMDRAKE_ARTIFACT_DIR"] = "/var/lib/yumdrake/artifacts"
 		_, err := LoadRunner(envFrom(env))
-		if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-			t.Errorf("err = %v, want a mutually exclusive error", err)
+		if err == nil || !strings.Contains(err.Error(), "cannot both be set") {
+			t.Errorf("err = %v, want a both-set refusal", err)
 		}
 	})
+}
+
+func TestFakeResolveNeedsFakeSteps(t *testing.T) {
+	env := requiredEnv()
+	env["YUMDRAKE_FAKE_RESOLVE"] = "true"
+	if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_FAKE_RESOLVE") {
+		t.Errorf("err = %v, want one naming YUMDRAKE_FAKE_RESOLVE", err)
+	}
+	env["YUMDRAKE_ENV"] = "dev"
+	env["YUMDRAKE_FAKE_STEPS"] = "true"
+	cfg, err := LoadRunner(envFrom(env))
+	if err != nil || !cfg.FakeResolve {
+		t.Errorf("LoadRunner = %+v, %v; want FakeResolve true", cfg.FakeResolve, err)
+	}
 }

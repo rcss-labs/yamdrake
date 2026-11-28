@@ -757,15 +757,16 @@ func TestCancelMidRun(t *testing.T) {
 		if finished[l.ID] && l.State != "succeeded" {
 			t.Errorf("leg %d (%s %s) was succeeded before the cancel and is %s now", l.ID, l.Step, l.Service, l.State)
 		}
-		// A leg a runner had already claimed when the cancel landed may still
-		// mark itself running a few milliseconds later and finishes normally;
-		// what must never happen is a leg being queued, let alone started, once
-		// the cancel is acknowledged.
-		if !finished[l.ID] && l.QueuedAt != nil && l.QueuedAt.After(acknowledged) {
+		// No leg is queued once the cancel is acknowledged. A leg that marks
+		// itself running after the acknowledgement was claimed before the
+		// cancel; the cancel was committed first, so the runner sees the flag
+		// after MarkRunning and settles the leg cancelled without executing it.
+		// Legs started before the cancel was committed may finish normally.
+		if l.QueuedAt != nil && l.QueuedAt.After(acknowledged) {
 			t.Errorf("leg %d (%s %s) was queued at %v, after the cancel was acknowledged at %v", l.ID, l.Step, l.Service, l.QueuedAt, acknowledged)
 		}
-		if l.StartedAt != nil && l.StartedAt.After(acknowledged) && (l.QueuedAt == nil || l.QueuedAt.After(acknowledged)) {
-			t.Errorf("leg %d (%s %s) started at %v without having been queued before the cancel at %v", l.ID, l.Step, l.Service, l.StartedAt, acknowledged)
+		if l.StartedAt != nil && l.StartedAt.After(acknowledged) && l.State != "cancelled" {
+			t.Errorf("leg %d (%s %s) started at %v, after the cancel was acknowledged at %v, and is %s, want cancelled without executing", l.ID, l.Step, l.Service, l.StartedAt, acknowledged, l.State)
 		}
 		switch l.State {
 		case "pending", "queued", "claimed", "running":
@@ -807,6 +808,52 @@ func TestUnknownOutcomeNeedsReconciliationThenFinishes(t *testing.T) {
 	}
 	if st := done.leg(t, "roll-micro", "m2").State; st != "succeeded" {
 		t.Errorf("the reconciled leg is %s, want succeeded", st)
+	}
+}
+
+func TestRunWaitsForRunInNeedsReconciliation(t *testing.T) {
+	s := startEngine(t, engineOpts{})
+	a := s.createRun("env-a", selection("v1.0.0", "m1", "m2=v1.0.0-unknown", "m3"), true)
+	held := s.waitRun(a, "needs_reconciliation")
+	if len(held.Locks) == 0 || len(held.Summary.Failures) != 1 {
+		t.Fatalf("run A holds %d locks with %d failures, want locks held and one unknown leg", len(held.Locks), len(held.Summary.Failures))
+	}
+	unknownLeg := held.Summary.Failures[0].LegID
+
+	// Run B wants one of A's services: it must wait, holding nothing, for as
+	// long as A sits in needs_reconciliation.
+	b := s.createRun("env-a", selection("v2.0.0", "m2"), true)
+	waitReason := fmt.Sprintf("waiting for run #%d", a)
+	eventually(t, runWait, "run B to say whom it waits for", func() bool { return s.run(b).WaitReason == waitReason })
+	for range 15 {
+		time.Sleep(200 * time.Millisecond)
+		waiting, holder := s.run(b), s.run(a)
+		if waiting.State != "queued" || waiting.WaitReason != waitReason || len(waiting.Locks) != 0 {
+			t.Fatalf("run B is %s (%q) with %d locks, want queued (%q) with none", waiting.State, waiting.WaitReason, len(waiting.Locks), waitReason)
+		}
+		if holder.State != "needs_reconciliation" || len(holder.Locks) == 0 {
+			t.Fatalf("run A is %s with %d locks, want needs_reconciliation with its locks held", holder.State, len(holder.Locks))
+		}
+		for _, l := range waiting.Legs {
+			if l.Kind == "step" && l.State != "pending" {
+				t.Fatalf("run B's leg %s %s is %s while it waits, want pending", l.Step, l.Service, l.State)
+			}
+		}
+	}
+
+	s.post(fmt.Sprintf("/api/v1/runs/%d/legs/%d/reconcile", a, unknownLeg), map[string]string{"outcome": "succeeded"})
+	aDone := s.waitRun(a, "succeeded")
+	bDone := s.waitRun(b, "succeeded")
+	if aDone.FinishedAt == nil {
+		t.Fatal("run A has no finish time")
+	}
+	for _, l := range bDone.Legs {
+		if l.Kind == "step" && (l.StartedAt == nil || l.StartedAt.Before(*aDone.FinishedAt)) {
+			t.Errorf("run B's leg %s %s started at %v, before run A finished at %v", l.Step, l.Service, l.StartedAt, aDone.FinishedAt)
+		}
+	}
+	if len(aDone.Locks) != 0 || len(bDone.Locks) != 0 {
+		t.Errorf("locks remain after both runs finished: %v %v", aDone.Locks, bDone.Locks)
 	}
 }
 
@@ -948,8 +995,10 @@ func TestTwoOrchestratorsProduceOneConsistentRun(t *testing.T) {
 		for _, env := range []string{"env-a", "env-b", "env-c"} {
 			ids = append(ids, s.createRun(env, selection(version+"-"+env, "m1", "m2", "m3"), true))
 		}
-		if round == 0 {
-			time.Sleep(200 * time.Millisecond)
+		if round == 0 { // the second round must find the first holding its locks
+			for _, first := range ids {
+				s.waitRun(first, "running", "succeeded")
+			}
 		}
 	}
 	for _, id := range ids {

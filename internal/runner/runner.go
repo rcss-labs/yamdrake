@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/rcss-labs/yamdrake/internal/queue"
+	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
 // LineSink takes the log lines of legs. The generation stamps each line so that
@@ -235,6 +236,14 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 		return
 	}
 	env := newLegEnv(r.q, r.sink, leg, log)
+	// A leg whose cancel was requested before it started does not run (spec 7.9).
+	// The flag is read after MarkRunning so a cancel that landed between the
+	// claim and now is seen; one that lands later reaches the executor through
+	// Env.CancelRequested.
+	if requested, err := r.q.CancelRequested(ctx, leg.ID); err == nil && requested {
+		r.settleCancelledBeforeStart(ctx, leg, log)
+		return
+	}
 	if leg.Attempt > 1 {
 		env.Log("warn", fmt.Sprintf("attempt %d: a previous attempt by runner %s did not finish; continuing from its last checkpoint",
 			leg.Attempt, claimed.PreviousRunnerID))
@@ -272,6 +281,23 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 		return
 	}
 	log.Info("leg settled", "state", outcome.State)
+	if r.onSettled != nil {
+		r.onSettled(leg.RunID)
+	}
+}
+
+// settleCancelledBeforeStart completes a leg as cancelled without running it.
+func (r *Runner) settleCancelledBeforeStart(ctx context.Context, leg store.Leg, log *slog.Logger) {
+	settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	defer cancel()
+	outcome := queue.Outcome{State: "cancelled", FailureShort: "cancelled before it started"}
+	err := r.completeWithRetry(settle, leg.ID, leg.Generation, outcome)
+	if err != nil {
+		// Not settled: the lease runs out and the leg is swept to another attempt.
+		log.Warn("could not settle a leg cancelled before it started", "error", err.Error())
+		return
+	}
+	log.Info("leg cancelled before it started")
 	if r.onSettled != nil {
 		r.onSettled(leg.RunID)
 	}

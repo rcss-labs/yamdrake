@@ -8,12 +8,15 @@ usage() {
 Usage: scripts/smoke.sh [-h]
 
 Builds and starts the Compose "app" profile (postgres, valkey, orchestrator,
-runner, which runs with YUMDRAKE_ENV=dev and YUMDRAKE_FAKE_STEPS=true here only) under its own Compose project (yumdrake-smoke) on host ports that do
-not clash with `make dev-up`, checks that /readyz reports status "ok", that
-/api/v1/me answers 401 without credentials (sign-in is wired in), that / serves
-the embedded web application (200, text/html, the root element and the
-X-Frame-Options: DENY header) and that both service containers are healthy and that the runner registered the fake steps. Only the smoke project's containers and
-volumes are removed on exit, so a running development stack is untouched.
+runner) under its own Compose project (yumdrake-smoke) on host ports that do
+not clash with `make dev-up`. The runner runs here, and only here, with
+YUMDRAKE_ENV=dev and YUMDRAKE_FAKE_STEPS=true. Checks that /readyz reports
+status "ok", that /api/v1/me answers 401 without credentials (sign-in is wired
+in), that / serves the embedded web application (200, text/html, the root
+element and the X-Frame-Options: DENY header), that both service containers
+are healthy and that the runner registered the fake steps. Only the smoke
+project's containers and volumes are removed on exit, so a running development
+stack is untouched.
 
 Environment (defaults): YUMDRAKE_SMOKE_ORCHESTRATOR_PORT=18080,
 YUMDRAKE_SMOKE_POSTGRES_PORT=15432, YUMDRAKE_SMOKE_VALKEY_PORT=16379.
@@ -136,7 +139,8 @@ for service in orchestrator runner; do
 done
 
 echo "smoke: checking that the runner registered the fake steps"
-if ! compose logs runner 2>&1 | grep -q 'fake steps are registered'; then
+runner_logs="$(compose logs runner 2>&1 || true)"
+if ! grep -q 'fake steps are registered' <<<"$runner_logs"; then
 	echo "smoke: FAIL: the runner did not register the fake steps (YUMDRAKE_ENV=dev, YUMDRAKE_FAKE_STEPS=true)" >&2
 	exit 1
 fi

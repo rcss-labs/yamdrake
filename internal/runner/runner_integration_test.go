@@ -979,3 +979,28 @@ func TestSettledNotifierCalledAfterTheLegIsCompleted(t *testing.T) {
 		t.Fatalf("Run = %v", err)
 	}
 }
+
+// A leg whose cancel was requested before a runner picked it up is settled as
+// cancelled without ever calling its executor (spec 7.9).
+func TestLegCancelledBeforeStartIsNotExecuted(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	leg := h.addLeg("billing")
+	if err := store.FlagLegCancel(context.Background(), h.pool, leg.ID); err != nil {
+		t.Fatalf("FlagLegCancel: %v", err)
+	}
+	var executed atomic.Int32
+	rr := h.startRunner(h.q, runnerOptions{executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(context.Context, Env, queue.Claimed) queue.Outcome {
+			executed.Add(1)
+			return succeed(`{}`)
+		}),
+	}})
+	waitFor(t, "the leg to settle", func() bool { return h.leg(leg.ID).State == "cancelled" })
+	if err := rr.stop(t); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if n := executed.Load(); n != 0 {
+		t.Errorf("the executor ran %d times for a leg cancelled before it started, want 0", n)
+	}
+}

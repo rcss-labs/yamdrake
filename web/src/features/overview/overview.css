@@ -21,11 +21,14 @@
   margin-bottom: 16px;
   align-items: flex-start;
 }
+/* min-width 0 lets a card shrink below its widest content, so a wide table scrolls inside it. */
 .ov-wide {
   flex: 2 1 520px;
+  min-width: 0;
 }
 .ov-narrow {
   flex: 1 1 300px;
+  min-width: 0;
 }
 .ov-row h2 {
   margin: 0 0 12px;
@@ -67,7 +70,8 @@
 }
 .ov-att {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   align-items: flex-start;
   padding: 12px 0;
   color: inherit;
@@ -76,8 +80,11 @@
 .ov-att:hover .ov-att-title {
   text-decoration: underline;
 }
+.ov-att-reason {
+  overflow-wrap: anywhere;
+}
 .ov-att-main {
-  flex: 1;
+  align-self: stretch;
   min-width: 0;
   display: flex;
   flex-direction: column;

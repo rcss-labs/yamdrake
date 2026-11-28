@@ -127,7 +127,7 @@ function Body({ health }: { health: SystemHealth }) {
             className="health-facts"
             items={[
               { label: 'Queued legs', value: health.queue.queued_legs },
-              { label: 'Oldest queued', value: <Time iso={health.queue.oldest_queued_at} fallback="Nothing queued" /> },
+              { label: 'Oldest queued', value: <Time iso={health.queue.oldest_queued_at} fallback="No legs queued" /> },
               { label: 'Active runs', value: health.queue.active_runs },
             ]}
           />

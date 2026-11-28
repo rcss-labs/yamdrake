@@ -74,7 +74,7 @@ function Capacity({ queue }: { queue: QueueView }) {
 
 /** `asOf` is when the numbers were fetched, so the wait is measured against that moment. */
 function Backlog({ queue, asOf }: { queue: QueueView; asOf: number }) {
-  if (queue.queued_legs === 0 || queue.oldest_queued_at === null) return <p className="queue-backlog">Nothing queued</p>
+  if (queue.queued_legs === 0 || queue.oldest_queued_at === null) return <p className="queue-backlog">No legs queued</p>
   const waited = Math.max(0, asOf - Date.parse(queue.oldest_queued_at))
   return (
     <p className="queue-backlog">

@@ -16,8 +16,15 @@
   line-height: 20px;
   font-weight: 500;
 }
-.health-facts {
-  padding: 0 16px 16px;
+/* The section is already a card: the facts sit in it without a second frame. */
+.health-section .health-facts {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0 0 16px;
+}
+.health-section .health-facts > div:first-child {
+  padding-left: 16px;
 }
 .health-note {
   margin: 0;

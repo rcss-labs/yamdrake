@@ -110,11 +110,11 @@ function Attention({ items }: { items: OverviewAttention[] }) {
               <span className="ov-att-title">
                 {item.job} in <span className="mono">{item.environment}</span>
               </span>
-              <span className="ov-sub">{item.reason}</span>
-            </span>
-            <span className="ov-sub ov-nowrap">
-              {item.by && `${item.by}, `}
-              <Time iso={item.at} />
+              <span className="ov-att-reason">{item.reason}</span>
+              <span className="ov-sub">
+                {item.by && `${item.by} · `}
+                <Time iso={item.at} />
+              </span>
             </span>
           </Link>
         </li>
@@ -124,11 +124,12 @@ function Attention({ items }: { items: OverviewAttention[] }) {
 }
 
 const environmentColumns: DataColumn<OverviewEnvironment>[] = [
-  { key: 'environment', header: 'Environment', render: (row) => <span className="mono">{row.environment}</span> },
+  { key: 'environment', header: 'Environment', className: 'ov-nowrap', render: (row) => <span className="mono">{row.environment}</span> },
   { key: 'label', header: 'Label', render: (row) => <Tag>{row.label}</Tag> },
   {
     key: 'run',
     header: 'Last run',
+    className: 'ov-nowrap',
     render: (row) =>
       row.run_id === null ? <span className="ov-sub">No runs yet</span> : <Link to={`/runs/${row.run_id}`}>#{row.run_id}</Link>,
   },

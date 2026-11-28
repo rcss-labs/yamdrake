@@ -132,7 +132,7 @@ export function ServicePage() {
 
   return (
     <>
-      <PageHeader title={<span className="mono">{service.name}</span>} crumbs={<Link to="/versions">Versions</Link>} />
+      <PageHeader title={service.name} crumbs={<Link to="/versions">Versions</Link>} />
       <Facts
         className="svc-facts"
         items={[

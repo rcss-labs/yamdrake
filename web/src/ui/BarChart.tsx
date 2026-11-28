@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import './BarChart.css'
 import './Loading.css' // the shared .ui-visually-hidden class
 
@@ -37,8 +37,37 @@ function ticksFor(max: number): number[] {
   return Array.from(new Set(Array.from({ length: gaps + 1 }, (_, index) => Math.round((max * index) / gaps))))
 }
 
+/** Room one axis label needs, in pixels. */
+const labelRoom = 48
+
+/**
+ * Which axis labels to print so that none overlap: every Nth, counted back from the last day, plus the first.
+ * When the first day does not fall on the grid, the grid label nearest to it is dropped instead of overprinting.
+ */
+export function visibleLabelIndexes(count: number, slotWidth: number): Set<number> {
+  if (count === 0) return new Set()
+  const step = slotWidth > 0 ? Math.max(1, Math.ceil(labelRoom / slotWidth)) : 1
+  const shown = new Set<number>()
+  for (let index = count - 1; index >= 0; index -= step) shown.add(index)
+  if (!shown.has(0)) {
+    const nearest = Math.min(...shown)
+    if (nearest < step) shown.delete(nearest)
+    shown.add(0)
+  }
+  return shown
+}
+
 export function BarChart({ days, series, height, caption }: BarChartProps) {
   const [shown, setShown] = useState<number | null>(null)
+  const [axisWidth, setAxisWidth] = useState(0)
+  // Measures the axis when it appears and whenever it is resized.
+  const measureAxis = useCallback((axis: HTMLDivElement) => {
+    setAxisWidth(axis.clientWidth)
+    if (typeof ResizeObserver === 'undefined') return () => {}
+    const observer = new ResizeObserver(() => setAxisWidth(axis.clientWidth))
+    observer.observe(axis)
+    return () => observer.disconnect()
+  }, [])
 
   const totals = days.map((day) => series.reduce((sum, entry) => sum + valueOf(day, entry.key), 0))
   const max = Math.max(0, ...totals)
@@ -48,7 +77,8 @@ export function BarChart({ days, series, height, caption }: BarChartProps) {
     .map((entry) => `${days.reduce((sum, day) => sum + valueOf(day, entry.key), 0)} ${entry.label.toLowerCase()}`)
     .join(', ')}`
   const focused = shown === null ? undefined : days[shown]
-  const step = Math.ceil(days.length / 14)
+  // Each day's slot is the axis width less its 4px side padding, shared by the days.
+  const labelled = visibleLabelIndexes(days.length, axisWidth > 0 ? (axisWidth - 8) / days.length : 0)
 
   return (
     <div role="group" aria-label={caption} className="ui-chart">
@@ -99,9 +129,9 @@ export function BarChart({ days, series, height, caption }: BarChartProps) {
         )}
       </div>
       {max > 0 && (
-        <div className="ui-chart-axis" aria-hidden="true">
+        <div ref={measureAxis} className="ui-chart-axis" aria-hidden="true">
           {days.map((day, index) => (
-            <span key={day.title}>{(days.length - 1 - index) % step === 0 ? day.label : ''}</span>
+            <span key={day.title}>{labelled.has(index) && <span>{day.label}</span>}</span>
           ))}
         </div>
       )}

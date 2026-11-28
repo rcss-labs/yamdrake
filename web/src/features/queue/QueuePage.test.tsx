@@ -48,7 +48,7 @@ describe('the queue page', () => {
     })
     show()
     expect(await screen.findByText('1 runner, 3 of 8 slots busy')).toBeInTheDocument()
-    expect(screen.getByText('Nothing queued')).toBeInTheDocument()
+    expect(screen.getByText('No legs queued')).toBeInTheDocument()
   })
 
   it('warns when no runner has reported, naming how long that takes to count', async () => {

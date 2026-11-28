@@ -82,7 +82,7 @@ func unlock(ctx context.Context, args []string, getenv func(string) string, stdo
 		return app.ExitFailure
 	}
 	defer pool.Close()
-	client, err := cache.Open(cfg.ValkeyAddr)
+	client, err := cache.Open(app.CacheOptions(cfg.Common))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "unlock:", err)
 		return app.ExitFailure

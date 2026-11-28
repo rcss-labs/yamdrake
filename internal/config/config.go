@@ -18,8 +18,14 @@ import (
 
 // Common holds the settings shared by both service binaries.
 type Common struct {
-	DatabaseURL     string
-	ValkeyAddr      string
+	DatabaseURL string
+	ValkeyAddr  string
+	// ValkeyPassword is the Valkey AUTH password (YUMDRAKE_VALKEY_PASSWORD).
+	// Optional; empty means no AUTH is sent.
+	ValkeyPassword Secret
+	// ValkeyTLS connects to Valkey over TLS (YUMDRAKE_VALKEY_TLS, "true" or
+	// "false", default false). ElastiCache with encryption in transit needs it.
+	ValkeyTLS       bool
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	StartupTimeout  time.Duration
@@ -119,6 +125,16 @@ func (l *loader) loadCommon() Common {
 		l.fail("YUMDRAKE_VALKEY_ADDR", "is required")
 	} else if reason := validateHostPort(c.ValkeyAddr); reason != "" {
 		l.fail("YUMDRAKE_VALKEY_ADDR", reason)
+	}
+
+	c.ValkeyPassword = Secret(l.getenv("YUMDRAKE_VALKEY_PASSWORD"))
+	switch raw := l.valueOr("YUMDRAKE_VALKEY_TLS", "false"); raw {
+	case "true":
+		c.ValkeyTLS = true
+	case "false":
+		c.ValkeyTLS = false
+	default:
+		l.fail("YUMDRAKE_VALKEY_TLS", `must be "true" or "false"`)
 	}
 
 	c.LogLevel = l.logLevel("YUMDRAKE_LOG_LEVEL", "info")

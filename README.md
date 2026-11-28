@@ -252,6 +252,8 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | --- | --- | --- | --- |
 | `YUMDRAKE_DATABASE_URL` | orchestrator, runner | none (required) | Must use the `postgres://` or `postgresql://` scheme and include a host. The query string must parse. |
 | `YUMDRAKE_VALKEY_ADDR` | orchestrator, runner | none (required) | `host:port`, with a port from 1 to 65535. |
+| `YUMDRAKE_VALKEY_PASSWORD` | orchestrator, runner | empty | Valkey password (AUTH for the default user). Empty sends no AUTH. Never printed or logged. |
+| `YUMDRAKE_VALKEY_TLS` | orchestrator, runner | `false` | `true` or `false`. `true` connects to Valkey over TLS, verified against the system roots (needed for ElastiCache with encryption in transit). |
 | `YUMDRAKE_LOG_LEVEL` | orchestrator, runner | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `YUMDRAKE_SHUTDOWN_TIMEOUT` | orchestrator, runner | `20s` | Go duration greater than zero. |
 | `YUMDRAKE_STARTUP_TIMEOUT` | orchestrator, runner | `60s` | Go duration greater than zero. Bounds the database wait (both) and the schema wait (runner). |

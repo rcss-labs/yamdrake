@@ -1,5 +1,5 @@
 # Web stage: builds the React application from the lockfile.
-FROM node:24.22.3-alpine3.24 AS web
+FROM node:26.13.1-alpine3.24 AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -25,8 +25,8 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # The log archive directory is created here because the final image has no shell.
 RUN mkdir -p /out/log-archive
 
-# Final stage: distroless static, nonroot (tag gcr.io/distroless/static-debian12:nonroot).
-FROM gcr.io/distroless/static-debian12@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+# Final stage: distroless static, nonroot (tag gcr.io/distroless/static-debian13:nonroot).
+FROM gcr.io/distroless/static-debian13@sha256:8ce6dd87e9823c5b48dcfb2c8604714ccb351ce59607327bcc4957448da279b5
 COPY --from=build /out/yumdrake-orchestrator /yumdrake-orchestrator
 # Owned by the service user so a named volume mounted here inherits the ownership.
 COPY --from=build --chown=65532:65532 /out/log-archive /var/lib/yumdrake/log-archive

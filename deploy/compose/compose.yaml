@@ -23,7 +23,7 @@ x-app-environment: &app-environment
 
 services:
   postgres:
-    image: postgres:17.12-alpine
+    image: postgres:19.0-alpine3.24
     user: "70:70"
     restart: unless-stopped
     environment:
@@ -31,7 +31,7 @@ services:
       POSTGRES_USER: yumdrake
       POSTGRES_PASSWORD: ${YUMDRAKE_DATABASE_PASSWORD:?set YUMDRAKE_DATABASE_PASSWORD in .env (copy .env.example)}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U yumdrake -d yumdrake"]
       interval: 5s
@@ -47,7 +47,7 @@ services:
           memory: 1g
 
   valkey:
-    image: valkey/valkey:8.1.12
+    image: valkey/valkey:9.2.1-alpine3.24
     user: "999:999"
     restart: unless-stopped
     # The password is in the server's process arguments inside the container.

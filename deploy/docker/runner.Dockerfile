@@ -15,8 +15,8 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # The artifact directory is created here because the final image has no shell.
 RUN mkdir -p /out/artifacts
 
-# Final stage: distroless static, nonroot (tag gcr.io/distroless/static-debian12:nonroot).
-FROM gcr.io/distroless/static-debian12@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+# Final stage: distroless static, nonroot (tag gcr.io/distroless/static-debian13:nonroot).
+FROM gcr.io/distroless/static-debian13@sha256:8ce6dd87e9823c5b48dcfb2c8604714ccb351ce59607327bcc4957448da279b5
 COPY --from=build /out/yumdrake-runner /yumdrake-runner
 # Owned by the service user so a named volume mounted here inherits the ownership.
 COPY --from=build --chown=65532:65532 /out/artifacts /var/lib/yumdrake/artifacts

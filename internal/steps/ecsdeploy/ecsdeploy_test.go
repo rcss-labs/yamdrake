@@ -476,9 +476,8 @@ func intendedRegister() store.Op {
 
 // addUntagged stores n revisions after the newest one, with no tags.
 func (f *fakeECS) addUntagged(n int) {
-	next := int32(len(f.tds)) + 7 // revisions are 7, 8, ... without gaps
-	for i := range n {
-		f.addTD(next+int32(i), nil)
+	for range n {
+		f.addTD(f.tds[len(f.tds)-1].td.Revision+1, nil)
 	}
 }
 

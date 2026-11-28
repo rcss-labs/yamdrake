@@ -123,11 +123,14 @@ func TestCreateAccountValidatesInputAndRejectsDuplicates(t *testing.T) {
 		"role with a key": with(func(b map[string]any) {
 			b["discovery"] = map[string]any{"method": "role", "role_arn": role("111111111111")["role_arn"], "secret_access_key": "leak-check-secret"}
 		}),
+		"key id too short to hide": with(func(b map[string]any) {
+			b["discovery"] = awsKeyCredential("AKIA12345", "s3cret-value")
+		}),
 		"key without secret": with(func(b map[string]any) {
-			b["discovery"] = map[string]any{"method": "key", "access_key_id": "AKIAEXAMPLE"}
+			b["discovery"] = map[string]any{"method": "key", "access_key_id": "AKIAEXAMPLE0001"}
 		}),
 		"key with a role": with(func(b map[string]any) {
-			b["discovery"] = map[string]any{"method": "key", "access_key_id": "AKIA", "secret_access_key": "s3cret-value", "role_arn": "arn:aws:iam::111111111111:role/x"}
+			b["discovery"] = map[string]any{"method": "key", "access_key_id": "AKIAEXAMPLE0002", "secret_access_key": "s3cret-value", "role_arn": "arn:aws:iam::111111111111:role/x"}
 		}),
 		"unknown field":        with(func(b map[string]any) { b["extra"] = true }),
 		"unknown nested field": with(func(b map[string]any) { b["deploy"].(map[string]any)["session_token"] = "t" }),

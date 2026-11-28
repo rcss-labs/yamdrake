@@ -50,7 +50,7 @@ func startFakeValkey(t *testing.T, wrap func(net.Listener) net.Listener) *fakeVa
 }
 
 func serveFakeValkey(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	r := bufio.NewReader(conn)
 	authed := false
 	for {

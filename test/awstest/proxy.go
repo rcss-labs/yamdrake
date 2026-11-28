@@ -42,7 +42,8 @@ type rule struct {
 	// where, when set, narrows the rule to the calls it accepts.
 	where func(Request) bool
 	// held is closed when the rule has caught a call; release lets it go.
-	held, release chan struct{}
+	held    chan Request
+	release chan struct{}
 }
 
 func (r *rule) matches(service, operation string) bool {
@@ -118,9 +119,9 @@ func (p *Proxy) FailNth(service, operation string, n int, where func(Request) bo
 // HoldAfterForward lets the next matching call reach Floci, then keeps its
 // response back until release is called (or the caller gives up and closes the
 // connection): the effect happened, the caller is still waiting. held is
-// closed once a call is being held.
-func (p *Proxy) HoldAfterForward(service, operation string) (held <-chan struct{}, release func()) {
-	r := &rule{service: service, operation: operation, held: make(chan struct{}), release: make(chan struct{})}
+// sent the held request once a call is being held.
+func (p *Proxy) HoldAfterForward(service, operation string) (held <-chan Request, release func()) {
+	r := &rule{service: service, operation: operation, held: make(chan Request, 1), release: make(chan struct{})}
 	p.mu.Lock()
 	p.holds = append(p.holds, r)
 	p.mu.Unlock()
@@ -152,6 +153,13 @@ func (p *Proxy) DropAfterForwardWhere(service, operation string, times int, wher
 	for range times {
 		p.drops = append(p.drops, &rule{service: service, operation: operation, where: where})
 	}
+}
+
+// DisarmDrops removes every drop rule that has not caught a call yet.
+func (p *Proxy) DisarmDrops() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.drops = nil
 }
 
 // take marks and returns the first unused rule in list that matches.
@@ -205,7 +213,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h := p.take(p.holds, req); h != nil {
-		close(h.held)
+		h.held <- req
 		select {
 		case <-h.release:
 		case <-r.Context().Done():

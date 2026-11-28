@@ -403,8 +403,9 @@ func TestRunnerKilledAfterRegisterAdoptsRevision(t *testing.T) {
 	held, release := s.runnerProxy.HoldAfterForward("ecs", "RegisterTaskDefinition")
 	t.Cleanup(release)
 	id := s.createRun(devEnv, planVersion, true)
+	var heldRequest awstest.Request
 	select {
-	case <-held:
+	case heldRequest = <-held:
 	case <-time.After(deployWait):
 		t.Fatalf("no RegisterTaskDefinition was held; run is %s", s.deployRun(id).State)
 	}
@@ -423,20 +424,18 @@ func TestRunnerKilledAfterRegisterAdoptsRevision(t *testing.T) {
 			t.Errorf("%s was not deployed", name)
 		}
 	}
-	// The held call was the first register the runners made; its family is the
-	// service whose revision the second runner must adopt. The killed runner's
-	// other legs may have been cut at any point; whatever they did is adopted or
-	// done once, which the revision count above has checked.
+	// The family of the held call is the service whose revision the second runner
+	// must adopt. The killed runner's other legs may have been cut at any point;
+	// whatever they did is adopted or done once, which the revision count above
+	// and the register count below check.
 	var heldService string
-	for _, r := range s.runnerProxy.Requests() {
-		if r.Service == "ecs" && r.Operation == "RegisterTaskDefinition" {
-			for _, name := range planServices {
-				if strings.Contains(string(r.Body), `"family":"`+name+`"`) {
-					heldService = name
-				}
-			}
-			break
+	for _, name := range planServices {
+		if strings.Contains(string(heldRequest.Body), `"family":"`+name+`"`) {
+			heldService = name
 		}
+	}
+	if got := s.countCalls("ecs", "RegisterTaskDefinition"); got != 3 {
+		t.Errorf("the runners called RegisterTaskDefinition %d times, want 3 (one per service; the second runner adopts, it does not register again)", got)
 	}
 	if heldService == "" {
 		t.Fatal("the held RegisterTaskDefinition names none of the services")
@@ -634,6 +633,11 @@ func TestCancelDuringRollout(t *testing.T) {
 		}
 		return false
 	})
+	// Cancel only once the rolling service has been updated: before that the leg
+	// may still end "cancelled before the deployment started", which is another case.
+	eventually(t, deployWait, "the rolling service to be updated", func() bool {
+		return anyContains(s.legLog(id, rolling.ID), "Updated "+rolling.Service+" to ")
+	})
 	s.post(fmt.Sprintf("/api/v1/runs/%d/cancel", id), nil)
 	done := s.expectDeploy(id, "cancelled")
 
@@ -726,6 +730,8 @@ func TestCheckAgainAfterUnknownFinishes(t *testing.T) {
 	})
 	id := s.createRun(devEnv, planVersion, true)
 	held := s.expectDeploy(id, "needs_reconciliation")
+	// Drop rules the retries did not use must not cut the check that follows.
+	s.runnerProxy.DisarmDrops()
 
 	unknown := held.leg(t, "roll", "web")
 	if unknown.State != "unknown" {

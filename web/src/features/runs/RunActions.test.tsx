@@ -2,7 +2,7 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
-import { adminMe, eventSources, failNext, jobManagerMe, mockState, qaMe, requests, runIds, server, viewerMe } from '../../test/server'
+import { adminMe, delayNext, eventSources, failNext, jobManagerMe, mockState, qaMe, requests, runIds, server, viewerMe } from '../../test/server'
 import type { ApprovalItem, Me } from '../../api/types'
 import { actionNames, moveStoredRun, renderRun, storedRun } from './runTestUtils'
 
@@ -234,6 +234,31 @@ describe('Approve and Reject', () => {
     expect(posts('/approve')[0]!.body).toEqual({ manifest_id: storedRun(runIds.waitingApproval).manifest_id })
     await waitFor(async () => expect(await actionNames()).toEqual(['Cancel']))
     expect(screen.getByTestId('run-lead')).toHaveTextContent('Waiting for its turn')
+  })
+
+  it('Approve and Reject stay disabled while the plan loads, and Approve sends the id of the plan shown', async () => {
+    mockState().plans[runIds.waitingApproval]!.id = 'shown-plan-id'
+    delayNext('GET', `/api/v1/runs/${runIds.waitingApproval}/plan`, 300)
+    renderRun(runIds.waitingApproval, adminMe)
+    const approve = await screen.findByRole('button', { name: 'Approve' })
+    expect(approve).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled()
+    await waitFor(() => expect(approve).toBeEnabled())
+    await userEvent.click(approve)
+    await waitFor(() => expect(posts('/approve')).toHaveLength(1))
+    expect(posts('/approve')[0]!.body).toEqual({ manifest_id: 'shown-plan-id' })
+  })
+
+  it('Approve and Reject stay disabled when the plan could not be loaded, and say why', async () => {
+    failNext('GET', `/api/v1/runs/${runIds.waitingApproval}/plan`, 500, 'internal', 'plan store down')
+    failNext('GET', `/api/v1/runs/${runIds.waitingApproval}/plan`, 500, 'internal', 'plan store down')
+    renderRun(runIds.waitingApproval, adminMe)
+    const approve = await screen.findByRole('button', { name: 'Approve' })
+    expect(await screen.findByText(/Approve and Reject wait for the plan/)).toBeInTheDocument()
+    expect(approve).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled())
   })
 
   it('Reject asks first', async () => {

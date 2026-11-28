@@ -53,9 +53,10 @@ export function RunActions({ run, reload }: RunActionsProps) {
   const mayApprove = approvalRow?.can_approve === true
 
   // Start waits for the plan: it is hidden until the plan has loaded and while any of its checks failed.
-  const plan = useRunPlan(run.id, { enabled: run.state === 'planned' && mayRun })
+  // Approve and Reject wait for it too (they stay disabled), and Approve names the plan the person was shown.
+  const plan = useRunPlan(run.id, { enabled: (run.state === 'planned' && mayRun) || (run.state === 'waiting_approval' && mayApprove) })
   const planReady = plan.isSuccess && failedChecks(plan.data).length === 0
-  const planFailed = run.state === 'planned' && mayRun && plan.isError
+  const planFailed = (run.state === 'planned' && mayRun && plan.isError) || (run.state === 'waiting_approval' && mayApprove && plan.isError)
 
   const start = useStartRun(run.id)
   const cancel = useCancelRun(run.id)
@@ -94,15 +95,21 @@ export function RunActions({ run, reload }: RunActionsProps) {
   const startNow = () => perform(() => start.mutateAsync({ manifest_id: run.manifest_id }))
   const askOrStart = () => (run.label === 'prod' ? setConfirming('start') : void startNow())
 
-  const buttons: { name: string; variant?: 'primary' | 'danger'; onClick(): void }[] = []
+  const buttons: { name: string; variant?: 'primary' | 'danger'; disabled?: boolean; onClick(): void }[] = []
   const state = run.state
   if (state === 'planned') {
     if (mayRun && planReady) buttons.push({ name: 'Start', variant: 'primary', onClick: askOrStart })
     if (mayCancel) buttons.push({ name: 'Discard', onClick: () => setConfirming('discard') })
   }
   if (state === 'waiting_approval' && mayApprove) {
-    buttons.push({ name: 'Approve', variant: 'primary', onClick: () => void perform(() => approve.mutateAsync({ manifest_id: run.manifest_id })) })
-    buttons.push({ name: 'Reject', variant: 'danger', onClick: () => setConfirming('reject') })
+    const shownPlan = plan.data
+    buttons.push({
+      name: 'Approve',
+      variant: 'primary',
+      disabled: !shownPlan,
+      onClick: () => shownPlan && void perform(() => approve.mutateAsync({ manifest_id: shownPlan.id })),
+    })
+    buttons.push({ name: 'Reject', variant: 'danger', disabled: !shownPlan, onClick: () => setConfirming('reject') })
   }
   if ((state === 'waiting_approval' || state === 'queued' || state === 'running') && mayCancel) {
     buttons.push({ name: 'Cancel', onClick: () => setConfirming('cancel') })
@@ -133,7 +140,7 @@ export function RunActions({ run, reload }: RunActionsProps) {
       {buttons.length > 0 && (
         <div className="run-actions" role="group" aria-label="Run actions">
           {buttons.map((button) => (
-            <Button key={button.name} variant={button.variant} loading={busy} onClick={button.onClick}>
+            <Button key={button.name} variant={button.variant} loading={busy} disabled={button.disabled} onClick={button.onClick}>
               {button.name}
             </Button>
           ))}
@@ -142,7 +149,7 @@ export function RunActions({ run, reload }: RunActionsProps) {
       {approvalReason && <Note>{approvalReason}</Note>}
       {planFailed && (
         <Note tone="error">
-          Start is hidden until the plan loads.{' '}
+          {run.state === 'planned' ? 'Start is hidden until the plan loads.' : 'Approve and Reject wait for the plan to load.'}{' '}
           <Button size="sm" onClick={() => void plan.refetch()}>
             Try again
           </Button>

@@ -71,6 +71,17 @@ variable "config_bucket_names" {
   type        = list(string)
 }
 
+variable "config_bucket_kms_key_arns" {
+  description = "ARNs of the KMS keys that encrypt the config buckets, when they use SSE-KMS. Leave empty when the buckets use S3-managed keys. The deployment role may use these keys only through S3."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for arn in var.config_bucket_kms_key_arns : can(regex("^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", arn))])
+    error_message = "Give full KMS key ARNs (arn:aws:kms:REGION:ACCOUNT:key/ID), with no alias and no wildcard."
+  }
+}
+
 variable "task_definition_families" {
   description = "Task definition family names of the services Yumdrake deploys. Only revisions of these families can be tagged."
   type        = list(string)

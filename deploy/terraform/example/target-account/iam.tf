@@ -129,6 +129,22 @@ data "aws_iam_policy_document" "deployment" {
     resources = local.bucket_arns
   }
 
+  # Config buckets encrypted with SSE-KMS: S3 calls KMS as the caller, so the role
+  # needs the key; ViaService limits it to requests that come through S3.
+  dynamic "statement" {
+    for_each = length(var.config_bucket_kms_key_arns) > 0 ? [1] : []
+    content {
+      sid       = "UseConfigBucketKeysThroughS3"
+      actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
+      resources = var.config_bucket_kms_key_arns
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["s3.${var.region}.amazonaws.com"]
+      }
+    }
+  }
+
   statement {
     sid       = "PassOnlyTheNamedRolesToEcs"
     actions   = ["iam:PassRole"]

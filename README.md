@@ -23,9 +23,10 @@ PostgreSQL listens on `localhost:5432` (database, user and password `yumdrake`).
 
 ## Running the services locally
 
-Build both binaries into `bin/`:
+Build both binaries into `bin/`. `make build` also builds the web application and embeds it, so it needs Node 24 and a one-time `make web-install` first:
 
 ```sh
+make web-install   # once per clone
 make build
 ```
 
@@ -176,6 +177,31 @@ At least one enabled admin must remain; otherwise the change is refused with `40
 
 Every change is written to the append-only audit log, which never contains passwords, tokens or keys.
 
+## Web application
+
+The web application lives in `web/` (React, TypeScript and Vite). It needs Node 24 and npm.
+
+```sh
+make web-install   # install dependencies from the lockfile
+make web-lint      # ESLint and the TypeScript check
+make web-test      # unit tests, run once
+make web-build     # production build, copied into internal/webui/dist for embedding
+```
+
+For development, run the orchestrator on port 8080 and start the dev server with `npm --prefix web run dev`. The dev server proxies `/api` and `/saml` to the orchestrator on `localhost:8080`.
+
+With the dev server on `http://localhost:5173`, sign-in answers 403 unless the orchestrator runs with `YUMDRAKE_PUBLIC_URL=http://localhost:5173`, because the API checks the `Origin` of every write against the public URL.
+
+### Browser test
+
+```sh
+make dev-up                                          # PostgreSQL and Valkey
+(cd web && npx playwright install chromium)          # once; add --with-deps on a bare Linux machine
+make web-e2e                                         # builds, then runs the test in Chromium
+```
+
+`make web-e2e` runs `web/e2e/foundation.spec.ts` against the real orchestrator binary (`bin/yumdrake-orchestrator`, with the web application embedded), not the Vite dev server. The helper `test/e2e/webstack` starts it on free ports with its own database (`yumdrake_web_e2e_*`, dropped at the end) and its own Valkey key prefix, plus the fake GitHub from `test/e2e/fakegithub` holding `internal/spec/testdata/valid`. It needs the Compose services (or `YUMDRAKE_TEST_DATABASE_URL` and `YUMDRAKE_TEST_VALKEY_ADDR` pointing at others). The helper stops the orchestrator and drops the database when the test ends, fails or is interrupted. Set `YUMDRAKE_E2E_SHOTS_DIR` to a directory to keep the eight full-page screenshots the test takes.
+
 ## Testing
 
 ```sh
@@ -224,7 +250,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 
 ## Validating YAML
 
-`make build` produces `bin/yumdrake`, the CLI that checks an inventory before it is synced:
+`make build` (after `make web-install`, see above) produces `bin/yumdrake`, the CLI that checks an inventory before it is synced:
 
 ```sh
 bin/yumdrake validate <inventory-dir> [--job <file>]...
@@ -238,6 +264,7 @@ The inventory directory holds `environments.yaml` and one `services/*.yaml` file
 Exit codes: `0` valid, `1` problems found or the directory is missing, `2` usage error (no directory, an unknown command, or bad flags).
 
 ```sh
+make web-install   # once, if not done yet
 make build
 bin/yumdrake validate internal/spec/testdata/valid --job internal/spec/testdata/valid/jobs/deploy-backend.yaml
 ```
@@ -252,4 +279,4 @@ kind: Service
 
 ## CI
 
-The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration and smoke jobs on pull requests and on pushes to `main`.
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration, smoke and web jobs on pull requests and on pushes to `main`.

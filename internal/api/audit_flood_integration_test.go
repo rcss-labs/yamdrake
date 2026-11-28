@@ -84,8 +84,8 @@ func TestAnonymousACSPostsAreLoggedNotAudited(t *testing.T) {
 		"cookie of another server":  otherServer,
 	}
 	for name, rec := range attempts {
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("%s: %s, want 400", name, failure(rec))
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != signInErrorLocation("rejected") {
+			t.Errorf("%s: status %d to %q, want 303 to the sign-in page", name, rec.Code, rec.Header().Get("Location"))
 		}
 	}
 	// Thousands of them write nothing either.
@@ -141,9 +141,7 @@ func TestOneRelayCookieCannotFloodTheAuditLog(t *testing.T) {
 	}
 	for i := range 50 {
 		rec := h.postACS(junk(flow, fmt.Sprintf("<junk n=%d/>", i)), true)
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("junk post %d: %s, want 400", i, failure(rec))
-		}
+		expectSignInRedirect(t, rec, "rejected")
 	}
 	if got := h.auditCount("saml.rejected"); got != before {
 		t.Fatalf("50 junk posts with one cookie wrote %d audit entries, want none", got-before)
@@ -157,9 +155,7 @@ func TestOneRelayCookieCannotFloodTheAuditLog(t *testing.T) {
 	real := idp.begin()
 	h.postACS(junk(real, "<junk/>"), true) // claims the nonce
 	real.form = idp.answer(real.locURL)
-	if rec := h.postACS(real, true); rec.Code != http.StatusBadRequest || sessionCookie(rec) != nil {
-		t.Errorf("a response on an already claimed relay state: %s, want 400 and no session", failure(rec))
-	}
+	expectSignInRedirect(t, h.postACS(real, true), "rejected") // refused, no session
 
 	// The bypass to try: a fresh cookie for each post and a bogus Signature
 	// element, so the response looks signed. It is not valid, so not audited.
@@ -186,16 +182,14 @@ func TestOneRelayCookieCannotFloodTheAuditLog(t *testing.T) {
 
 // If Valkey cannot be asked whether the relay state was used, the answer is 503
 // and nothing is written.
-func TestACSWithValkeyDownIs503AndAuditsNothing(t *testing.T) {
+func TestACSWithValkeyDownIsUnavailableAndAuditsNothing(t *testing.T) {
 	h, idp, _ := ssoSetup(t)
 	idp.signIn(uniqueEmail(t, "down"), "Down", "eng-devops")
 	flow := idp.begin()
 	entries, users := len(h.auditEntries()), h.userCount()
 	h.rebuild(func(d *Deps) { d.Valkey = deadValkey(t) })
 	rec := h.postACS(flow, true)
-	if rec.Code != http.StatusServiceUnavailable || sessionCookie(rec) != nil {
-		t.Fatalf("status %d %s, want 503 and no session", rec.Code, failure(rec))
-	}
+	expectSignInRedirect(t, rec, "unavailable")
 	if len(h.auditEntries()) != entries || h.userCount() != users {
 		t.Errorf("a 503 wrote something: %v", h.auditActions())
 	}

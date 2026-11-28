@@ -415,6 +415,62 @@ func TestAuditPagingAndPermission(t *testing.T) {
 	h.expect(h.send(sent{method: "GET", path: "/api/v1/admin/audit", bearer: token}), http.StatusForbidden, "forbidden")
 }
 
+func TestUserGroupsReportTheirSource(t *testing.T) {
+	h := newHarness(t)
+	user := h.newUser("mixed")
+	manualOnly := h.createGroupVia("manual-only-"+uniqueEmail(t, "g"), false)
+	idpOnly := h.createGroupVia("idp-only-"+uniqueEmail(t, "g"), false)
+	both := h.createGroupVia("both-"+uniqueEmail(t, "g"), false)
+	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"group_ids": []int64{manualOnly, both}}), http.StatusOK, "")
+	if err := store.ReplaceIDPMemberships(context.Background(), h.pool, user.ID, []int64{idpOnly, both}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]string{manualOnly: "manual", idpOnly: "idp", both: "manual"}
+	for _, entry := range decodeObject(t, h.asAdmin("GET", "/api/v1/admin/users", nil))["users"].([]any) {
+		u := entry.(map[string]any)
+		if int64(u["id"].(float64)) != user.ID {
+			continue
+		}
+		got := map[int64]string{}
+		for _, g := range u["groups"].([]any) {
+			ref := g.(map[string]any)
+			got[int64(ref["id"].(float64))], _ = ref["source"].(string)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("groups = %v, want %v", got, want)
+		}
+		for id, source := range want {
+			if got[id] != source {
+				t.Errorf("group %d source = %q, want %q (manual wins when both)", id, got[id], source)
+			}
+		}
+		return
+	}
+	t.Fatal("user not listed")
+}
+
+func TestAuditNextBeforeOnlyWhenOlderRowsExist(t *testing.T) {
+	h := newHarness(t)
+	for i := range 3 {
+		h.createGroupVia("audit-edge-"+strconv.Itoa(i)+"-"+uniqueEmail(t, "g"), false)
+	}
+	all := decodeObject(t, h.asAdmin("GET", "/api/v1/admin/audit?limit=200", nil))["entries"].([]any)
+	total := len(all)
+	if total < 3 || total >= 200 {
+		t.Fatalf("test needs a log of 3 to 199 entries, got %d", total)
+	}
+	// Exactly as many rows as the limit: nothing older, so no next page.
+	exact := decodeObject(t, h.asAdmin("GET", "/api/v1/admin/audit?limit="+strconv.Itoa(total), nil))
+	if len(exact["entries"].([]any)) != total || exact["next_before"] != nil {
+		t.Errorf("a full last page: %d entries, next_before = %v, want %d and null", len(exact["entries"].([]any)), exact["next_before"], total)
+	}
+	// One row fewer than the log: an older row exists.
+	short := decodeObject(t, h.asAdmin("GET", "/api/v1/admin/audit?limit="+strconv.Itoa(total-1), nil))
+	if len(short["entries"].([]any)) != total-1 || short["next_before"] == nil {
+		t.Errorf("a page with an older row: %d entries, next_before = %v, want %d and a cursor", len(short["entries"].([]any)), short["next_before"], total-1)
+	}
+}
+
 // TestEveryChangeIsAudited makes one change per mutating route of this task
 // and checks the entry it leaves, in the same step.
 func TestEveryChangeIsAudited(t *testing.T) {

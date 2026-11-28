@@ -234,6 +234,7 @@ func (s *server) routes() []routeDef {
 		{"GET /api/v1/inventory", auth.View, s.getInventory},
 		{"GET /api/v1/inventory/services/{name}", auth.View, s.getService},
 		{"POST /api/v1/inventory/sync", auth.ManageConnections, s.syncInventory},
+		{"GET /api/v1/admin/inventory-source", auth.ManageConnections, s.getInventorySource},
 		{"PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource},
 		{"GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections},
 		{"POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection},

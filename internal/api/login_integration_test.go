@@ -425,3 +425,26 @@ func TestLoginFailureKeyIsTheCounterSignInUses(t *testing.T) {
 	}
 	h.expect(h.login(user.Email, testPassword), http.StatusOK, "")
 }
+
+func TestPasswordSignInRecordsLastSignIn(t *testing.T) {
+	h := newHarness(t)
+	user := h.newUser("lastsignin")
+	lastSignIn := func() any {
+		rec := h.asAdmin("GET", "/api/v1/admin/users", nil)
+		h.expect(rec, http.StatusOK, "")
+		for _, u := range decodeObject(t, rec)["users"].([]any) {
+			if int64(u.(map[string]any)["id"].(float64)) == user.ID {
+				return u.(map[string]any)["last_sign_in_at"]
+			}
+		}
+		t.Fatalf("user %d is not in the admin users list", user.ID)
+		return nil
+	}
+	if got := lastSignIn(); got != nil {
+		t.Fatalf("last_sign_in_at before any sign-in = %v, want null", got)
+	}
+	h.expect(h.login(user.Email, testPassword), http.StatusOK, "")
+	if got := lastSignIn(); got == nil {
+		t.Fatalf("last_sign_in_at after a password sign-in is null, want the sign-in time")
+	}
+}

@@ -196,17 +196,17 @@ func TestOnlyAnAdministratorChangesSSOSettings(t *testing.T) {
 	// An administrator can, and the GET shape is the same as before.
 	m.expect(m.asAdmin("PUT", "/api/v1/admin/sso", body), http.StatusOK, "")
 	adminGet := decodeObject(t, m.asAdmin("GET", "/api/v1/admin/sso", nil))
-	for _, key := range []string{"enabled", "idp_metadata_xml", "entity_id", "groups_attribute", "email_attribute", "name_attribute", "metadata_url", "acs_url"} {
+	for _, key := range []string{"enabled", "idp_metadata_xml", "entity_id", "entity_id_default", "groups_attribute", "email_attribute", "name_attribute", "metadata_url", "acs_url"} {
 		if _, ok := adminGet[key]; !ok {
 			t.Errorf("GET /admin/sso lost the field %q", key)
 		}
 	}
-	if len(adminGet) != 8 {
-		t.Errorf("GET /admin/sso has %d fields, want the 8 of the web contract", len(adminGet))
+	if len(adminGet) != 9 {
+		t.Errorf("GET /admin/sso has %d fields, want the 9 of the web contract", len(adminGet))
 	}
 	// The manager sees the same document.
-	if got := decodeObject(t, m.send(sent{method: "GET", path: "/api/v1/admin/sso", bearer: m.managerToken})); len(got) != 8 {
-		t.Errorf("manager GET has %d fields, want 8", len(got))
+	if got := decodeObject(t, m.send(sent{method: "GET", path: "/api/v1/admin/sso", bearer: m.managerToken})); len(got) != 9 {
+		t.Errorf("manager GET has %d fields, want 9", len(got))
 	}
 }
 

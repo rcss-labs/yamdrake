@@ -1,0 +1,77 @@
+.users-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.users-name {
+  font-weight: 500;
+}
+.users-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.users-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.users-form,
+.users-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+.users-form h2,
+.users-editor h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.users-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.users-fields input,
+.users-fields select {
+  width: 100%;
+}
+.users-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.users-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.users-muted {
+  color: var(--ink3);
+}
+.users-row-error {
+  margin: 4px 0 0;
+  color: var(--bad-t);
+  font-size: 13px;
+}
+.users-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.users-sso-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

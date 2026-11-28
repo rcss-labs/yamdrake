@@ -1,0 +1,63 @@
+.ui-btn {
+  position: relative;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line2);
+  background: Canvas;
+  color: var(--ink);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 0.15s var(--ease);
+}
+.ui-btn:hover {
+  background: var(--raised);
+}
+.ui-btn-primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: Canvas;
+}
+.ui-btn-primary:hover {
+  background: color-mix(in srgb, var(--ink) 60%, var(--ink2));
+}
+.ui-btn-danger {
+  color: var(--bad-t);
+}
+.ui-btn-sm {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+.ui-btn:disabled,
+.ui-btn-primary:disabled {
+  background: var(--raised);
+  border-color: transparent;
+  color: var(--ink3);
+  cursor: not-allowed;
+}
+.ui-btn-loading:disabled {
+  cursor: progress;
+}
+/* Sits in the left padding, so the label stays readable and the width does not change. */
+.ui-btn-spinner {
+  position: absolute;
+  left: 3px;
+  top: calc(50% - 4px);
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--mute);
+  border-top-color: var(--ink2);
+  border-radius: 50%;
+  animation: ui-spin 0.8s linear infinite;
+}
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-btn-spinner {
+    animation: none;
+  }
+}

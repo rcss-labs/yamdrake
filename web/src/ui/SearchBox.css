@@ -1,0 +1,28 @@
+.ui-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: Canvas;
+  color: var(--ink3);
+  flex: 1 1 220px;
+  max-width: 340px;
+}
+.ui-search input {
+  border: 0;
+  background: transparent;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  color: var(--ink);
+  /* The wrapper shows the focus ring instead (below). */
+  outline: 0;
+  appearance: none;
+}
+.ui-search:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

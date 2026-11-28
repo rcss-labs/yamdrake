@@ -480,6 +480,14 @@ S3 holds manifest artifacts and the log archive, with lifecycle rules for each.
 
 ## 15. Deployment and operations
 
+Decided by the owner on 28 November 2026: Yumdrake must run in two ways with the same images.
+
+- **Docker Compose on one host** is a supported way to run it for real. It needs no AWS service of its own: config copies and the log archive can live on volumes, encrypted by Yumdrake, and secrets are encrypted with a local key. A demo variant adds Floci and sample data so the whole system can be tried and tested end to end.
+- **ECS**, for which the repository carries an example Terraform configuration. It is an example to adapt: validated with `terraform fmt` and `terraform validate`, never planned or applied from here, and it names no account, region, hostname or identity provider.
+
+The points below describe the ECS setup the example shows.
+
+
 - ECS on Fargate: `yumdrake-orchestrator` behind an internal HTTPS load balancer, `yumdrake-runner` with no inbound access, scaled on queue depth.
 - RDS PostgreSQL with automated backups and point-in-time recovery, and a restore that has been tested. ElastiCache for Valkey. One S3 bucket. KMS keys. Database credentials in Secrets Manager.
 - IAM: the orchestrator's role may assume only discovery roles. The runner's role may assume only deployment roles. `iam:PassRole` in a deployment role is limited to the task and execution roles of the services it deploys.
@@ -537,9 +545,15 @@ Decided by the owner on 27 November 2026:
 6. **Scope**: restore, freezes, and the Queue and System health screens all stay in version 1.
 7. **Name**: Yumdrake. The repository stays `yamdrake`.
 
-Still open, needed before plan 11:
+Decided on 28 November 2026:
 
-- **Hosting**: AWS account and region for Yumdrake itself, VPC and private subnets, hostname and certificate, and the SAML identity provider.
+8. **Hosting details are not needed.** Terraform is delivered as an example with variables for everything site-specific.
+9. **Docker Compose** is a supported way to run Yumdrake, alongside ECS.
+
+Changes made while planning the implementation:
+
+- A run has a `planned` state between `resolving` and starting: it plans itself, a person reads the plan and diff, and nothing proceeds until it is started (the CLI's `run --yes` starts it at once).
+- The screens that were not in the mockup (plan and diff, reconciliation, freezes, queue, service page, system health) are specified in plans 8b and 9 and built from the application's own component kit, instead of being added to the mockup first.
 
 ## Appendix A. Review findings and what was done
 

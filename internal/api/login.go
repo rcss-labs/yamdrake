@@ -249,6 +249,9 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, userID int
 		err = audit.Record(r.Context(), s.Pool, &principal, s.Now(), audit.Event{
 			Action: "auth.login", TargetType: "user", TargetID: strconv.FormatInt(userID, 10), Detail: detail})
 	}
+	if err == nil {
+		err = store.RecordSignIn(r.Context(), s.Pool, userID, s.Now())
+	}
 	if err != nil {
 		s.deleteSession(r, created.ID)
 		return auth.Principal{}, err

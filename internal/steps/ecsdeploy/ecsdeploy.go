@@ -11,7 +11,8 @@
 // needs no second update. A service that is not on the revision is updated
 // again only if ECS never ran a task of it: a stopped task of the revision means
 // the update went through and was rolled back, and it is not applied twice. Only
-// tasks started at or after the intended update count, and ECS keeps stopped
+// tasks started at or after the intended update (less a minute of clock skew)
+// count, and ECS keeps stopped
 // tasks for about an hour: a retry after that window can deploy a revision that
 // was already rolled back again.
 //
@@ -117,6 +118,8 @@ const (
 	maxLookupPages    = 20 // 200 newest revisions
 	stoppedTasksShown = 5
 	maxTaskPages      = 10
+	// clockSkew tolerates the difference between the database clock (op times) and the ECS clock (task times).
+	clockSkew = time.Minute
 )
 
 type executor struct{ d Deps }
@@ -584,8 +587,9 @@ func (r *leg) updateService() *queue.Outcome {
 			r.env.Log("error", "An interrupted update could not be checked (stopped tasks were not readable).")
 			return r.stopped("unknown", "could not check an interrupted update", unread)
 		}
-		// Only tasks started at or after the intended update count: a restore's
-		// target ran in earlier deploys, and those tasks prove nothing.
+		// Only tasks started at or after the intended update (less clockSkew)
+		// count: a restore's target ran in earlier deploys, and those tasks
+		// prove nothing.
 		var ran []ecstypes.Task
 		intendedAt := r.opTime(updateOp, key)
 		for _, t := range stopped {
@@ -593,7 +597,7 @@ func (r *leg) updateService() *queue.Outcome {
 			if started == nil {
 				started = t.CreatedAt
 			}
-			if started == nil || intendedAt.IsZero() || !started.Before(intendedAt) {
+			if started == nil || intendedAt.IsZero() || !started.Before(intendedAt.Add(-clockSkew)) {
 				ran = append(ran, t)
 			}
 		}

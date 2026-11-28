@@ -588,25 +588,38 @@ func TestAmbiguousUpdateChecksServiceFirst(t *testing.T) {
 			t.Errorf("keys = %v", f.env.DoKeys())
 		}
 	})
-	t.Run("service not on it but our revision ran and stopped", func(t *testing.T) {
-		f := setup(t)
-		// ECS started the revision, the rollout failed and the circuit breaker
-		// rolled the service back: it is no longer on the revision.
-		task := crashedTask("ran", t0.Add(time.Second), 3)
-		task.TaskDefinitionArn = aws.String(arn8)
-		f.ecs.stopped = append(f.ecs.stopped, task)
-		out := f.run()
-		f.want(out, "failed")
-		if out.FailureShort != "ECS already rolled this revision back" {
-			t.Errorf("short = %q", out.FailureShort)
-		}
-		if len(f.ecs.updates) != 0 {
-			t.Errorf("updated again: %+v", f.ecs.updates)
-		}
-		if slices.Contains(f.env.DoKeys(), "update-service:"+arn8+":retry-2") {
-			t.Errorf("keys = %v", f.env.DoKeys())
-		}
-	})
+	// ECS started the revision, the rollout failed and the circuit breaker
+	// rolled the service back: it is no longer on the revision. The op has a
+	// real time, as it always does in production (the operations.at column).
+	for _, tc := range []struct {
+		name    string
+		started time.Duration // task StartedAt relative to the intended op's At
+	}{
+		{"service not on it but our revision ran and stopped", 10 * time.Second},
+		{"service not on it but our revision started at the op time", 0},
+		{"service not on it but our revision started 30s before the op time (clock skew)", -30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t)
+			opAt := t0.Add(time.Hour)
+			f.env.PresetOps[1].At = opAt
+			task := crashedTask("ran", opAt.Add(2*time.Minute), 3)
+			task.TaskDefinitionArn = aws.String(arn8)
+			task.StartedAt = aws.Time(opAt.Add(tc.started))
+			f.ecs.stopped = append(f.ecs.stopped, task)
+			out := f.run()
+			f.want(out, "failed")
+			if out.FailureShort != "ECS already rolled this revision back" {
+				t.Errorf("short = %q", out.FailureShort)
+			}
+			if len(f.ecs.updates) != 0 {
+				t.Errorf("updated again: %+v", f.ecs.updates)
+			}
+			if slices.Contains(f.env.DoKeys(), "update-service:"+arn8+":retry-2") {
+				t.Errorf("keys = %v", f.env.DoKeys())
+			}
+		})
+	}
 	t.Run("restore: tasks of the target that stopped before the update was intended do not count", func(t *testing.T) {
 		f := newFixture(t)
 		arn6 := tdARN(6)

@@ -36,12 +36,31 @@ Commands:
       Revoke the token on the server and remove it from the config file.
   whoami [-o json]
       Show who you are signed in as and what you may do.
+  jobs list [--folder NAME] | jobs show JOB
+      List jobs, or show a job's groups, steps and problems.
+  versions JOB --env ENV [--group G | --service S] | versions running [--service S] [--env E]
+      List image versions for a job, or what is deployed now.
+  plan JOB --env ENV --set GROUP=VERSION... [--only NAME,...] [--latest]
+      Create a planned run and print its plan (exit 0, or 1 when a check failed).
+  run JOB --env ENV --set GROUP=VERSION... [--yes] [--watch] [--logs] [--wait-for-approval]
+      Plan, ask, start and optionally follow a run.
+  runs list | show RUN | log RUN | start RUN | watch RUN | cancel RUN
+      List, inspect, start, follow and cancel runs.
+  runs rerun-failed RUN | reconcile RUN --leg ID --outcome succeeded|failed | check-again RUN --leg ID
+      Re-run what failed, or settle a service whose outcome is not known.
+  restore RUN [--service NAME]... [--yes] [--watch]
+      Put the services a run changed back as they were.
+  approvals list | approve RUN | reject RUN
+      List runs waiting for approval, approve the plan you saw, or reject it.
   version
       Print the version.
 
 Environment: YUMDRAKE_SERVER, YUMDRAKE_TOKEN, NO_COLOR.
-Exit codes: 0 ok, 1 failed, 2 usage or configuration error, 6 not signed in
-or not permitted, 7 server unreachable or failing.
+Exit codes: 0 ok (a run succeeded), 1 failed, 2 usage or configuration error,
+3 partially succeeded, 4 cancelled, rejected, expired or invalidated, 5 the run
+needs a person (approval, reconciliation, or planned and not started), 6 not
+signed in or not permitted, 7 server unreachable or failing.
+Every command takes -h for help with an example, and -o json for scripts.
 
 Use -h to show this text.
 `
@@ -76,6 +95,20 @@ func runEnv(args []string, stdout, stderr io.Writer, e env) int {
 		return logout(args[1:], stdout, stderr, e)
 	case "whoami":
 		return whoami(args[1:], stdout, stderr, e)
+	case "plan":
+		return planCmd(args[1:], stdout, stderr, e)
+	case "run":
+		return runCmd(args[1:], stdout, stderr, e)
+	case "restore":
+		return restoreCmd(args[1:], stdout, stderr, e)
+	case "jobs":
+		return jobsCmd(args[1:], stdout, stderr, e)
+	case "versions":
+		return versionsCmd(args[1:], stdout, stderr, e)
+	case "runs":
+		return runsCmd(args[1:], stdout, stderr, e)
+	case "approvals":
+		return approvalsCmd(args[1:], stdout, stderr, e)
 	default:
 		_, _ = fmt.Fprintf(stderr, "yumdrake: unknown command %q\n\n%s", args[0], usageText)
 		return exitUsage

@@ -18,6 +18,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/audit"
 	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
@@ -165,11 +166,45 @@ func (s *server) createAWSAccount(w http.ResponseWriter, r *http.Request) {
 		var deploySecret []byte
 		deploySecret, problem = req.Deploy.check("deploy")
 		if problem == "" {
+			if problems := req.roleAccountProblems(); len(problems) > 0 {
+				var body problemsBody
+				body.Error.Code, body.Error.Message, body.Error.Problems = codeInvalid, "a role is in another account than the connection", problems
+				writeJSON(w, http.StatusUnprocessableEntity, body)
+				return
+			}
 			s.storeAWSAccount(w, r, req, discoverySecret, deploySecret)
 			return
 		}
 	}
 	invalid(w, problem)
+}
+
+// roleARNAccount is the account in a role ARN that passed the role pattern.
+func roleARNAccount(arn string) string {
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) < 6 {
+		return ""
+	}
+	return parts[4]
+}
+
+// roleAccountProblems names every role whose ARN is in another account than
+// the connection's: such a role would sign in to, and deploy into, the wrong account.
+func (r awsAccountRequest) roleAccountProblems() spec.Problems {
+	var problems spec.Problems
+	for _, c := range []struct {
+		label string
+		cred  awsCredentialRequest
+	}{{"discovery", r.Discovery}, {"deploy", r.Deploy}} {
+		if c.cred.Method != "role" {
+			continue
+		}
+		if got := roleARNAccount(c.cred.RoleARN); got != r.AccountID {
+			problems = append(problems, spec.Problem{File: c.label + ".role_arn",
+				Message: fmt.Sprintf("the role is in account %s, but the connection is for account %s", got, r.AccountID)})
+		}
+	}
+	return problems
 }
 
 func (s *server) storeAWSAccount(w http.ResponseWriter, r *http.Request, req awsAccountRequest, discoverySecret, deploySecret []byte) {
@@ -219,7 +254,20 @@ func (s *server) sealAWSSecret(ctx context.Context, purpose string, plaintext []
 
 // awsTestResult is the answer of the connection test. ErrorCode is the AWS
 // error code (or AccountMismatch), never a message from AWS or a secret.
+//
+// The top level is the verdict of the whole connection (ok only when both
+// credentials are), with the first failure's code and message. Discovery and
+// Deploy are the credentials' own results.
 type awsTestResult struct {
+	OK        bool                `json:"ok"`
+	ErrorCode string              `json:"error_code"`
+	Message   string              `json:"message"`
+	Discovery *awsCredentialCheck `json:"discovery,omitempty"`
+	Deploy    *awsCredentialCheck `json:"deploy,omitempty"`
+}
+
+// awsCredentialCheck is the result for one credential.
+type awsCredentialCheck struct {
 	OK        bool   `json:"ok"`
 	ErrorCode string `json:"error_code"`
 	Message   string `json:"message"`
@@ -241,7 +289,7 @@ func (s *server) testAWSAccount(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	result := s.checkAWSDiscovery(ctx, account)
+	result := combineAWSChecks(s.checkAWSDiscovery(ctx, account), checkAWSDeploy(account))
 	if err := s.recordAudit(ctx, s.Pool, r, audit.Event{Action: "aws_account.test", TargetType: "aws_account", TargetID: strconv.FormatInt(account.ID, 10),
 		Detail: map[string]any{"account_id": account.AccountID, "ok": result.OK, "error_code": result.ErrorCode}}); err != nil {
 		s.internalError(w, r, err)
@@ -286,4 +334,33 @@ func awsFailure(err error) awsTestResult {
 		code = "Timeout"
 	}
 	return awsTestResult{ErrorCode: code, Message: "AWS did not accept the credential: " + code}
+}
+
+// checkAWSDeploy is what the orchestrator can say about the deployment
+// credential. It never holds that credential (the runner does), so it checks
+// the role ARN's account; the runner checks what the credential signs in to
+// at the start of every plan.
+func checkAWSDeploy(account store.AWSAccount) awsTestResult {
+	if account.Deploy.Method == "role" {
+		if got := roleARNAccount(account.Deploy.RoleARN); got != account.AccountID {
+			return awsTestResult{ErrorCode: "AccountMismatch", Message: "The deployment role is in account " + got + ", not " + account.AccountID}
+		}
+		return awsTestResult{OK: true, Message: "The deployment role is in account " + account.AccountID + "; the runner checks that it can be assumed when it plans"}
+	}
+	return awsTestResult{OK: true, Message: "The deployment access key is checked by the runner, which confirms its account when it plans"}
+}
+
+func combineAWSChecks(discovery, deploy awsTestResult) awsTestResult {
+	out := awsTestResult{OK: discovery.OK && deploy.OK,
+		Discovery: &awsCredentialCheck{OK: discovery.OK, ErrorCode: discovery.ErrorCode, Message: discovery.Message},
+		Deploy:    &awsCredentialCheck{OK: deploy.OK, ErrorCode: deploy.ErrorCode, Message: deploy.Message}}
+	switch {
+	case !discovery.OK:
+		out.ErrorCode, out.Message = discovery.ErrorCode, "Discovery credential: "+discovery.Message
+	case !deploy.OK:
+		out.ErrorCode, out.Message = deploy.ErrorCode, "Deployment credential: "+deploy.Message
+	default:
+		out.Message = discovery.Message
+	}
+	return out
 }

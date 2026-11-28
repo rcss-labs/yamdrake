@@ -254,6 +254,25 @@ func decideResolving(v View) Decision {
 	return Decision{} // claimed or running: wait
 }
 
+// RevalidateDriftReason is the short failure reason of a revalidate leg that
+// found the targets changed since planning. Any other failed revalidate leg
+// could not re-check the targets, which is not drift.
+const RevalidateDriftReason = "changed since planning"
+
+// RevalidateCouldNotCheckReason starts the short failure reason of a
+// revalidate leg that could not tell whether the targets changed.
+const RevalidateCouldNotCheckReason = "could not re-check the targets"
+
+func couldNotCheckReason(short string) string {
+	if strings.HasPrefix(short, RevalidateCouldNotCheckReason) {
+		return short
+	}
+	if short == "" {
+		return RevalidateCouldNotCheckReason
+	}
+	return RevalidateCouldNotCheckReason + ": " + short
+}
+
 func decideRunning(v View) Decision {
 	revalidate, ok := latestLeg(v.Legs, "revalidate")
 	if !ok {
@@ -270,10 +289,17 @@ func decideRunning(v View) Decision {
 		d.NewState = "needs_reconciliation"
 		return d
 	case legFailed, legSkipped, legCancelled:
-		// Nothing ran; the plan is no longer valid. Pending legs will never run.
+		// Nothing ran. Pending legs will never run.
 		d := stopLegs(v)
-		d.NewState = "invalidated"
 		d.ReleaseLocks = true
+		if revalidate.State == legFailed && revalidate.FailureShort != RevalidateDriftReason {
+			// The targets could not be re-checked: that is not drift, so the
+			// plan may still be valid, but this run cannot go on.
+			d.NewState = "failed"
+			d.Reason = couldNotCheckReason(revalidate.FailureShort)
+			return d
+		}
+		d.NewState = "invalidated"
 		return d
 	}
 	if allSettled(v.Legs) {

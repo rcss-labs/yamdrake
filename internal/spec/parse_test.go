@@ -236,6 +236,8 @@ func TestParseRejections(t *testing.T) {
 		{"ecs_service bare name", "service-ecs-bare-name", parseServiceProblems, `ecs_service "backend-api"`},
 		{"ecr_repository without host", "service-ecr-no-registry", parseServiceProblems, `ecr_repository "backend-api"`},
 		{"source_env_path two parts", "service-source-two-parts", parseServiceProblems, "example-org/backend-api.env"},
+		{"env file name with a slash", "service-env-name-slash", parseServiceProblems, `env file name "conf/backend-api.env" must not contain "/"`},
+		{"toml name with a slash", "service-toml-name-slash", parseServiceProblems, `toml name "conf/backend-api.toml" must not contain "/"`},
 		{"destination not s3", "service-destination-not-s3", parseServiceProblems, "s3://"},
 		{"pattern does not compile", "service-pattern-invalid", parseServiceProblems, `versions.pattern "("`},
 		{"limit zero", "service-limit-zero", parseServiceProblems, "versions.limit is 0"},

@@ -7,7 +7,7 @@ COPY web/ ./
 RUN npm run build
 
 # Build stage: official Go image pinned to an exact patch release.
-FROM golang:1.26.11 AS build
+FROM golang:1.27.4 AS build
 ARG VERSION=dev
 ARG COMMIT=unknown
 WORKDIR /src

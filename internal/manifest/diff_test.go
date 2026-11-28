@@ -28,6 +28,10 @@ func TestEnvKeyDiff(t *testing.T) {
 		{"value containing equals unchanged", "URL=a=b\n", "URL=a=b\n", KeyDiff{}},
 		{"quotes not interpreted", "A=\"1\"\n", "A=1\n", KeyDiff{Changed: []string{"A"}}},
 		{"unreadable lines ignored", "garbage\n=novalue\n", "also garbage\n", KeyDiff{}},
+		{"words before equals are not a key", "A=1\n", "A=1\ntwo words=x\nmy password is hunter2=x\n", KeyDiff{}},
+		{"base64 padding line is not a key", "", "abc/def+gh==\nA=1\n", KeyDiff{Added: []string{"A"}}},
+		{"dotted and underscored keys are keys", "", "_A.b-not=1\nA_1.b=2\n", KeyDiff{Added: []string{"A_1.b"}}},
+		{"key starting with digit is not a key", "", "1A=x\n", KeyDiff{}},
 		{"empty value is a value", "A=\n", "A=x\n", KeyDiff{Changed: []string{"A"}}},
 		{"sorted output", "", "Z=1\nB=1\nM=1\n", KeyDiff{Added: []string{"B", "M", "Z"}}},
 		{"empty inputs", "", "", KeyDiff{}},
@@ -54,9 +58,9 @@ func norm(d KeyDiff) KeyDiff {
 }
 
 func TestEnvKeyDiffNeverContainsValues(t *testing.T) {
-	values := []string{"hunter2-old", "s3cr3t-new", "tok=en/with=equals", "added-secret-value", "removed-secret-value"}
+	values := []string{"hunter2-leak", "cGFkZGVk/pad+value==", "hunter2-old", "s3cr3t-new", "tok=en/with=equals", "added-secret-value", "removed-secret-value"}
 	previous := "PASSWORD=hunter2-old\nTOKEN=tok=en/with=equals\nGONE=removed-secret-value\nSAME=tok=en/with=equals\n"
-	next := "PASSWORD=s3cr3t-new\nTOKEN=tok=en/with=equals\nFRESH=added-secret-value\nSAME=tok=en/with=equals\n"
+	next := "PASSWORD=s3cr3t-new\nTOKEN=tok=en/with=equals\nFRESH=added-secret-value\nSAME=tok=en/with=equals\nmy password is hunter2-leak=x\ncGFkZGVk/pad+value==\n"
 
 	got := EnvKeyDiff([]byte(previous), []byte(next))
 	if len(got.Added) != 1 || len(got.Removed) != 1 || len(got.Changed) != 1 {

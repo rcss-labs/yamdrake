@@ -11,7 +11,7 @@ import (
 //
 // Lines are KEY=value with an optional "export " prefix; blank lines and
 // "#" comments are ignored, quotes are not interpreted, the first "=" splits
-// key from value, and for a duplicated key the last line wins. A line that
+// key from value, a key must match [A-Za-z_][A-Za-z0-9_.]*, and for a duplicated key the last line wins. A line that
 // cannot be read as a key is ignored.
 func EnvKeyDiff(previous, next []byte) KeyDiff {
 	before, after := parseEnv(previous), parseEnv(next)
@@ -48,10 +48,27 @@ func parseEnv(content []byte) map[string]string {
 		}
 		key, value, found := strings.Cut(text, "=")
 		key = strings.TrimSpace(key)
-		if !found || key == "" {
+		if !found || !validEnvKey(key) {
 			continue
 		}
 		values[key] = value
 	}
 	return values
+}
+
+// validEnvKey accepts only [A-Za-z_][A-Za-z0-9_.]*, so stray or continuation
+// lines (pasted secrets, base64 padding) are never reported as key names.
+func validEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		letter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_'
+		digitOrDot := c >= '0' && c <= '9' || c == '.'
+		if !letter && (i == 0 || !digitOrDot) {
+			return false
+		}
+	}
+	return true
 }

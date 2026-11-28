@@ -126,7 +126,11 @@ func Identity(m Manifest) string {
 		canonical.Services = append(canonical.Services, si)
 	}
 	sort.SliceStable(canonical.Services, func(i, j int) bool {
-		return canonical.Services[i].Name < canonical.Services[j].Name
+		a, b := canonical.Services[i], canonical.Services[j]
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.ECSService < b.ECSService
 	})
 
 	// Marshaling plain strings and slices cannot fail.

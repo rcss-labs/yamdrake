@@ -64,6 +64,7 @@ func runnerEnv(t *testing.T, databaseURL, healthAddr, startupTimeout string) map
 		"YUMDRAKE_LOCAL_SECRET_KEY": devSecretKey,
 		"YUMDRAKE_HEALTH_ADDR":      healthAddr,
 		"YUMDRAKE_RUNNER_ID":        "runner-test",
+		"YUMDRAKE_ARTIFACT_BUCKET":  "yumdrake-artifacts-test",
 		"YUMDRAKE_SHUTDOWN_TIMEOUT": "5s",
 		"YUMDRAKE_STARTUP_TIMEOUT":  startupTimeout,
 	}

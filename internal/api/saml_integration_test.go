@@ -520,7 +520,13 @@ func TestRejects(t *testing.T) {
 		{"relay cookie with a forged MAC", "relay_state", func(t *testing.T) samlFlow {
 			f := idp.begin()
 			c := *f.relay
-			c.Value = c.Value[:len(c.Value)-2] + "AA"
+			// change one fully significant character; the last ones may only carry padding bits
+			i := len(c.Value) - 5
+			if c.Value[i] == 'A' {
+				c.Value = c.Value[:i] + "B" + c.Value[i+1:]
+			} else {
+				c.Value = c.Value[:i] + "A" + c.Value[i+1:]
+			}
 			f.relay = &c
 			return f
 		}, true, false},

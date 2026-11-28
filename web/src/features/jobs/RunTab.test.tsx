@@ -201,8 +201,7 @@ describe('the Run tab', () => {
     expect(screen.queryByRole('button', { name: 'Plan this run' })).not.toBeInTheDocument()
   })
 
-  // enabled when Task 8's FreezeBanner merges
-  it.skip('shows the freeze banner for a frozen environment', async () => {
+  it('shows the freeze banner for a frozen environment', async () => {
     renderRunTab(1, '&env=prod-01')
     expect(await screen.findByText(/Deployments to prod are frozen until .*: Quarter-end change freeze/)).toBeInTheDocument()
   })

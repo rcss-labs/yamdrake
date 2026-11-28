@@ -49,7 +49,7 @@ func startFlociGovernance(t *testing.T) *flociGovernance {
 	g := &flociGovernance{flociStack: s, slack: slack}
 	g.admin = caller{t: t, base: s.api.base, session: s.api.session}
 	g.admin.expect(http.StatusOK, "", http.MethodPut, "/api/v1/admin/slack", map[string]string{"token": slackTestToken})
-	g.requester = addPerson(t, g.admin, "requester", "Deployers", [2]string{"run", "dev"}, [2]string{"run", "prod"})
+	g.requester = addPerson(t, g.admin, "requester", "Deployers", [2]string{"run", "dev"}, [2]string{"run", "prod"}, [2]string{"approve", "prod"})
 	g.approver = addPerson(t, g.admin, "approver", "Approvers", [2]string{"approve", "prod"})
 	return g
 }

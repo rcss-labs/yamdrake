@@ -138,7 +138,7 @@ export function RunActions({ run, reload }: RunActionsProps) {
       {approvalReason && <Note>{approvalReason}</Note>}
       {planFailed && (
         <Note tone="error">
-          The plan could not be loaded, so the run cannot be started yet.{' '}
+          Start is hidden until the plan loads.{' '}
           <Button size="sm" onClick={() => void plan.refetch()}>
             Try again
           </Button>

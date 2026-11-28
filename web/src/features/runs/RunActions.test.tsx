@@ -148,7 +148,7 @@ describe('Start', () => {
   it('says why Start is missing when the plan cannot be loaded, and Try again loads it', async () => {
     failNext('GET', `/api/v1/runs/${runIds.planned}/plan`, 500, 'internal', 'plan store down')
     renderRun(runIds.planned, adminMe)
-    expect(await screen.findByText(/The plan could not be loaded/)).toBeInTheDocument()
+    expect(await screen.findByText(/Start is hidden until the plan loads/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('button', { name: 'Start' })).toBeInTheDocument()

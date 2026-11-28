@@ -82,7 +82,7 @@ function stateSentence(run: RunDetail): ReactNode {
       return `${updated} of ${total} services updated`
     case 'cancelled': {
       // The API does not send who cancelled yet; cancelled_by_name is read when it does.
-      const who = (run as RunDetail & { cancelled_by_name?: string }).cancelled_by_name
+      const who = run.cancelled_by_name
       const detail = extraReason(run.end_reason, defaultEndReasons.cancelled)
       return `Cancelled${who ? ` by ${who}` : ''}.${detail ? ` ${detail}.` : ''} ${plural(updated, 'service')} had already been updated`
     }

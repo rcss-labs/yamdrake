@@ -713,6 +713,8 @@ export interface RunDetail extends RunSummary {
   selection?: Selection
   /** Assumed: null or absent when the run never asked for approval. */
   approval?: Approval | null
+  /** Assumed: who cancelled the run; absent until the API sends it. */
+  cancelled_by_name?: string
 }
 
 export interface RunsResponse {

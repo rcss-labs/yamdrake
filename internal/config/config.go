@@ -126,6 +126,10 @@ type Runner struct {
 	// heartbeat. Heartbeat is how often the runner renews it (shorter than
 	// Lease) and Poll how often it looks for queued legs on its own.
 	Lease, Heartbeat, Poll time.Duration
+	// RolloutPoll (YUMDRAKE_ROLLOUT_POLL, default 5s) is how often ecs-deploy
+	// checks a service's rollout. RolloutTimeout (YUMDRAKE_ROLLOUT_TIMEOUT,
+	// default 15m) is how long it waits before it reports the rollout unconfirmed.
+	RolloutPoll, RolloutTimeout time.Duration
 }
 
 const redactedPassword = "REDACTED"
@@ -340,6 +344,8 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 	cfg.Lease = l.duration("YUMDRAKE_LEASE", "30s")
 	cfg.Heartbeat = l.duration("YUMDRAKE_HEARTBEAT", "10s")
 	cfg.Poll = l.duration("YUMDRAKE_RUNNER_POLL", "2s")
+	cfg.RolloutPoll = l.duration("YUMDRAKE_ROLLOUT_POLL", "5s")
+	cfg.RolloutTimeout = l.duration("YUMDRAKE_ROLLOUT_TIMEOUT", "15m")
 	if cfg.Lease > 0 && cfg.Heartbeat >= cfg.Lease {
 		l.fail("YUMDRAKE_HEARTBEAT", "must be shorter than YUMDRAKE_LEASE")
 	}

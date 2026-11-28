@@ -45,6 +45,22 @@ describe('which buttons each state shows an admin', () => {
     }
   })
 
+  it('offers no Re-run failed on a failed restore run, which the server always refuses', async () => {
+    moveStoredRun(runIds.partiallySucceeded, 'failed', { kind: 'restore' })
+    renderRun(runIds.partiallySucceeded, adminMe)
+    await screen.findByTestId('run-lead')
+    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/plan'))).toBe(true))
+    expect(screen.queryByRole('button', { name: 'Re-run failed' })).not.toBeInTheDocument()
+  })
+
+  it('offers no Plan again on an invalidated restore run, which the server always refuses', async () => {
+    moveStoredRun(runIds.invalidated, 'invalidated', { kind: 'restore' })
+    renderRun(runIds.invalidated, adminMe)
+    await screen.findByTestId('run-lead')
+    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/plan'))).toBe(true))
+    expect(screen.queryByRole('button', { name: 'Plan again' })).not.toBeInTheDocument()
+  })
+
   it('hides Restore when nothing was updated', async () => {
     const run = moveStoredRun(runIds.partiallySucceeded, 'failed')
     for (const leg of run.legs) if (leg.kind === 'step') leg.state = leg.state === 'succeeded' ? 'failed' : leg.state
@@ -130,6 +146,20 @@ describe('permissions pick the buttons', () => {
     expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument()
   })
 
+  it('Start of a restore needs restore, not run', async () => {
+    moveStoredRun(runIds.planned, 'planned', { kind: 'restore' })
+    renderRun(runIds.planned, grantee(24, 'run'))
+    await screen.findByTestId('run-lead')
+    await waitFor(() => expect(requests.find((request) => request.path.endsWith('/plan'))?.status).toBe(200))
+    expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
+  })
+
+  it('Start of a restore shows with restore alone', async () => {
+    moveStoredRun(runIds.planned, 'planned', { kind: 'restore' })
+    renderRun(runIds.planned, grantee(25, 'restore'))
+    expect(await actionNames()).toEqual(['Start'])
+  })
+
   it('the requester sees the reason instead of Approve and Reject', async () => {
     renderRun(runIds.waitingApproval, { ...jobManagerMe, grants: [...jobManagerMe.grants, { action: 'approve', label: '', environment: '', folder_id: 0 }] })
     expect(await screen.findByText('You started this run, so someone else has to approve it.')).toBeInTheDocument()
@@ -193,6 +223,13 @@ describe('Start', () => {
     expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('button', { name: 'Start' })).toBeInTheDocument()
+  })
+
+  it('a restore-only person sees the plan-failed notice on a restore', async () => {
+    moveStoredRun(runIds.planned, 'planned', { kind: 'restore' })
+    failNext('GET', `/api/v1/runs/${runIds.planned}/plan`, 500, 'internal', 'plan store down')
+    renderRun(runIds.planned, grantee(26, 'restore'))
+    expect(await screen.findByText(/Start is hidden until the plan loads/)).toBeInTheDocument()
   })
 })
 

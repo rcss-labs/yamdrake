@@ -29,6 +29,7 @@ import (
 	"github.com/crewjam/saml"
 	valkey "github.com/valkey-io/valkey-go"
 
+	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/cache"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
@@ -546,9 +547,7 @@ func TestRejects(t *testing.T) {
 			}
 			usersBefore, rejectedBefore := h.userCount(), h.auditCount("saml.rejected")
 			rec := h.postACS(flow, row.cookie)
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status %d %s, want 400", rec.Code, failure(rec))
-			}
+			expectSignInRedirect(t, rec, "rejected")
 			if sessionCookie(rec) != nil {
 				t.Errorf("a rejected response set a session cookie")
 			}
@@ -603,7 +602,10 @@ func TestDisabledUserCannotSSO(t *testing.T) {
 	}
 	idp.signIn(email, "Dave", "eng-devops")
 	rec := h.postACS(idp.begin(), true)
-	h.expect(rec, http.StatusForbidden, "forbidden")
+	expectSignInRedirect(t, rec, "refused")
+	if !relayCookieCleared(rec) {
+		t.Errorf("a refused sign-in did not clear the relay cookie")
+	}
 	if sessionCookie(rec) != nil {
 		t.Errorf("a disabled user got a session")
 	}
@@ -621,7 +623,7 @@ func TestSSORefusesTheEmailOfALocalUser(t *testing.T) {
 	local := h.newUser("local")
 	idp.signIn(local.Email, "Not The Local User", "eng-devops")
 	rec := h.postACS(idp.begin(), true)
-	h.expect(rec, http.StatusForbidden, "forbidden")
+	expectSignInRedirect(t, rec, "refused")
 	if sessionCookie(rec) != nil || h.auditCount("saml.rejected") != 1 {
 		t.Errorf("a SAML sign-in took over a local account")
 	}
@@ -634,12 +636,10 @@ func TestSSORefusesTheEmailOfALocalUser(t *testing.T) {
 func TestSSOUnavailable(t *testing.T) {
 	h := newHarness(t)
 	// Not configured: start and acs refuse.
-	h.expect(h.send(sent{method: "GET", path: "/api/v1/auth/saml/start"}), http.StatusNotFound, "not_found")
+	expectSignInRedirect(t, h.send(sent{method: "GET", path: "/api/v1/auth/saml/start"}), "unavailable")
 	rec := httptest.NewRecorder()
 	h.handler.ServeHTTP(rec, httptest.NewRequest("POST", "/saml/acs", strings.NewReader("SAMLResponse=x")))
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("acs while SSO is off: status %d, want 404", rec.Code)
-	}
+	expectSignInRedirect(t, rec, "unavailable")
 
 	// Valkey down at the assertion consumer: 503, never an accepted response.
 	idp := h.newIDP()
@@ -735,13 +735,15 @@ func TestSSOSettingsValidation(t *testing.T) {
 	h.expect(put(map[string]any{"enabled": true}), http.StatusBadRequest, "invalid") // enabling needs metadata
 	h.expect(put(map[string]any{"enabled": false, "idp_metadata_xml": idp.metadataXML(), "bogus": 1}), http.StatusBadRequest, "invalid")
 
-	h.expect(put(map[string]any{"enabled": true, "idp_metadata_xml": idp.metadataXML(), "groups_attribute": "memberOf"}), http.StatusOK, "")
+	// The read-only fields of the view are accepted back and ignored.
+	h.expect(put(map[string]any{"enabled": true, "idp_metadata_xml": idp.metadataXML(), "groups_attribute": "memberOf",
+		"entity_id_default": "https://ignored.test/saml/metadata", "acs_url": "x", "metadata_url": "y"}), http.StatusOK, "")
 	rec := h.send(sent{method: "GET", path: "/api/v1/admin/sso", bearer: h.adminToken})
 	h.expect(rec, http.StatusOK, "")
 	var got map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &got)
 	if got["enabled"] != true || got["groups_attribute"] != "memberOf" || got["name_attribute"] != "displayName" ||
-		got["entity_id"] != publicURL+"/saml/metadata" {
+		got["entity_id"] != publicURL+"/saml/metadata" || got["entity_id_default"] != publicURL+"/saml/metadata" {
 		t.Errorf("settings = %v, want enabled, memberOf and the defaults", got)
 	}
 	rec = h.send(sent{method: "POST", path: "/api/v1/admin/sso/test", bearer: h.adminToken})
@@ -802,21 +804,25 @@ func TestConcurrentPostsOfOneResponseSignInOnce(t *testing.T) {
 	flow := idp.begin()
 	const posts = 6
 	codes := make([]int, posts)
+	locations := make([]string, posts)
 	var wg gosync.WaitGroup
 	for i := range codes {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			codes[i] = h.postACS(flow, true).Code
+			rec := h.postACS(flow, true)
+			codes[i], locations[i] = rec.Code, rec.Header().Get("Location")
 		}()
 	}
 	wg.Wait()
 	won := 0
-	for _, c := range codes {
-		if c == http.StatusSeeOther {
+	for i, c := range codes {
+		switch {
+		case c == http.StatusSeeOther && locations[i] == "/":
 			won++
-		} else if c != http.StatusBadRequest {
-			t.Errorf("status %d, want 303 or 400", c)
+		case c == http.StatusSeeOther && locations[i] == signInErrorLocation("rejected"):
+		default:
+			t.Errorf("status %d to %q, want 303 to / or to the rejected sign-in page", c, locations[i])
 		}
 	}
 	if won != 1 {
@@ -1041,6 +1047,51 @@ func TestAuthMethodsNeedsNoSignIn(t *testing.T) {
 	check(true)
 }
 
+func signInErrorLocation(code string) string { return "/sign-in?sso_error=" + code }
+
+// expectSignInRedirect checks the one answer a browser gets when SSO sign-in
+// fails: a 303 to a fixed same-site path with a short code and nothing else.
+func expectSignInRedirect(t *testing.T, rec *httptest.ResponseRecorder, code string) {
+	t.Helper()
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != signInErrorLocation(code) {
+		t.Fatalf("status %d, Location %q, body %q; want 303 to %q", rec.Code, rec.Header().Get("Location"), rec.Body.String(), signInErrorLocation(code))
+	}
+	if sessionCookie(rec) != nil {
+		t.Errorf("a failed sign-in set a session cookie")
+	}
+}
+
+func TestSAMLFailureRedirectsToSignIn(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+
+	// A rejected response: the audit entry keeps the detailed reason, the URL only the short code.
+	idp.signIn(uniqueEmail(t, "ruth"), "Ruth", "eng-devops")
+	flow := idp.begin()
+	rejectedBefore := h.auditCount("saml.rejected")
+	rec := h.postACS(flow, false) // no relay cookie
+	expectSignInRedirect(t, rec, "rejected")
+	if !relayCookieCleared(rec) {
+		t.Errorf("a rejected response did not clear the relay cookie")
+	}
+	if got := h.auditCount("saml.rejected"); got != rejectedBefore+1 {
+		t.Errorf("saml.rejected entries: %d before, %d after, want one more", rejectedBefore, got)
+	}
+	if strings.Contains(rec.Header().Get("Location"), "relay_state") {
+		t.Errorf("the redirect names the audit reason")
+	}
+
+	// Stored identity provider metadata that cannot be read: start and acs answer "unavailable".
+	settings, err := auth.LoadSAMLSettings(context.Background(), h.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.IDPMetadataXML = "this is not metadata"
+	if err := auth.SaveSAMLSettings(context.Background(), h.pool, settings); err != nil {
+		t.Fatal(err)
+	}
+	expectSignInRedirect(t, h.send(sent{method: "GET", path: "/api/v1/auth/saml/start"}), "unavailable")
+}
+
 func relayCookieCleared(rec *httptest.ResponseRecorder) bool {
 	for _, c := range rec.Result().Cookies() {
 		if c.Name == relayCookieName && c.MaxAge < 0 && c.Secure && c.HttpOnly && c.SameSite == http.SameSiteNoneMode && c.Path == "/saml/acs" {
@@ -1064,8 +1115,9 @@ func TestOneRequestAnswersOnlyOnce(t *testing.T) {
 	}
 	users, rejected := h.userCount(), h.auditCount("saml.rejected")
 	rec := h.postACS(second, true)
-	if rec.Code != http.StatusBadRequest || sessionCookie(rec) != nil {
-		t.Fatalf("second response: status %d %s, want 400 and no session", rec.Code, failure(rec))
+	expectSignInRedirect(t, rec, "rejected")
+	if sessionCookie(rec) != nil {
+		t.Fatalf("second response set a session")
 	}
 	if h.userCount() != users || h.auditCount("saml.rejected") != rejected+1 {
 		t.Errorf("the reused request changed state or was not audited once: %v", h.auditActions())
@@ -1102,13 +1154,17 @@ func TestSAMLReplayKeysUseTheKeyPrefix(t *testing.T) {
 		h.handler = handler
 		return h.postACS(flow, true).Code
 	}
+	postLocation := func(handler http.Handler) string {
+		h.handler = handler
+		return h.postACS(flow, true).Header().Get("Location")
+	}
 	if code := post(a); code != http.StatusSeeOther {
 		t.Fatalf("first post under prefix a: %d, want 303", code)
 	}
 	if code := post(b); code != http.StatusSeeOther {
 		t.Errorf("same response under prefix b: %d, want 303 (it must not see a's replay keys)", code)
 	}
-	if code := post(a); code != http.StatusBadRequest {
-		t.Errorf("same response under prefix a again: %d, want 400", code)
+	if got := postLocation(a); got != signInErrorLocation("rejected") {
+		t.Errorf("same response under prefix a again: Location %q, want %q", got, signInErrorLocation("rejected"))
 	}
 }

@@ -59,6 +59,41 @@ func init() {
 // errSSODisabled means single sign-on is switched off or not set up.
 var errSSODisabled = errors.New("single sign-on is not enabled")
 
+// errSSOMisconfigured means single sign-on is switched on but the stored
+// identity provider settings cannot be used.
+var errSSOMisconfigured = errors.New("single sign-on is not set up correctly")
+
+// The codes a failed browser sign-in puts in /sign-in?sso_error=. They are
+// short and fixed on purpose: the reason (audit entry, log) never reaches the URL.
+const (
+	ssoErrorRejected    = "rejected"    // the response was not accepted
+	ssoErrorRefused     = "refused"     // the account may not sign in
+	ssoErrorUnavailable = "unavailable" // single sign-on is off or not set up
+)
+
+// redirectSSOError answers a browser that reached a single sign-on route by
+// top-level navigation: a 303 to the sign-in page with a fixed code. The target
+// is a constant path, never built from the request.
+func redirectSSOError(w http.ResponseWriter, r *http.Request, code string) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, "/sign-in?sso_error="+code, http.StatusSeeOther)
+}
+
+// ssoUnavailable handles the newProvider errors that mean "not usable": the
+// browser is sent back to sign-in. It reports whether it answered.
+func (s *server) ssoUnavailable(w http.ResponseWriter, r *http.Request, err error) bool {
+	switch {
+	case errors.Is(err, errSSODisabled):
+		redirectSSOError(w, r, ssoErrorUnavailable)
+	case errors.Is(err, errSSOMisconfigured):
+		s.Log.Warn("single sign-on is misconfigured", "error", err.Error())
+		redirectSSOError(w, r, ssoErrorUnavailable)
+	default:
+		return false
+	}
+	return true
+}
+
 // samlProvider is the service provider for one request, with the settings it
 // was built from.
 type samlProvider struct {
@@ -87,7 +122,7 @@ func (s *server) newProvider(ctx context.Context, needIDP, needKey bool) (*samlP
 			return nil, errSSODisabled
 		}
 		if idp, err = samlsp.ParseMetadata([]byte(settings.IDPMetadataXML)); err != nil {
-			return nil, fmt.Errorf("stored identity provider metadata: %w", err)
+			return nil, fmt.Errorf("stored identity provider metadata: %w: %w", errSSOMisconfigured, err)
 		}
 	}
 	// Anonymous metadata requests read the certificate only; the private key
@@ -224,11 +259,10 @@ func openRelayState(key []byte, value string, now time.Time) (nonce, requestID, 
 // samlStart sends the browser to the identity provider with a signed request.
 func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 	sp, err := s.newProvider(r.Context(), true, true)
-	switch {
-	case errors.Is(err, errSSODisabled):
-		notFound(w, "single sign-on")
+	if s.ssoUnavailable(w, r, err) {
 		return
-	case err != nil:
+	}
+	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
@@ -239,7 +273,7 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 		binding, target = saml.HTTPPostBinding, postURL
 	}
 	if target == "" {
-		s.internalError(w, r, errors.New("identity provider metadata has no sign-on endpoint"))
+		s.ssoUnavailable(w, r, fmt.Errorf("identity provider metadata has no sign-on endpoint: %w", errSSOMisconfigured))
 		return
 	}
 	authnRequest, err := sp.MakeAuthenticationRequest(target, binding, saml.HTTPPostBinding)
@@ -349,7 +383,7 @@ func rejectReason(err error) string {
 	}
 }
 
-// samlReject answers 400, audits saml.rejected with a reason code (and detail
+// samlReject answers with a redirect to sign-in (code "rejected"), audits saml.rejected with a reason code (and detail
 // that is neither the response nor a key), and creates nothing.
 func (s *server) samlReject(w http.ResponseWriter, r *http.Request, reason string, extra map[string]any) {
 	detail := map[string]any{"reason": reason}
@@ -361,7 +395,7 @@ func (s *server) samlReject(w http.ResponseWriter, r *http.Request, reason strin
 		s.Log.Error("audit rejected saml response", "error", err.Error())
 	}
 	s.Log.Warn("saml response rejected", "reason", reason)
-	writeError(w, http.StatusBadRequest, codeInvalid, "the sign-in response was not accepted")
+	redirectSSOError(w, r, ssoErrorRejected)
 }
 
 // responseDestination returns the Destination attribute of the response's root
@@ -395,11 +429,10 @@ func responseDestination(encoded string) (string, bool) {
 func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxACSBodyBytes)
 	sp, err := s.newProvider(r.Context(), true, true)
-	switch {
-	case errors.Is(err, errSSODisabled):
-		notFound(w, "single sign-on")
+	if s.ssoUnavailable(w, r, err) {
 		return
-	case err != nil:
+	}
+	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
@@ -516,13 +549,14 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 }
 
 // samlRefuse is samlReject for a valid response of a person who may not sign in
-// here: the account is known and the answer is 403.
+// here: the account is known and the browser is sent to sign-in with code "refused".
 func (s *server) samlRefuse(w http.ResponseWriter, r *http.Request, reason, email string) {
 	if err := audit.Record(context.WithoutCancel(r.Context()), s.Pool, nil, s.Now(), audit.Event{
 		Action: "saml.rejected", TargetType: "user", Detail: map[string]any{"reason": reason, "email": email}}); err != nil {
 		s.Log.Error("audit rejected saml response", "error", err.Error())
 	}
-	writeError(w, http.StatusForbidden, codeForbidden, "this account may not sign in")
+	s.Log.Warn("saml sign-in refused", "reason", reason)
+	redirectSSOError(w, r, ssoErrorRefused)
 }
 
 // provisionUser creates or updates the user and replaces their identity-provider
@@ -651,9 +685,12 @@ func identityFromAssertion(assertion *saml.Assertion, settings auth.SAMLSettings
 
 // ssoSettingsView is the settings as the administrator sees them.
 type ssoSettingsView struct {
-	Enabled         bool   `json:"enabled"`
-	IDPMetadataXML  string `json:"idp_metadata_xml"`
-	EntityID        string `json:"entity_id"`
+	Enabled        bool   `json:"enabled"`
+	IDPMetadataXML string `json:"idp_metadata_xml"`
+	EntityID       string `json:"entity_id"`
+	// EntityIDDefault is the entity id used while entity_id is stored empty;
+	// it follows the public URL.
+	EntityIDDefault string `json:"entity_id_default"`
 	GroupsAttribute string `json:"groups_attribute"`
 	EmailAttribute  string `json:"email_attribute"`
 	NameAttribute   string `json:"name_attribute"`
@@ -665,6 +702,7 @@ func (s *server) ssoView(settings auth.SAMLSettings) ssoSettingsView {
 	base := strings.TrimRight(s.PublicURL, "/")
 	return ssoSettingsView{
 		Enabled: settings.Enabled, IDPMetadataXML: settings.IDPMetadataXML, EntityID: s.effectiveEntityID(settings),
+		EntityIDDefault: s.effectiveEntityID(auth.SAMLSettings{}),
 		GroupsAttribute: settings.GroupsAttribute, EmailAttribute: settings.EmailAttribute, NameAttribute: settings.NameAttribute,
 		MetadataURL: base + "/saml/metadata", ACSURL: base + samlACSPath,
 	}
@@ -690,8 +728,9 @@ type ssoRequest struct {
 	NameAttribute   string `json:"name_attribute"`
 	// Read-only fields of the settings view; accepted and ignored so the view
 	// can be sent back as it was read.
-	MetadataURL string `json:"metadata_url"`
-	ACSURL      string `json:"acs_url"`
+	MetadataURL     string `json:"metadata_url"`
+	ACSURL          string `json:"acs_url"`
+	EntityIDDefault string `json:"entity_id_default"`
 }
 
 // checkIDPMetadata parses the metadata and, when strict, also requires what

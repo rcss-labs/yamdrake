@@ -124,8 +124,15 @@ type selectionEntry struct {
 	Services map[string]string
 }
 
+// manifestService is one service of the fake plan. Besides the original
+// Group, Service and Version fields it carries the names the real manifest
+// uses (name, version, previous_task_definition), so the service page's
+// history and restore source work in demos and browser tests.
 type manifestService struct {
 	Group, Service, Version string
+	Name                    string `json:"name"`
+	LowerVersion            string `json:"version"`
+	PreviousTaskDefinition  string `json:"previous_task_definition"`
 }
 
 func (f *fakes) resolve(ctx context.Context, env runner.Env, task queue.Claimed) queue.Outcome {
@@ -153,7 +160,8 @@ func (f *fakes) resolve(ctx context.Context, env runner.Env, task queue.Claimed)
 			if version == "" {
 				version = selection[g].Version
 			}
-			services = append(services, manifestService{Group: g, Service: s, Version: version})
+			services = append(services, manifestService{Group: g, Service: s, Version: version, Name: s, LowerVersion: version,
+				PreviousTaskDefinition: fmt.Sprintf("arn:aws:ecs:fake:000000000000:task-definition/%s:1", s)})
 			env.Log("info", fmt.Sprintf("selected %s %s in group %s", s, version, g))
 		}
 	}

@@ -213,7 +213,11 @@ func TestResolveReturnsManifestListingTheSelection(t *testing.T) {
 		t.Fatalf("outcome = %+v", out)
 	}
 	var manifest struct {
-		Services []struct{ Group, Service, Version string }
+		Services []struct {
+			Group, Service, Version string
+			Name                    string `json:"name"`
+			PreviousTaskDefinition  string `json:"previous_task_definition"`
+		}
 	}
 	if err := json.Unmarshal(out.Result, &manifest); err != nil {
 		t.Fatalf("Result %s is not JSON: %v", out.Result, err)
@@ -221,6 +225,9 @@ func TestResolveReturnsManifestListingTheSelection(t *testing.T) {
 	got := map[string]string{}
 	for _, s := range manifest.Services {
 		got[s.Service] = s.Version
+		if s.Name != s.Service || s.PreviousTaskDefinition == "" {
+			t.Errorf("service %s is named %q with previous task definition %q, want the real manifest's name and a previous task definition", s.Service, s.Name, s.PreviousTaskDefinition)
+		}
 	}
 	if len(got) != 2 || got["billing"] != "1.2.3" || got["search"] != "1.2.4" {
 		t.Errorf("manifest services = %v, want billing 1.2.3 and search 1.2.4", got)

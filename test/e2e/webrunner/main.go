@@ -69,6 +69,7 @@ func serve(ctx context.Context) int {
 			q := queue.New(pool, cfg.Lease, nil)
 			r := runner.New(q, sink, cfg.RunnerID, cfg.Concurrency, cfg.Heartbeat, cfg.Poll, log).
 				WithShutdownTimeout(cfg.ShutdownTimeout).
+				WithRegistry(pool, 0).
 				WithSettledNotifier(func(runID int64) { bus.Publish(context.Background(), wake.TopicRuns, runID) })
 			fake.Register(r, fake.Options{StepTime: stepTime, SlowFor: slowFor})
 			log.Warn("every step is fake; nothing real will be changed")

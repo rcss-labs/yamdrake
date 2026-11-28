@@ -28,6 +28,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/steps/fake"
 	"github.com/rcss-labs/yamdrake/internal/steps/resolve"
+	"github.com/rcss-labs/yamdrake/internal/steps/revalidate"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/version"
 	"github.com/rcss-labs/yamdrake/internal/wake"
@@ -95,7 +96,9 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 				bus.Publish(context.Background(), wake.TopicLogs, runID)
 			}, log)
 			r := newRunner(cfg, pool, sink, bus, log)
-			r.Register("resolve", resolve.New(resolveDeps(cfg, pool, identity, log)))
+			deps := resolveDeps(cfg, pool, identity, log)
+			r.Register("resolve", resolve.New(deps))
+			r.Register("revalidate", revalidate.New(deps))
 			return app.Extension{Background: []func(context.Context){
 				func(ctx context.Context) {
 					if err := r.Run(ctx, legWakeups(ctx, bus)); err != nil {
@@ -203,7 +206,7 @@ func legWakeups(ctx context.Context, bus *wake.Bus) <-chan struct{} {
 // advances it at once. The fake steps are registered only when
 // the configuration allows them (YUMDRAKE_ENV=dev and YUMDRAKE_FAKE_STEPS=true;
 // config.LoadRunner refuses fakes anywhere else). The caller registers the real
-// "resolve" afterwards, which replaces the fake one; copy-config and ecs-deploy
+// "resolve" and "revalidate" afterwards, which replace the fake ones; copy-config and ecs-deploy
 // arrive with plan 6, so a runner without fakes fails those legs with "no
 // executor for this step".
 func newRunner(cfg config.Runner, pool *pgxpool.Pool, sink runner.LineSink, bus *wake.Bus, log *slog.Logger) *runner.Runner {
@@ -212,7 +215,6 @@ func newRunner(cfg config.Runner, pool *pgxpool.Pool, sink runner.LineSink, bus 
 		WithShutdownTimeout(cfg.ShutdownTimeout).
 		WithSettledNotifier(func(runID int64) { bus.Publish(context.Background(), wake.TopicRuns, runID) })
 	if cfg.FakeSteps && cfg.Env == "dev" {
-		// TODO(task 8): the fake revalidate stays registered here until the real one replaces it.
 		fake.Register(r, fake.Options{StepTime: 2 * time.Second, SlowFor: 30 * time.Second})
 		log.Warn("fake steps are registered; nothing real will be changed")
 	}

@@ -71,10 +71,12 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 		})
 		// Archived legs are read back from the same directory they were written to.
 		var archive logs.Archive
+		var archiver *logs.Archiver
 		if cfg.LogArchiveDir != "" {
 			if archive, err = logs.NewDirArchive(cfg.LogArchiveDir); err != nil {
 				return Extension{}, fmt.Errorf("log archive: %w", err)
 			}
+			archiver = logs.NewArchiver(pool, archive, cfg.LogArchiveAfter, nil, log)
 		}
 		handler := api.New(api.Deps{
 			Pool:                pool,
@@ -93,17 +95,53 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 		// The queue is used only for Sweep, which compares against the database
 		// clock (nil) and does not need a lease length.
 		sweepQueue := queue.New(pool, 0, nil)
+		background := []func(context.Context){func(ctx context.Context) {
+			log.Info("sync loop started", "interval", cfg.SyncInterval.String(), "github_api_url", cfg.GitHubAPIURL)
+			syncEngine.Run(ctx, cfg.SyncInterval)
+			log.Info("sync loop stopped")
+		}, func(ctx context.Context) {
+			log.Info("engine loop started", "sweep_interval", cfg.SweepInterval.String())
+			runEngine.Loop(ctx, bus.Subscribe(ctx, wake.TopicRuns), cfg.SweepInterval, sweepQueue, nil)
+			log.Info("engine loop stopped")
+		}}
+		if archiver != nil {
+			background = append(background, func(ctx context.Context) {
+				log.Info("log archive loop started", "interval", cfg.LogArchiveInterval.String(), "after", cfg.LogArchiveAfter.String())
+				archiveLoop(ctx, archiver, cfg.LogArchiveInterval, log)
+				log.Info("log archive loop stopped")
+			})
+		}
 		return Extension{
-			Handlers: map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},
-			Background: []func(context.Context){func(ctx context.Context) {
-				log.Info("sync loop started", "interval", cfg.SyncInterval.String(), "github_api_url", cfg.GitHubAPIURL)
-				syncEngine.Run(ctx, cfg.SyncInterval)
-				log.Info("sync loop stopped")
-			}, func(ctx context.Context) {
-				log.Info("engine loop started", "sweep_interval", cfg.SweepInterval.String())
-				runEngine.Loop(ctx, bus.Subscribe(ctx, wake.TopicRuns), cfg.SweepInterval, sweepQueue, nil)
-				log.Info("engine loop stopped")
-			}},
+			Handlers:   map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},
+			Background: background,
 		}, nil
+	}
+}
+
+// settledLegArchiver is what archiveLoop drives; *logs.Archiver satisfies it.
+type settledLegArchiver interface {
+	ArchiveSettledLegs(ctx context.Context) (int, error)
+}
+
+// archiveLoop archives settled legs every interval until ctx ends. A failed
+// round is logged and the next one tries again: archiving never takes the
+// orchestrator down.
+func archiveLoop(ctx context.Context, archiver settledLegArchiver, every time.Duration, log *slog.Logger) {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if n, err := archiver.ArchiveSettledLegs(ctx); err != nil && ctx.Err() == nil {
+			log.Error("log archive round failed", "error", err.Error())
+		} else if n > 0 {
+			log.Info("archived settled legs", "legs", n)
+		}
 	}
 }

@@ -555,3 +555,25 @@ func TestRunnerReadsTheKeyPrefix(t *testing.T) {
 		t.Fatalf("prefix = %q, %v; want blue:", cfg.ValkeyKeyPrefix, err)
 	}
 }
+
+func TestOrchestratorLogArchiveSchedule(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.LogArchiveInterval != time.Minute || cfg.LogArchiveAfter != time.Hour {
+		t.Fatalf("defaults = %v, %v, %v; want 1m and 1h", cfg.LogArchiveInterval, cfg.LogArchiveAfter, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_LOG_ARCHIVE_INTERVAL"] = "5s"
+	env["YUMDRAKE_LOG_ARCHIVE_AFTER"] = "30m"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.LogArchiveInterval != 5*time.Second || cfg.LogArchiveAfter != 30*time.Minute {
+		t.Fatalf("overrides = %v, %v, %v", cfg.LogArchiveInterval, cfg.LogArchiveAfter, err)
+	}
+	for variable, bad := range map[string]string{
+		"YUMDRAKE_LOG_ARCHIVE_INTERVAL": "0s", "YUMDRAKE_LOG_ARCHIVE_AFTER": "-1h",
+	} {
+		env := requiredEnv()
+		env[variable] = bad
+		if _, err := LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), variable) {
+			t.Errorf("%s=%s: error = %v, want one naming the variable", variable, bad, err)
+		}
+	}
+}

@@ -415,28 +415,40 @@ func goroutinesIn(name string) bool {
 }
 
 func TestEventsHandlerStopsOnClientDisconnect(t *testing.T) {
-	f := newRunFixture(t)
-	bus := wake.New(f.valkey, nil, wake.WithKeyPrefix(f.deps.KeyPrefix))
-	server := f.streamServer(func(d *Deps) { d.Wake = bus })
-	id := f.newRun(f.jobID, devEnvironment, "s1")
-	f.setRun(id, "running")
+	// Keep-alive and poll are an hour, so nothing but the request context
+	// ending can stop the handler: without wake-ups only its ctx.Done branch
+	// can; with them, the subscriptions must end as well.
+	for _, withBus := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wakeups=%v", withBus), func(t *testing.T) {
+			f := newRunFixture(t)
+			server := f.streamServer(func(d *Deps) {
+				if withBus {
+					d.Wake = wake.New(f.valkey, nil, wake.WithKeyPrefix(f.deps.KeyPrefix))
+				}
+				d.StreamKeepAlive = time.Hour
+				d.StreamPollInterval = time.Hour
+			})
+			id := f.newRun(f.jobID, devEnvironment, "s1")
+			f.setRun(id, "running")
 
-	stream := f.openStream(server, f.adminToken, runPath(id, "/events"), nil)
-	if e := stream.nextNamed(t, 3*time.Second); e.Name != "state" {
-		t.Fatalf("first event = %q", e.Name)
+			stream := f.openStream(server, f.adminToken, runPath(id, "/events"), nil)
+			if e := stream.nextNamed(t, 3*time.Second); e.Name != "state" {
+				t.Fatalf("first event = %q", e.Name)
+			}
+			// While the client is connected the handler runs; the checks below
+			// would otherwise prove nothing.
+			if !goroutinesIn("api.(*server).streamEvents") {
+				t.Fatal("no stream handler goroutine while a client is connected")
+			}
+			stream.close()
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				if !goroutinesIn("api.(*server).streamEvents") && !goroutinesIn("wake.(*Bus).Subscribe") {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Fatal("the handler or its wake-up subscriptions still run 1s after the client disconnected")
+		})
 	}
-	// While the client is connected the handler and its subscriptions run; the
-	// checks below would otherwise prove nothing.
-	if !goroutinesIn("api.(*server).streamEvents") {
-		t.Fatal("no stream handler goroutine while a client is connected")
-	}
-	stream.close()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if !goroutinesIn("api.(*server).streamEvents") && !goroutinesIn("wake.(*Bus).Subscribe") {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("the handler or its wake-up subscriptions still run 1s after the client disconnected")
 }

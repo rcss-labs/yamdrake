@@ -44,6 +44,10 @@ type Orchestrator struct {
 	// LogArchiveDir is the directory settled legs' logs are archived to. Empty
 	// means archiving is off (until object storage arrives in Plan 5).
 	LogArchiveDir string
+	// LogArchiveInterval is how often settled legs are archived, and
+	// LogArchiveAfter how long a leg must have been settled first. Both apply
+	// only when LogArchiveDir is set.
+	LogArchiveInterval, LogArchiveAfter time.Duration
 	// SweepInterval is how often the engine loop sweeps expired leases and
 	// advances every active run, whether or not a wake-up arrived.
 	SweepInterval time.Duration
@@ -137,6 +141,8 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	if cfg.LogArchiveDir != "" && !filepath.IsAbs(cfg.LogArchiveDir) {
 		l.fail("YUMDRAKE_LOG_ARCHIVE_DIR", "must be an absolute path")
 	}
+	cfg.LogArchiveInterval = l.duration("YUMDRAKE_LOG_ARCHIVE_INTERVAL", "1m")
+	cfg.LogArchiveAfter = l.duration("YUMDRAKE_LOG_ARCHIVE_AFTER", "1h")
 	cfg.SweepInterval = l.duration("YUMDRAKE_SWEEP_INTERVAL", "2s")
 	cfg.LimitPerEnvironment = l.positiveInt("YUMDRAKE_LIMIT_PER_ENVIRONMENT", "10")
 	cfg.LimitPerAccount = l.positiveInt("YUMDRAKE_LIMIT_PER_ACCOUNT", "20")

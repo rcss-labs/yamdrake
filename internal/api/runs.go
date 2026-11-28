@@ -161,7 +161,7 @@ func summarizeRun(r store.Run) runSummaryView {
 	}
 }
 
-// buildState reads a run's legs and locks and shapes them. steps names the
+// buildProgress reads a run's legs and locks and shapes them. steps names the
 // steps of the legs (they never change after the run is created).
 func (s *server) buildProgress(ctx context.Context, run store.Run, steps []store.RunStep) (runProgress, error) {
 	legs, err := store.LegsOfRun(ctx, s.Pool, run.ID)

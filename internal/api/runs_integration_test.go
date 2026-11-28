@@ -537,6 +537,7 @@ func TestCancelReconcileCheckAgainReleaseLocksPermissionsAndStates(t *testing.T)
 	restorer := f.userWith("restorer", store.Grant{Action: "restore"})
 	prodRestorer := f.userWith("prodrestorer", store.Grant{Action: "restore", Label: "prod"})
 	plain := f.userWith("plain")
+	accessManager := f.userWith("accessmanager", store.Grant{Action: "manage_access"})
 
 	// settle puts a fresh run into needs_reconciliation with one unknown leg
 	// (the s1 config leg) and every other leg settled.
@@ -554,6 +555,12 @@ func TestCancelReconcileCheckAgainReleaseLocksPermissionsAndStates(t *testing.T)
 			}
 		}
 		return runID, unknownLeg
+	}
+	// otherRunsLeg settles two runs and returns the first with the unknown leg of the second.
+	otherRunsLeg := func() (int64, int64) {
+		first, _ := settle()
+		_, foreign := settle()
+		return first, foreign
 	}
 	planned := func() (int64, int64) {
 		id := f.newRun(f.jobID, devEnvironment, "s1")
@@ -595,6 +602,8 @@ func TestCancelReconcileCheckAgainReleaseLocksPermissionsAndStates(t *testing.T)
 		{"reconcile with restore on another label", prodRestorer, settle, func(r, l int64) string { return runPath(r, fmt.Sprintf("/legs/%d/reconcile", l)) }, map[string]string{"outcome": "succeeded"}, 403, nil, ""},
 		{"reconcile a run not in reconciliation", restorer, fresh, func(r, _ int64) string { return runPath(r, "/legs/1/reconcile") }, map[string]string{"outcome": "succeeded"}, 409, nil, ""},
 		{"reconcile a leg of another run", restorer, settle, func(r, _ int64) string { return runPath(r, "/legs/999999/reconcile") }, map[string]string{"outcome": "succeeded"}, 404, nil, ""},
+		{"reconcile a real leg of another run", restorer, otherRunsLeg, func(r, l int64) string { return runPath(r, fmt.Sprintf("/legs/%d/reconcile", l)) }, map[string]string{"outcome": "succeeded"}, 404,
+			func(t *testing.T, _, l int64) { f.wantLegState(t, l, "unknown") }, ""},
 		{"check again as restorer", restorer, settle, func(r, l int64) string { return runPath(r, fmt.Sprintf("/legs/%d/check-again", l)) }, nil, 200,
 			func(t *testing.T, r, l int64) { f.wantLegState(t, l, "queued") }, "run.check_again"},
 		{"check again without restore", plain, settle, func(r, l int64) string { return runPath(r, fmt.Sprintf("/legs/%d/check-again", l)) }, nil, 403, nil, ""},
@@ -607,6 +616,8 @@ func TestCancelReconcileCheckAgainReleaseLocksPermissionsAndStates(t *testing.T)
 				}
 			}, "run.release_locks"},
 		{"release locks as a non-admin", restorer, settle, func(r, _ int64) string { return fmt.Sprintf("/api/v1/admin/runs/%d/release-locks", r) }, nil, 403, nil, ""},
+		{"release locks as a manage_access non-admin", accessManager, settle, func(r, _ int64) string { return fmt.Sprintf("/api/v1/admin/runs/%d/release-locks", r) }, nil, 403,
+			func(t *testing.T, r, _ int64) { f.wantRunState(t, r, "needs_reconciliation") }, ""},
 		{"release locks of a run not in reconciliation", f.adminToken, fresh, func(r, _ int64) string { return fmt.Sprintf("/api/v1/admin/runs/%d/release-locks", r) }, nil, 409, nil, ""},
 	}
 	for _, c := range cases {

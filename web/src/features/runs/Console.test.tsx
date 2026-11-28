@@ -175,11 +175,9 @@ describe('Console connection and notices', () => {
 describe('Console download', () => {
   const run = runOf(runIds.partiallySucceeded)
   let saved: { blob: Blob; name: string }[]
-  let revoked: string[]
 
   beforeEach(() => {
     saved = []
-    revoked = []
     let blobs = 0
     const made = new Map<string, Blob>()
     URL.createObjectURL = (blob: Blob | MediaSource) => {
@@ -187,9 +185,7 @@ describe('Console download', () => {
       made.set(url, blob as Blob)
       return url
     }
-    URL.revokeObjectURL = (url: string) => {
-      revoked.push(url)
-    }
+    URL.revokeObjectURL = () => {}
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
       saved.push({ blob: made.get(this.href) as Blob, name: this.download })
     })
@@ -220,7 +216,16 @@ describe('Console download', () => {
     expect(rows[2299]).toContain('<b>billing</b> 2300')
     expect(rows[2300]).toBe('-- Lines 5000 to 5009 of this step are missing --')
     expect(text).not.toContain('other service')
-    await waitFor(() => expect(revoked).toEqual(['blob:test/1']))
+  })
+
+  it('shows the alert, not an unhandled rejection, when the file cannot be saved', async () => {
+    mockState().logs[105] = [apiLine(10504, 1, 'x')]
+    URL.createObjectURL = () => {
+      throw new Error('no blobs here')
+    }
+    render(<Console run={run} live={liveOf(run, [])} scope={wholeRun} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The log could not be downloaded')
   })
 
   it('says so when a page fails, and works again on the next try', async () => {

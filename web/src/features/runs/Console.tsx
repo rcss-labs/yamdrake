@@ -44,13 +44,13 @@ function useLogDownload(run: RunDetail, scope: ConsoleScope) {
   const [state, setState] = useState<'idle' | 'busy' | 'failed'>('idle')
   const start = () => {
     setState('busy')
-    fetchLogText(run, scope).then(
-      (text) => {
-        saveText(text, logFileName(run, scope))
-        setState('idle')
-      },
-      () => setState('failed'),
-    )
+    // Fetching and saving both end in the same alert when they fail.
+    fetchLogText(run, scope)
+      .then((text) => saveText(text, logFileName(run, scope)))
+      .then(
+        () => setState('idle'),
+        () => setState('failed'),
+      )
   }
   return { busy: state === 'busy', failed: state === 'failed', start }
 }

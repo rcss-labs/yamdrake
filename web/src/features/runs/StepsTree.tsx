@@ -88,7 +88,7 @@ export function StepsTree({
   // A service listed under several steps is one scope; only its first row is marked as the current item.
   const currentServiceKey =
     scope.kind === 'service' ? items.flatMap((item) => item.services).find((service) => service.service === scope.service)?.key : undefined
-  const choose =(next: ConsoleScope) => () => onSelect(next)
+  const choose = (next: ConsoleScope) => () => onSelect(next)
 
   return (
     <nav className="tree" aria-label="Steps and services">

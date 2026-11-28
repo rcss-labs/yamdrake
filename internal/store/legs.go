@@ -166,3 +166,48 @@ func FlagLegCancel(ctx context.Context, tx DBTX, legID int64) error {
 	}
 	return nil
 }
+
+// GetLeg returns ErrNotFound for an unknown id.
+func GetLeg(ctx context.Context, db DBTX, id int64) (Leg, error) {
+	l, err := scanLeg(db.QueryRow(ctx, "SELECT "+legColumns+" FROM legs WHERE id = $1", id))
+	if err != nil {
+		return Leg{}, fmt.Errorf("get leg: %w", mapError(err))
+	}
+	return l, nil
+}
+
+// OpsOfLeg returns the leg's operations in seq order.
+func OpsOfLeg(ctx context.Context, db DBTX, legID int64) ([]Op, error) {
+	rows, err := db.Query(ctx,
+		`SELECT id, leg_id, seq, name, key, intent, result, state, at
+		 FROM operations WHERE leg_id = $1 ORDER BY seq`, legID)
+	if err != nil {
+		return nil, fmt.Errorf("ops of leg: %w", mapError(err))
+	}
+	defer rows.Close()
+	ops := []Op{}
+	for rows.Next() {
+		op, err := scanOp(rows)
+		if err != nil {
+			return nil, fmt.Errorf("ops of leg: %w", mapError(err))
+		}
+		ops = append(ops, op)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ops of leg: %w", mapError(err))
+	}
+	return ops, nil
+}
+
+// OpColumns is the column list ScanOp reads, for queries written outside the
+// store package (the queue writes its own generation-checked SQL).
+const OpColumns = `id, leg_id, seq, name, key, intent, result, state, at`
+
+// ScanOp reads one row selected with OpColumns.
+func ScanOp(r interface{ Scan(dest ...any) error }) (Op, error) { return scanOp(r) }
+
+func scanOp(r rowScanner) (Op, error) {
+	var o Op
+	err := r.Scan(&o.ID, &o.LegID, &o.Seq, &o.Name, &o.Key, &o.Intent, &o.Result, &o.State, &o.At)
+	return o, err
+}

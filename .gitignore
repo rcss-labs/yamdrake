@@ -13,3 +13,6 @@
 *.tfstate.*
 terraform.tfvars
 *.auto.tfvars
+
+# Production Compose settings: secrets live here, never commit it.
+/deploy/compose/.env

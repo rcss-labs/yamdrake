@@ -10,7 +10,7 @@ BINARY_PACKAGES := orchestrator runner
 # Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
 export VERSION COMMIT
 
-.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke tf-check web-install web-lint web-test web-build web-e2e
+.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke compose-check tf-check web-install web-lint web-test web-build web-e2e
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -83,6 +83,9 @@ tf-check: ## Check the Terraform example: fmt and validate only, never plan or a
 
 smoke: ## Build and start the app profile in Compose and check it is healthy
 	./scripts/smoke.sh
+
+compose-check: ## Run the production Compose setup (deploy/compose) for real: sign-in, restart, HTTPS front
+	./scripts/compose-check.sh
 
 web-install: ## Install the web application's dependencies from the lockfile
 	npm --prefix web ci

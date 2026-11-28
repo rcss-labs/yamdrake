@@ -540,10 +540,7 @@ func TestRejects(t *testing.T) {
 			flow := row.setup(t)
 			idp.tweak = nil
 			if row.twice {
-				first := h.postACS(flow, row.cookie)
-				if first.Code != http.StatusSeeOther {
-					t.Fatalf("first post: status %d %s, want 303", first.Code, failure(first))
-				}
+				expectSignedIn(t, h.postACS(flow, row.cookie), "/")
 			}
 			usersBefore, rejectedBefore := h.userCount(), h.auditCount("saml.rejected")
 			rec := h.postACS(flow, row.cookie)
@@ -648,9 +645,7 @@ func TestSSOUnavailable(t *testing.T) {
 	flow := idp.begin()
 	h.rebuild(func(d *Deps) { d.Valkey = deadValkey(t) })
 	rec = h.postACS(flow, true)
-	if rec.Code != http.StatusServiceUnavailable || sessionCookie(rec) != nil {
-		t.Errorf("acs with Valkey down: status %d %s, want 503 and no session", rec.Code, failure(rec))
-	}
+	expectSignInRedirect(t, rec, "unavailable")
 	if h.auditCount("auth.login") != 0 {
 		t.Errorf("a sign-in was audited while Valkey was down")
 	}
@@ -912,10 +907,8 @@ func keyPrefix(prefix string) func([]string) bool {
 func TestUnsignedResponseWithSignedAssertionIsAccepted(t *testing.T) {
 	h, idp, _ := ssoSetup(t)
 	idp.signIn(uniqueEmail(t, "gina"), "Gina")
-	rec := h.postACS(idp.begin().withoutResponseSignature(t), true)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status %d %s, want 303 (a signed assertion in an unsigned response is the shape some IdPs send)", rec.Code, failure(rec))
-	}
+	// A signed assertion in an unsigned response is the shape some IdPs send.
+	expectSignedIn(t, h.postACS(idp.begin().withoutResponseSignature(t), true), "/")
 }
 
 func TestValkeyFailingOnlyAtTheReplayCheckIsA503AndCreatesNothing(t *testing.T) {
@@ -926,9 +919,7 @@ func TestValkeyFailingOnlyAtTheReplayCheckIsA503AndCreatesNothing(t *testing.T) 
 	h.rebuild(func(d *Deps) { d.Valkey = &hookValkey{Client: d.Valkey, fail: keyPrefix("saml-assertion:")} })
 	users := h.userCount()
 	rec := h.postACS(flow, true)
-	if rec.Code != http.StatusServiceUnavailable || sessionCookie(rec) != nil {
-		t.Fatalf("status %d %s, want 503 and no session", rec.Code, failure(rec))
-	}
+	expectSignInRedirect(t, rec, "unavailable")
 	if h.userCount() != users || h.auditCount("auth.login") != 0 || h.auditCount("user.provision") != 0 {
 		t.Errorf("a response whose replay check failed changed state: %v", h.auditActions())
 	}
@@ -995,9 +986,7 @@ func TestProvisioningIsKeptAndAuditedWhenTheSessionCannotBeCreated(t *testing.T)
 		d.Valkey, d.Sessions = hook, session.NewManager(hook, time.Now)
 	})
 	rec := h.postACS(flow, true)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status %d %s, want 503", rec.Code, failure(rec))
-	}
+	expectSignInRedirect(t, rec, "unavailable")
 	if _, err := store.UserByEmail(context.Background(), h.pool, email); err != nil {
 		t.Fatalf("user: %v", err)
 	}
@@ -1047,6 +1036,18 @@ func TestAuthMethodsNeedsNoSignIn(t *testing.T) {
 	check(true)
 }
 
+// expectSignedIn checks a successful ACS answer. Success and rejection are both
+// 303, so the Location and the session cookie are what tell them apart.
+func expectSignedIn(t *testing.T, rec *httptest.ResponseRecorder, location string) {
+	t.Helper()
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != location {
+		t.Fatalf("status %d, Location %q, body %q; want 303 to %q (signed in)", rec.Code, rec.Header().Get("Location"), rec.Body.String(), location)
+	}
+	if sessionCookie(rec) == nil {
+		t.Fatalf("signed in to %q without a session cookie", location)
+	}
+}
+
 func signInErrorLocation(code string) string { return "/sign-in?sso_error=" + code }
 
 // expectSignInRedirect checks the one answer a browser gets when SSO sign-in
@@ -1076,11 +1077,10 @@ func TestSAMLFailureRedirectsToSignIn(t *testing.T) {
 	if got := h.auditCount("saml.rejected"); got != rejectedBefore+1 {
 		t.Errorf("saml.rejected entries: %d before, %d after, want one more", rejectedBefore, got)
 	}
-	if strings.Contains(rec.Header().Get("Location"), "relay_state") {
-		t.Errorf("the redirect names the audit reason")
-	}
 
 	// Stored identity provider metadata that cannot be read: start and acs answer "unavailable".
+	idp.signIn(uniqueEmail(t, "ruth2"), "Ruth", "eng-devops")
+	flow = idp.begin()
 	settings, err := auth.LoadSAMLSettings(context.Background(), h.pool)
 	if err != nil {
 		t.Fatal(err)
@@ -1090,6 +1090,18 @@ func TestSAMLFailureRedirectsToSignIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectSignInRedirect(t, h.send(sent{method: "GET", path: "/api/v1/auth/saml/start"}), "unavailable")
+	expectSignInRedirect(t, h.postACS(flow, true), "unavailable")
+}
+
+// An unexpected failure (here: the database is gone) on a route the browser
+// navigates to sends it back to sign-in instead of showing JSON.
+func TestSAMLInternalFailureRedirectsToSignIn(t *testing.T) {
+	h, idp, _ := ssoSetup(t)
+	idp.signIn(uniqueEmail(t, "iris"), "Iris", "eng-devops")
+	flow := idp.begin()
+	h.pool.Close()
+	expectSignInRedirect(t, h.send(sent{method: "GET", path: "/api/v1/auth/saml/start"}), "rejected")
+	expectSignInRedirect(t, h.postACS(flow, true), "rejected")
 }
 
 func relayCookieCleared(rec *httptest.ResponseRecorder) bool {
@@ -1110,9 +1122,7 @@ func TestOneRequestAnswersOnlyOnce(t *testing.T) {
 	if first.form.Get("SAMLResponse") == second.form.Get("SAMLResponse") {
 		t.Fatalf("the identity provider issued the same response twice")
 	}
-	if rec := h.postACS(first, true); rec.Code != http.StatusSeeOther {
-		t.Fatalf("first response: status %d %s, want 303", rec.Code, failure(rec))
-	}
+	expectSignedIn(t, h.postACS(first, true), "/")
 	users, rejected := h.userCount(), h.auditCount("saml.rejected")
 	rec := h.postACS(second, true)
 	expectSignInRedirect(t, rec, "rejected")
@@ -1131,8 +1141,9 @@ func TestValkeyFailingAtTheRequestIDCheckIsA503(t *testing.T) {
 	h.rebuild(func(d *Deps) { d.Valkey = &hookValkey{Client: d.Valkey, fail: keyPrefix("saml-request:")} })
 	users := h.userCount()
 	rec := h.postACS(flow, true)
-	if rec.Code != http.StatusServiceUnavailable || sessionCookie(rec) != nil || h.userCount() != users || h.auditCount("user.provision") != 0 {
-		t.Fatalf("status %d %s: want 503 and nothing created", rec.Code, failure(rec))
+	expectSignInRedirect(t, rec, "unavailable")
+	if h.userCount() != users || h.auditCount("user.provision") != 0 {
+		t.Fatalf("a response whose request id could not be recorded created something: %v", h.auditActions())
 	}
 }
 
@@ -1150,21 +1161,12 @@ func TestSAMLReplayKeysUseTheKeyPrefix(t *testing.T) {
 		return New(d)
 	}
 	a, b := handlerFor("a"), handlerFor("b")
-	post := func(handler http.Handler) int {
+	post := func(handler http.Handler) *httptest.ResponseRecorder {
 		h.handler = handler
-		return h.postACS(flow, true).Code
+		return h.postACS(flow, true)
 	}
-	postLocation := func(handler http.Handler) string {
-		h.handler = handler
-		return h.postACS(flow, true).Header().Get("Location")
-	}
-	if code := post(a); code != http.StatusSeeOther {
-		t.Fatalf("first post under prefix a: %d, want 303", code)
-	}
-	if code := post(b); code != http.StatusSeeOther {
-		t.Errorf("same response under prefix b: %d, want 303 (it must not see a's replay keys)", code)
-	}
-	if got := postLocation(a); got != signInErrorLocation("rejected") {
-		t.Errorf("same response under prefix a again: Location %q, want %q", got, signInErrorLocation("rejected"))
-	}
+	expectSignedIn(t, post(a), "/")
+	// Under another prefix the same response must be accepted: it cannot see a's replay keys.
+	expectSignedIn(t, post(b), "/")
+	expectSignInRedirect(t, post(a), "rejected")
 }

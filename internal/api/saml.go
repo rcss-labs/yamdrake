@@ -94,6 +94,15 @@ func (s *server) ssoUnavailable(w http.ResponseWriter, r *http.Request, err erro
 	return true
 }
 
+// ssoFailed handles an unexpected failure (database, Valkey, key material) on a
+// route a browser reaches by top-level navigation: the error is logged exactly
+// as before and the browser is sent back to sign-in with a fixed code. Valkey
+// being unavailable reads as "unavailable", everything else as "rejected".
+func (s *server) ssoFailed(w http.ResponseWriter, r *http.Request, err error, code string) {
+	s.Log.Error("single sign-on request failed", "method", r.Method, "path", r.URL.Path, "error", err.Error())
+	redirectSSOError(w, r, code)
+}
+
 // samlProvider is the service provider for one request, with the settings it
 // was built from.
 type samlProvider struct {
@@ -263,7 +272,7 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	redirectURL := sp.GetSSOBindingLocation(saml.HTTPRedirectBinding)
@@ -278,17 +287,17 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 	}
 	authnRequest, err := sp.MakeAuthenticationRequest(target, binding, saml.HTTPPostBinding)
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	relayKey, err := auth.LoadRelayKey(r.Context(), s.Pool, s.Cipher)
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	nonce, err := randomHandle()
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	nextPath := r.URL.Query().Get("next")
@@ -306,7 +315,7 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 	if binding == saml.HTTPRedirectBinding {
 		location, err := authnRequest.Redirect(handle, sp.ServiceProvider)
 		if err != nil {
-			s.internalError(w, r, err)
+			s.ssoFailed(w, r, err, ssoErrorRejected)
 			return
 		}
 		http.Redirect(w, r, location.String(), http.StatusFound)
@@ -314,7 +323,7 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 	}
 	scriptNonce, err := randomHandle()
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -433,7 +442,7 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	// Whatever happens next, this relay cookie has been used.
@@ -458,7 +467,7 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	// provider echoes; its request id is the only InResponseTo we accept.
 	relayKey, err := auth.LoadRelayKey(r.Context(), s.Pool, s.Cipher)
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	cookie, err := r.Cookie(samlRelayCookie)
@@ -490,7 +499,7 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	sp.ReplayCache = replay
 	assertion, err := sp.ParseResponse(r, []string{requestID})
 	if replay.unavailable != nil {
-		s.valkeyFailed(w, "check saml assertion replay", replay.unavailable)
+		s.ssoFailed(w, r, fmt.Errorf("check saml assertion replay"+": %w", replay.unavailable), ssoErrorUnavailable)
 		return
 	}
 	if err != nil {
@@ -507,7 +516,7 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		s.samlReject(w, r, "request_reused", nil)
 		return
 	case err != nil:
-		s.valkeyFailed(w, "record saml request id", err)
+		s.ssoFailed(w, r, fmt.Errorf("record saml request id"+": %w", err), ssoErrorUnavailable)
 		return
 	}
 
@@ -525,18 +534,18 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		s.samlRefuse(w, r, "user_disabled", email)
 		return
 	case err != nil:
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 
 	if _, err := s.startSession(w, r, user.ID, map[string]any{"via": "saml"}); err != nil {
 		switch {
 		case errors.Is(err, session.ErrUnavailable):
-			s.valkeyFailed(w, "start session", err)
+			s.ssoFailed(w, r, fmt.Errorf("start session"+": %w", err), ssoErrorUnavailable)
 		case errors.Is(err, auth.ErrDisabled):
 			s.samlRefuse(w, r, "user_disabled", email)
 		default:
-			s.internalError(w, r, err)
+			s.ssoFailed(w, r, err, ssoErrorRejected)
 		}
 		return
 	}

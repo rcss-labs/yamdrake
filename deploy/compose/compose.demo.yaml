@@ -20,6 +20,10 @@ services:
       args:
         VERSION: ${VERSION:-demo}
         COMMIT: ${COMMIT:-unknown}
+    # The demo never listens beyond loopback, whatever YUMDRAKE_HTTP_BIND says,
+    # because it uses public credentials.
+    ports: !override
+      - "127.0.0.1:${YUMDRAKE_HTTP_PORT:-18280}:8080"
     environment:
       # dev lets the services accept the public demo key; the orchestrator
       # refuses dev unless YUMDRAKE_PUBLIC_URL is on localhost or 127.0.0.1.

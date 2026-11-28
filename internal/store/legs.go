@@ -22,15 +22,18 @@ type Leg struct {
 	State            string
 	Attempt          int
 	Generation       int64
-	RunnerID         string
-	LeaseUntil       *time.Time
-	CancelRequested  bool
-	Resume, Result   []byte // JSON
-	FailureShort     string
-	FailureDetail    string
-	QueuedAt         *time.Time
-	StartedAt        *time.Time
-	FinishedAt       *time.Time
+	// LeaseExpiries counts how often the leg's lease ran out (queue.Sweep); a
+	// graceful Release does not count. Attempt counts claims.
+	LeaseExpiries   int
+	RunnerID        string
+	LeaseUntil      *time.Time
+	CancelRequested bool
+	Resume, Result  []byte // JSON
+	FailureShort    string
+	FailureDetail   string
+	QueuedAt        *time.Time
+	StartedAt       *time.Time
+	FinishedAt      *time.Time
 }
 
 // Op is one external change a leg makes, recorded before and after it is made.
@@ -44,14 +47,14 @@ type Op struct {
 	At             time.Time
 }
 
-const legColumns = `id, run_id, step_id, kind, service, version, state, attempt, generation, runner_id,
+const legColumns = `id, run_id, step_id, kind, service, version, state, attempt, generation, lease_expiries, runner_id,
 	lease_until, cancel_requested, resume, result, failure_short, failure_detail,
 	queued_at, started_at, finished_at`
 
 func scanLeg(r rowScanner) (Leg, error) {
 	var l Leg
 	err := r.Scan(&l.ID, &l.RunID, &l.StepID, &l.Kind, &l.Service, &l.Version, &l.State, &l.Attempt,
-		&l.Generation, &l.RunnerID, &l.LeaseUntil, &l.CancelRequested, &l.Resume, &l.Result,
+		&l.Generation, &l.LeaseExpiries, &l.RunnerID, &l.LeaseUntil, &l.CancelRequested, &l.Resume, &l.Result,
 		&l.FailureShort, &l.FailureDetail, &l.QueuedAt, &l.StartedAt, &l.FinishedAt)
 	return l, err
 }
@@ -183,4 +186,49 @@ func ActiveLegsOfOtherRuns(ctx context.Context, db DBTX, runID int64, environmen
 		return 0, 0, fmt.Errorf("active legs of other runs: %w", mapError(err))
 	}
 	return inEnvironment, inAccount, nil
+}
+
+// GetLeg returns ErrNotFound for an unknown id.
+func GetLeg(ctx context.Context, db DBTX, id int64) (Leg, error) {
+	l, err := scanLeg(db.QueryRow(ctx, "SELECT "+legColumns+" FROM legs WHERE id = $1", id))
+	if err != nil {
+		return Leg{}, fmt.Errorf("get leg: %w", mapError(err))
+	}
+	return l, nil
+}
+
+// OpsOfLeg returns the leg's operations in seq order.
+func OpsOfLeg(ctx context.Context, db DBTX, legID int64) ([]Op, error) {
+	rows, err := db.Query(ctx,
+		`SELECT `+OpColumns+`
+		 FROM operations WHERE leg_id = $1 ORDER BY seq`, legID)
+	if err != nil {
+		return nil, fmt.Errorf("ops of leg: %w", mapError(err))
+	}
+	defer rows.Close()
+	ops := []Op{}
+	for rows.Next() {
+		op, err := scanOp(rows)
+		if err != nil {
+			return nil, fmt.Errorf("ops of leg: %w", mapError(err))
+		}
+		ops = append(ops, op)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ops of leg: %w", mapError(err))
+	}
+	return ops, nil
+}
+
+// OpColumns is the column list ScanOp reads, for queries written outside the
+// store package (the queue writes its own generation-checked SQL).
+const OpColumns = `id, leg_id, seq, name, key, intent, result, state, at`
+
+// ScanOp reads one row selected with OpColumns.
+func ScanOp(r interface{ Scan(dest ...any) error }) (Op, error) { return scanOp(r) }
+
+func scanOp(r rowScanner) (Op, error) {
+	var o Op
+	err := r.Scan(&o.ID, &o.LegID, &o.Seq, &o.Name, &o.Key, &o.Intent, &o.Result, &o.State, &o.At)
+	return o, err
 }

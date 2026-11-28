@@ -439,3 +439,19 @@ func TestValkeyKeyPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadOrchestratorLogArchiveDir(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.LogArchiveDir != "" {
+		t.Fatalf("default: dir = %q, err = %v; want archiving off", cfg.LogArchiveDir, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_LOG_ARCHIVE_DIR"] = "/var/lib/yumdrake/logs"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.LogArchiveDir != "/var/lib/yumdrake/logs" {
+		t.Fatalf("absolute: dir = %q, err = %v", cfg.LogArchiveDir, err)
+	}
+	env["YUMDRAKE_LOG_ARCHIVE_DIR"] = "relative/dir"
+	if _, err = LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_LOG_ARCHIVE_DIR") {
+		t.Fatalf("relative path: err = %v, want a complaint naming the variable", err)
+	}
+}

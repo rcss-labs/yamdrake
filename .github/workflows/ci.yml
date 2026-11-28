@@ -41,6 +41,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make test
+      - run: make cli-dist
+      - run: ls dist
 
   integration:
     runs-on: ubuntu-24.04

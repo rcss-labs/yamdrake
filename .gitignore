@@ -1,6 +1,7 @@
 .idea/
 .superpowers/
 /bin/
+/dist/
 /coverage.out
 
 # Built web application, embedded by internal/webui (make web-build)

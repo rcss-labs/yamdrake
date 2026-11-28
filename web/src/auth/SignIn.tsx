@@ -4,6 +4,7 @@ import type { FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ApiError, api } from '../api/client'
 import type { AuthMethods, Me } from '../api/types'
+import { Note } from '../ui/Note'
 import { safeNext } from './next'
 import { startSession } from './sessionCache'
 import './sign-in.css'
@@ -29,6 +30,22 @@ function signInMessage(error: unknown): string {
   return 'Something went wrong. Try again.'
 }
 
+const rejectedMessage = 'Single sign-on did not complete. Try again, or ask an administrator to check the sign-in settings.'
+
+const ssoErrorMessages: Record<string, string> = {
+  rejected: rejectedMessage,
+  refused: 'Your account may not sign in. Ask an administrator.',
+  unavailable: 'Single sign-on is not available right now. Sign in with your email and password.',
+}
+
+/** The words for the `sso_error` code the server puts in the address; an unknown code reads as "rejected". */
+function ssoErrorMessage(code: string | null): string {
+  if (code === null) {
+    return ''
+  }
+  return Object.hasOwn(ssoErrorMessages, code) ? (ssoErrorMessages[code] ?? rejectedMessage) : rejectedMessage
+}
+
 /** The SSO link is offered only when the server says SAML is enabled; a 404 or any failure means it is not. */
 function useSsoEnabled(): boolean {
   const methods = useQuery({
@@ -46,6 +63,7 @@ export function SignIn() {
   const ssoEnabled = useSsoEnabled()
   const [params] = useSearchParams()
   // The server returns the person to this same-site path after the identity provider answers.
+  const ssoError = ssoErrorMessage(params.get('sso_error'))
   const ssoStartHref = `/api/v1/auth/saml/start?next=${encodeURIComponent(safeNext(params.get('next')))}`
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -84,6 +102,7 @@ export function SignIn() {
           </h1>
           <p className="sign-in-sub">Deployment jobs for DevOps, QA and developers</p>
         </div>
+        {ssoError !== '' && <Note tone="error">{ssoError}</Note>}
         {ssoEnabled && (
           <a className="sign-in-button sign-in-primary" href={ssoStartHref}>
             Sign in with company SSO

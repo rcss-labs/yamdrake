@@ -68,6 +68,30 @@ describe('SignIn', () => {
     },
   )
 
+  it.each([
+    ['rejected', 'Single sign-on did not complete. Try again, or ask an administrator to check the sign-in settings.'],
+    ['refused', 'Your account may not sign in. Ask an administrator.'],
+    ['unavailable', 'Single sign-on is not available right now. Sign in with your email and password.'],
+    ['something-else', 'Single sign-on did not complete. Try again, or ask an administrator to check the sign-in settings.'],
+  ])('explains the single sign-on failure %s above the form', async (code, text) => {
+    renderSignIn(`/sign-in?sso_error=${code}`)
+    expect(await screen.findByRole('alert')).toHaveTextContent(text)
+    expect(screen.getByLabelText('Email')).toBeInTheDocument()
+  })
+
+  it('shows no single sign-on failure note without the sso_error parameter', async () => {
+    renderSignIn()
+    await screen.findByLabelText('Email')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('still returns to next after a single sign-on failure', async () => {
+    const { location } = renderSignIn('/sign-in?sso_error=rejected&next=%2Fjobs%2F7')
+    await fillAndSubmit(adminMe.email, knownPassword)
+    expect(await screen.findByText('The signed-in page')).toBeInTheDocument()
+    expect(location().pathname).toBe('/jobs/7')
+  })
+
   it('posts the email and password to the login route', async () => {
     renderSignIn()
     await fillAndSubmit(adminMe.email, knownPassword)

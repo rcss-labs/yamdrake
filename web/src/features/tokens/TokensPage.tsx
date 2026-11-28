@@ -152,7 +152,7 @@ function TokenList() {
       header: 'Last used',
       render: (token) => <span className="tokens-nowrap">{token.last_used_at ? formatWhen(token.last_used_at) : 'Never'}</span>,
     },
-    { key: 'expires', header: 'Expires', render: (token) => <span className="tokens-nowrap">{formatDay(token.expires_at)}</span> },
+    { key: 'expires', header: 'Expires', render: (token) => <span className="tokens-nowrap">{token.expires_at === null ? 'Never' : formatDay(token.expires_at)}</span> },
     {
       key: 'actions',
       header: <span className="ui-visually-hidden">Actions</span>,
@@ -174,7 +174,7 @@ function TokenList() {
           <Button
             variant="danger"
             loading={revoke.isPending}
-            onClick={() => revoke.mutate(confirming, { onSuccess: () => setConfirming(null) })}
+            onClick={() => revoke.mutate(confirming.id, { onSuccess: () => setConfirming(null) })}
           >
             Revoke token
           </Button>

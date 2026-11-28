@@ -35,7 +35,8 @@ function SsoForm({ settings }: { settings: SsoSettings }) {
     save.mutate({
       enabled,
       idp_metadata_xml: metadata,
-      entity_id: entityId,
+      // Left as the default, it is saved empty so that it keeps following the public URL.
+      entity_id: entityId === settings.entity_id_default ? '' : entityId,
       groups_attribute: groupsAttribute,
       email_attribute: emailAttribute,
       name_attribute: nameAttribute,

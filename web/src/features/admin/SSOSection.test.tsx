@@ -42,12 +42,23 @@ describe('the single sign-on section', () => {
     expect(putsToSso()[0]?.body).toEqual({
       enabled: false,
       idp_metadata_xml: mockState().sso.idp_metadata_xml,
-      entity_id: 'https://yumdrake.example.com/saml/metadata',
+      entity_id: '',
       groups_attribute: 'memberOf',
       email_attribute: '',
       name_attribute: 'displayName',
     })
     expect(mockState().sso.groups_attribute).toBe('memberOf')
+  })
+
+  it('sends the typed entity ID when it differs from the default', async () => {
+    const user = userEvent.setup()
+    await openSso()
+    const entityId = screen.getByLabelText('Service provider entity ID')
+    await user.clear(entityId)
+    await user.type(entityId, 'https://sp.example.com/custom')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Settings saved')).toBeInTheDocument()
+    expect(putsToSso()[0]?.body).toMatchObject({ entity_id: 'https://sp.example.com/custom' })
   })
 
   it('shows the server error next to Save and keeps what was typed', async () => {

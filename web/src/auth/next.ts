@@ -6,12 +6,13 @@ function isSameSitePath(value: string): boolean {
   if (/[\u0000-\u001f\u007f]/.test(value)) {
     return false
   }
-  return value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\')
+  // Any backslash is refused, as the server does: some browsers read it as a slash.
+  return value.startsWith('/') && !value.startsWith('//') && !value.includes('\\')
 }
 
 /**
  * Returns `value` when it is a path on this site, otherwise "/". Only a single leading "/" is accepted:
- * "//host", "/\host", schemes and relative paths are not, even when percent-encoded.
+ * "//host", any backslash, schemes and relative paths are not, even when percent-encoded.
  * The sign-in page itself is not a destination.
  */
 export function safeNext(value: string | null | undefined): string {

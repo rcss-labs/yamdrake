@@ -13,6 +13,7 @@ function manyEntries(count: number): AuditEntry[] {
     id: 100 + index,
     at: '2026-11-20T10:00:00Z',
     actor: `person${100 + index}@example.com`,
+    actor_id: null,
     action: 'folder.create',
     target_type: 'folder',
     target_id: String(100 + index),
@@ -21,6 +22,34 @@ function manyEntries(count: number): AuditEntry[] {
 }
 
 describe('the audit log section', () => {
+  it('shows what changed from the nested before and after values, in plain words', async () => {
+    mockState().audit = [
+      {
+        id: 9,
+        at: '2026-11-27T11:20:00Z',
+        actor: 'dana@example.com',
+        action: 'user.update',
+        target_type: 'user',
+        target_id: '3',
+        actor_id: 1,
+        detail: { email: 'omer@example.com', before: { disabled: false, group_ids: [2] }, after: { disabled: true, group_ids: [] } },
+      },
+    ]
+    renderApp(<App />, { route: '/admin/audit', me: auditorMe })
+    const row = (await screen.findByText('user.update')).closest('tr')!
+    expect(row).toHaveTextContent('email omer@example.com')
+    expect(row).toHaveTextContent('before: disabled false, group_ids 2; after: disabled true, group_ids none')
+    expect(within(row).getByText('true')).toHaveClass('mono')
+  })
+
+  it('shows an entry that has no detail at all', async () => {
+    mockState().audit = [
+      { id: 9, at: '2026-11-27T11:20:00Z', actor: 'system', actor_id: null, action: 'auth.logout', target_type: 'user', target_id: '3' },
+    ]
+    renderApp(<App />, { route: '/admin/audit', me: auditorMe })
+    expect(await screen.findByText('auth.logout')).toBeInTheDocument()
+  })
+
   it('lists entries newest first with who, what and on what', async () => {
     renderApp(<App />, { route: '/admin/audit', me: auditorMe })
     const table = await screen.findByRole('table', { name: 'Audit log' })

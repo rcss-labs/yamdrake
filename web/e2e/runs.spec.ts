@@ -25,7 +25,8 @@ async function shots(page: Page, name: string) {
 
 const problems: string[] = []
 
-test.afterEach(async (_fixtures, testInfo) => {
+test.afterEach(async ({ browserName }, testInfo) => {
+  void browserName
   if (testInfo.status !== testInfo.expectedStatus && problems.length > 0) {
     await testInfo.attach('browser-problems', { body: problems.join('\n'), contentType: 'text/plain' })
   }

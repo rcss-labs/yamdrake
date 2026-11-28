@@ -6,7 +6,7 @@ import { useCreateToken, useRevokeToken, useTokens } from './queries'
 import './tokens.css'
 
 const CLI_USAGE = [
-  '$ yumdrake login --sso',
+  '$ yumdrake login',
   'Opening your browser for single sign-on... signed in as you@example.com',
   '',
   '$ yumdrake jobs list --folder Backend',

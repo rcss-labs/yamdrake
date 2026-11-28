@@ -20,7 +20,8 @@ describe('the CLI tokens page', () => {
   it('shows the CLI usage text and the person\'s tokens', async () => {
     renderApp(<App />, { route: '/cli' })
     const usage = await screen.findByRole('region', { name: 'CLI usage' })
-    expect(usage).toHaveTextContent('yumdrake login --sso')
+    expect(usage).toHaveTextContent('$ yumdrake login')
+    expect(usage).not.toHaveTextContent('--sso')
     expect(usage).toHaveTextContent('yumdrake validate ./yumdrake-config')
     const table = await screen.findByRole('table', { name: 'Your CLI tokens' })
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([

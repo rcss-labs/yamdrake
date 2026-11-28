@@ -62,9 +62,9 @@ export interface LoginRequest {
 }
 
 // ---- Problems and definitions (internal/spec) -------------------------------
-// Slices in spec structs are built by appending to nil, so the server sends null when empty:
-// every list of a parsed definition or service below is `T[] | null`. Lists in the API's own
-// response structs (inventory, jobs, folders, problems) are never null.
+// Every list the server sends is [], never null: the parsed definitions and services are passed through
+// withEmptyLists in internal/api, and the API's own response structs build their lists non-nil
+// (TestNoRouteReturnsNullForAList guards this). The client's null normaliser stays as a safety net.
 
 export interface Problem {
   file: string
@@ -121,9 +121,8 @@ export interface Toml {
 export interface ServiceEnvironment {
   ecs_service: string
   ecr_repository: string
-  /** The Go server sends null, not [], when the file has none. */
-  env_files: EnvFile[] | null
-  tomls: Toml[] | null
+  env_files: EnvFile[]
+  tomls: Toml[]
   line: number
 }
 
@@ -158,20 +157,20 @@ export interface JobStep {
   max_parallel: number
   /** Nanoseconds (Go time.Duration); 0 means not set. */
   timeout: number
-  /** null when the step needs nothing (the Go server leaves the list nil). */
-  needs: JobNeed[] | null
+  /** [] when the step needs nothing. */
+  needs: JobNeed[]
   line: number
 }
 
 export interface JobGroup {
   id: string
   label: string
-  services: string[] | null
+  services: string[]
   line: number
 }
 
 export interface JobApproval {
-  labels: string[] | null
+  labels: string[]
   /** Nanoseconds (Go time.Duration). */
   expires: number
   line: number
@@ -182,12 +181,12 @@ export interface JobDefinition {
   file: string
   id: string
   title: string
-  labels: string[] | null
+  labels: string[]
   labels_line: number
-  groups: JobGroup[] | null
+  groups: JobGroup[]
   approval: JobApproval | null
   slack_channel: string
-  steps: JobStep[] | null
+  steps: JobStep[]
 }
 
 // ---- Folders and jobs -------------------------------------------------------
@@ -335,11 +334,20 @@ export interface CreateAwsAccountRequest {
 }
 
 /** POST /api/v1/admin/aws-accounts/{id}/test */
+export interface AwsCredentialCheck {
+  ok: boolean
+  error_code: string
+  message: string
+}
+
 export interface AwsAccountTestResult {
   ok: boolean
   /** The AWS error code when ok is false (for example "AccessDenied"). */
   error_code: string
   message: string
+  /** The check of each credential; absent when the test stopped before it. */
+  discovery?: AwsCredentialCheck
+  deploy?: AwsCredentialCheck
 }
 
 // ---- Access administration (Plan 3, Task 6) ---------------------------------
@@ -664,7 +672,7 @@ export interface RunBase {
   job_name: string
   /** Who asked: their name, else their email. */
   requested_by_name: string
-  /** Assumed: for a restore run, the run it undoes. */
+  /** For a restore run, the run it undoes. */
   restore_of?: number | null
 }
 
@@ -684,7 +692,8 @@ export interface GroupSelection {
 }
 export type Selection = Record<string, GroupSelection>
 
-export type ApprovalDecision = 'pending' | 'approved' | 'rejected' | 'expired'
+/** "" while the approval is open (the Go server's value), then how it ended. */
+export type ApprovalDecision = '' | 'approved' | 'rejected' | 'expired' | 'withdrawn'
 
 /**
  * The open or last approval of a run. The first five fields are the command-line tool's shape (`runApproval`);
@@ -697,6 +706,8 @@ export interface Approval {
   decision: ApprovalDecision
   comment: string
   requested_by_name?: string
+  manifest_id?: string
+  decided_by?: number | null
   decided_by_name?: string | null
   decided_at?: string | null
 }
@@ -715,11 +726,11 @@ export interface RunDetail extends RunBase {
   /** Names of the locks the run holds. */
   locks: string[]
   summary: RunSummaryCounts
-  /** Assumed: what was chosen, so Plan again and Re-run can repeat it. */
+  /** Assumed, not sent by Go: what was chosen. The screens rebuild it from the legs when absent. */
   selection?: Selection
-  /** Assumed: null or absent when the run never asked for approval. */
+  /** null when the run never asked for approval. */
   approval?: Approval | null
-  /** Assumed: who cancelled the run; absent until the API sends it. */
+  /** Assumed, not sent by Go: who cancelled the run; absent until the API sends it. */
   cancelled_by_name?: string
 }
 
@@ -846,7 +857,7 @@ export interface RejectRequest {
   comment?: string
 }
 
-// ---- Versions (Plan 5 Task 4, assumed) -------------------------------------------------
+// ---- Versions (Plan 5 Task 4) -------------------------------------------------
 
 export interface ImageVersion {
   tag: string
@@ -868,7 +879,7 @@ export interface JobVersions {
   groups: Record<string, GroupVersions>
 }
 
-// ---- The plan (Plan 5 Tasks 6 and 9, assumed) ---------------------------------------------
+// ---- The plan (Plan 5 Tasks 6 and 9) ---------------------------------------------
 
 /** 'unknown': the plan failed before it could tell. */
 export type ConfigChange = 'new' | 'changed' | 'unchanged' | 'unknown'
@@ -941,7 +952,7 @@ export interface Plan {
   restore_of?: number
 }
 
-// ---- Approvals (Plan 7 Task 2, assumed) -----------------------------------------------------
+// ---- Approvals (Plan 7 Task 2) -----------------------------------------------------
 
 /** A row of GET /approvals. The names follow the command-line tool (`approvalItem`); the optional ones are web extras. */
 export interface ApprovalItem {
@@ -964,7 +975,7 @@ export interface ApprovalsResponse {
   approvals: ApprovalItem[]
 }
 
-// ---- Freezes (Plan 7 Task 3, assumed) --------------------------------------------------------
+// ---- Freezes (Plan 7 Task 3) --------------------------------------------------------
 
 export interface Freeze {
   id: number
@@ -994,7 +1005,7 @@ export interface CreateFreezeRequest {
   expires_at: string
 }
 
-// ---- Slack (Plan 7 Task 5, assumed) ------------------------------------------------------------
+// ---- Slack (Plan 7 Task 5) ------------------------------------------------------------
 
 export interface SlackSettings {
   token_set: boolean
@@ -1044,7 +1055,8 @@ export interface OverviewEnvironment {
   environment: string
   label: string
   run_id: number | null
-  state: RunState
+  /** "" (with run_id null) for an environment that never had a run. */
+  state: RunState | ''
   job: string
   at: string | null
 }

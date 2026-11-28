@@ -7,9 +7,8 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/spec"
 )
 
-// The shapes below are the JSON of the server's /api/v1 routes. Where a route
-// is not merged yet (versions, plan, restore, approvals, running versions) the
-// field names follow the plans: snake_case versions of the Go types.
+// The shapes below are the JSON of the server's /api/v1 routes (internal/api),
+// reduced to the fields the command-line tool uses.
 
 type jobSummary struct {
 	ID             int64    `json:"id"`

@@ -3,13 +3,12 @@ package awstest
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -91,11 +90,11 @@ func (a *Account) KMSKey(region string) (keyID string) {
 	return aws.ToString(out.KeyMetadata.KeyId)
 }
 
-// imageDir is test/awstest/image, found relative to this source file.
-func imageDir() string {
-	_, file, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(file), "image")
-}
+// imageDockerfile builds the test image. It is sent on standard input with no
+// build context, so the helpers also work from a binary run away from the sources.
+//
+//go:embed image/Dockerfile
+var imageDockerfile string
 
 // localImage builds the test image once per marker in this World and returns
 // its image id. The marker is written into the image, so different markers
@@ -120,7 +119,7 @@ func (w *World) buildImage(marker, exitCode string) string {
 		w.images = map[string]string{}
 	}
 	hold := "yumdrake-awstest:hold-" + RandomSuffix() + RandomSuffix()
-	id := w.dockerRun("build", "-q", "--build-arg", "MARKER="+marker, "--build-arg", "EXIT_CODE="+exitCode, "-t", hold, imageDir())
+	id := w.dockerRunWithInput(imageDockerfile, "build", "-q", "--build-arg", "MARKER="+marker, "--build-arg", "EXIT_CODE="+exitCode, "-t", hold, "-")
 	w.t.Cleanup(func() { _ = exec.Command("docker", "rmi", hold).Run() }) //nolint:gosec // test helper: arguments are ours
 	w.images[cacheKey] = id
 	return id
@@ -208,6 +207,17 @@ func (a *Account) RepoCrashingImage(region, name, tag, marker string, exitCode i
 // of one task running image, and waits until the task is running.
 func (a *Account) Service(region, cluster, name, image string) (serviceARN, taskDefARN string) {
 	a.w.t.Helper()
+	// Cleanup runs even when a later step fails. The containers of the tasks
+	// this call caused are found through the cluster and removed by task id.
+	client := ecs.NewFromConfig(a.AWSConfig(region))
+	a.w.t.Cleanup(func() { a.cleanupCluster(client, cluster, name) })
+	return a.createService(region, cluster, name, image)
+}
+
+// createService is Service without the cleanup: the demo and the browser test
+// stack leave their services running until their own teardown.
+func (a *Account) createService(region, cluster, name, image string) (serviceARN, taskDefARN string) {
+	a.w.t.Helper()
 	ctx := context.Background()
 	client := ecs.NewFromConfig(a.AWSConfig(region))
 	subnet := a.subnet(region)
@@ -215,9 +225,6 @@ func (a *Account) Service(region, cluster, name, image string) (serviceARN, task
 	if _, err := client.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String(cluster)}); err != nil {
 		a.w.t.Fatalf("awstest: CreateCluster %s: %v", cluster, err)
 	}
-	// Cleanup runs even when a later step fails. The containers of the tasks
-	// this call caused are found through the cluster and removed by task id.
-	a.w.t.Cleanup(func() { a.cleanupCluster(client, cluster, name) })
 
 	td, err := client.RegisterTaskDefinition(ctx, &ecs.RegisterTaskDefinitionInput{
 		Family:                  aws.String(name),

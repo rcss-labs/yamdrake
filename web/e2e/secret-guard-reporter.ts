@@ -16,12 +16,16 @@ export default class SecretGuardReporter implements Reporter {
   }
 
   async onEnd(): Promise<{ status: FullResult['status'] } | undefined> {
-    const password = process.env.YUMDRAKE_E2E_PASSWORD ?? ''
-    if (password === '') return undefined
+    // The password of the fake-step stack, and the three of the stack that runs against Floci (aws-runs.spec.ts).
+    const names = ['YUMDRAKE_E2E_PASSWORD', 'YUMDRAKE_E2E_AWS_ADMIN_PASSWORD', 'YUMDRAKE_E2E_AWS_DEPLOYER_PASSWORD', 'YUMDRAKE_E2E_AWS_APPROVER_PASSWORD']
     const hits: string[] = []
-    for (const dir of ['playwright-report', 'test-results']) scanTree(resolve(this.root, dir), password, hits)
+    for (const name of names) {
+      const password = process.env[name] ?? ''
+      if (password === '') continue
+      for (const dir of ['playwright-report', 'test-results']) scanTree(resolve(this.root, dir), password, hits)
+    }
     if (hits.length === 0) return undefined
-    console.error(`secret guard: the sign-in password was found in ${hits.length} place(s):\n  ${hits.join('\n  ')}`)
+    console.error(`secret guard: a sign-in password was found in ${hits.length} place(s):\n  ${hits.join('\n  ')}`)
     return { status: 'failed' }
   }
 }

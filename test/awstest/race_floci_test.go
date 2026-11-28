@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -40,8 +41,10 @@ func TestRepoDigestsSurviveConcurrentRebuilds(t *testing.T) {
 				return
 			default:
 			}
-			_ = exec.Command("docker", "build", "-q", "--no-cache", "--build-arg", "MARKER=base", //nolint:gosec // test helper
-				"-t", localTag("base"), imageDir()).Run()
+			rebuild := exec.Command("docker", "build", "-q", "--no-cache", "--build-arg", "MARKER=base", //nolint:gosec // test helper
+				"-t", localTag("base"), "-")
+			rebuild.Stdin = strings.NewReader(imageDockerfile)
+			_ = rebuild.Run()
 		}
 	}()
 	defer func() { close(stop); wg.Wait() }()

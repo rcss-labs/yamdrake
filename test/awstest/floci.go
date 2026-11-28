@@ -35,12 +35,21 @@ import (
 // EndpointVariable names the environment variable that holds the emulator URL.
 const EndpointVariable = "YUMDRAKE_TEST_AWS_ENDPOINT"
 
+// TB is the part of testing.TB the helpers use. *testing.T satisfies it; the
+// seeding programs (test/awstest/cmd/seed, the web stack helper, the demo)
+// pass their own, which reports a failure as an error instead of a test failure.
+type TB interface {
+	Helper()
+	Fatalf(format string, args ...any)
+	Cleanup(func())
+}
+
 // World is one test's view of the shared Floci.
 type World struct {
 	// Endpoint is the emulator URL, for example http://localhost:4577.
 	Endpoint string
 
-	t *testing.T
+	t TB
 
 	imagesMu sync.Mutex
 	images   map[string]string // marker -> local image id
@@ -54,11 +63,18 @@ func New(t *testing.T) *World {
 	if endpoint == "" {
 		t.Fatalf("%s is not set: start Floci (make dev-up) and run make test-floci", EndpointVariable)
 	}
+	return NewWorld(endpoint, t)
+}
+
+// NewWorld returns a World for the emulator at endpoint, reporting failures to tb.
+func NewWorld(endpoint string, tb TB) *World {
+	tb.Helper()
+	endpoint = strings.TrimRight(endpoint, "/")
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Host == "" {
-		t.Fatalf("%s is not a valid URL", EndpointVariable)
+		tb.Fatalf("the emulator endpoint %q is not a valid URL", endpoint)
 	}
-	return &World{Endpoint: endpoint, t: t}
+	return &World{Endpoint: endpoint, t: tb}
 }
 
 // randomAccounts remembers the account ids handed out by RandomAccountID: an
@@ -216,10 +232,16 @@ func containerIDs(filters ...string) []string {
 }
 
 // dockerRun runs docker and fails the test with its output on error.
-func (w *World) dockerRun(args ...string) string {
+func (w *World) dockerRun(args ...string) string { return w.dockerRunWithInput("", args...) }
+
+// dockerRunWithInput is dockerRun with input on standard input.
+func (w *World) dockerRunWithInput(input string, args ...string) string {
 	w.t.Helper()
 	var buf bytes.Buffer
 	cmd := exec.Command("docker", args...) //nolint:gosec // test helper: arguments are ours
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	if err := cmd.Run(); err != nil {
 		w.t.Fatalf("awstest: docker %s: %v\n%s", args[0], err, buf.String())

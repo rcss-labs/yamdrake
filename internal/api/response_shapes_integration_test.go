@@ -105,6 +105,8 @@ var notAListResponse = map[string]bool{
 	"GET /api/v1/admin/inventory-source": true,
 	// slackResponse holds a bool and two nullable scalars: no slice fields.
 	"GET /api/v1/admin/slack": true,
+	// overviewResponse is checked for [] with no runs by TestOverviewWithNoRunsHasEmptyListsAndNullFigures.
+	"GET /api/v1/analytics/overview": true,
 	// The run routes need runs, so TestGetRunIncludesFailureSummary,
 	// TestListRunsFilters and TestLogEndpointFiltersPagesAndNeedsViewLogs check
 	// their lists with nullSlices; the event stream is not JSON.

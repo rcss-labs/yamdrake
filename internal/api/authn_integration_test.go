@@ -394,6 +394,7 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		"GET /api/v1/admin/slack":                       auth.ManageConnections,
 		"PUT /api/v1/admin/slack":                       auth.ManageConnections,
 		"POST /api/v1/admin/slack/test":                 auth.ManageConnections,
+		"GET /api/v1/analytics/overview":                auth.View,
 	}
 	if len(routes) != len(expected) {
 		t.Fatalf("routes() has %d routes, the expected table %d", len(routes), len(expected))

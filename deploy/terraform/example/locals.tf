@@ -25,7 +25,7 @@ locals {
 
   # Encryption-context purposes (the application passes {"purpose": <name>}).
   # Split by who may decrypt: see kms.tf and iam.tf.
-  orchestrator_purposes = ["aws-discovery", "github-connection", "slack", "saml-sp-key"]
+  orchestrator_purposes = ["aws-discovery", "github-connection", "slack", "saml-sp-key", "saml-relay-key"]
   runner_secret_purposes = [
     "aws-deploy",        # deployment credentials: the runner only
     "github-connection", # the runner reads env files from GitHub too

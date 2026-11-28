@@ -91,7 +91,7 @@ or do not emit metrics, so match `image_version` to the plan you have.
   `sslmode=require`; use `verify-full` if you add the RDS certificate bundle to
   the image.
 - **Encryption purposes.** The purposes in `locals.tf` (`aws-discovery`,
-  `aws-deploy`, `github-connection`, `slack`, `saml-sp-key`) are the ones the
+  `aws-deploy`, `github-connection`, `slack`, `saml-sp-key`, `saml-relay-key`) are the ones the
   plans name. If a later version adds a purpose, add it to the right list there.
 - **Load balancer.** The idle timeout is 300 seconds so the live event stream
   (Server-Sent Events) is not cut between events. Keep it above the heartbeat

@@ -15,7 +15,7 @@ no action, resource or principal wildcard.
 |---|---|---|---|---|---|
 | 1 | all three roles | trust (`tasks_trust`) | `sts:AssumeRole` | principal `ecs-tasks.amazonaws.com`, `aws:SourceAccount` equals this account | none |
 | 2 | orchestrator task | AssumeDiscoveryRolesOnly | `sts:AssumeRole` | `var.discovery_role_arns` (validated: full ARNs, no wildcard; statement absent when empty) | none |
-| 3 | orchestrator task | UseOwnSecretsPurposes | `kms:Decrypt`, `kms:Encrypt` | secrets key; condition `purpose` in `aws-discovery`, `github-connection`, `slack`, `saml-sp-key` | none |
+| 3 | orchestrator task | UseOwnSecretsPurposes | `kms:Decrypt`, `kms:Encrypt` | secrets key; condition `purpose` in `aws-discovery`, `github-connection`, `slack`, `saml-sp-key`, `saml-relay-key` | none |
 | 4 | orchestrator task | EncryptDeploymentSecretsNeverDecrypt | `kms:Encrypt` | secrets key; condition `purpose` = `aws-deploy` | none |
 | 5 | orchestrator task | ReadAndWriteLogArchive | `s3:GetObject`, `s3:PutObject` | `<log bucket>/*` | `/*`: S3 object ARNs end in `/*`; it is every object of this one bucket |
 | 6 | orchestrator task | ListLogArchive | `s3:ListBucket` | log bucket | none |

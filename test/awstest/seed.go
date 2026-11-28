@@ -3,8 +3,6 @@ package awstest
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -99,26 +96,28 @@ func imageDir() string {
 	return filepath.Join(filepath.Dir(file), "image")
 }
 
-var (
-	builtMu sync.Mutex
-	built   = map[string]string{} // marker -> local image reference
-)
-
-// localImage builds the test image once per marker in this process and returns
-// its local reference. The marker is written into the image, so different
-// markers give different digests.
+// localImage builds the test image once per marker in this World and returns
+// its image id. The marker is written into the image, so different markers
+// give different digests.
+//
+// The image is held by a local tag unique to this World, and callers push by
+// id. A name shared with other tests or processes can be rebuilt to a different
+// image id between two pushes of one Repo call, and the old image deleted.
 func (w *World) localImage(marker string) string {
 	w.t.Helper()
-	builtMu.Lock()
-	defer builtMu.Unlock()
-	if ref, ok := built[marker]; ok {
-		return ref
+	w.imagesMu.Lock()
+	defer w.imagesMu.Unlock()
+	if id, ok := w.images[marker]; ok {
+		return id
 	}
-	sum := sha256.Sum256([]byte(marker))
-	ref := "yumdrake-awstest:" + hex.EncodeToString(sum[:6])
-	w.dockerRun("build", "-q", "--build-arg", "MARKER="+marker, "-t", ref, imageDir())
-	built[marker] = ref
-	return ref
+	if w.images == nil {
+		w.images = map[string]string{}
+	}
+	hold := "yumdrake-awstest:hold-" + RandomSuffix() + RandomSuffix()
+	id := w.dockerRun("build", "-q", "--build-arg", "MARKER="+marker, "-t", hold, imageDir())
+	w.t.Cleanup(func() { _ = exec.Command("docker", "rmi", hold).Run() }) //nolint:gosec // test helper: arguments are ours
+	w.images[marker] = id
+	return id
 }
 
 // registryHost is the host:port to docker push to. Floci serves its registry

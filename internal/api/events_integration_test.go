@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -450,5 +452,95 @@ func TestEventsHandlerStopsOnClientDisconnect(t *testing.T) {
 			}
 			t.Fatal("the handler or its wake-up subscriptions still run 1s after the client disconnected")
 		})
+	}
+}
+
+// TestEventsOfAHugeLogAreWrittenPageByPageInBoundedMemory sends 50,000 lines
+// through the stream handler. The first round used to read the whole log into
+// one buffer before the first byte went out; the handler must hold one page at
+// a time, so the heap while streaming stays near its starting size however long
+// the log is.
+func TestEventsOfAHugeLogAreWrittenPageByPageInBoundedMemory(t *testing.T) {
+	f := newRunFixture(t)
+	server := f.streamServer(func(d *Deps) {
+		d.StreamBatchLines = 200
+		d.StreamPollInterval = time.Second
+	})
+	id := f.newRun(f.jobID, devEnvironment, "s1")
+	f.setRun(id, "running")
+	legs, _ := store.LegsOfRun(context.Background(), f.pool, id)
+	const (
+		perLeg    = 25000
+		textBytes = 400
+	)
+	for _, leg := range []int64{legs[1].ID, legs[2].ID} {
+		f.exec(`INSERT INTO log_lines (run_id, leg_id, seq, at, level, text)
+			SELECT $1, $2, g, now() + g * interval '1 millisecond', 'info', repeat('x', $3) || g::text
+			FROM generate_series(1, $4) g`, id, leg, textBytes, perLeg)
+	}
+	f.setRun(id, "succeeded") // final: the stream sends everything and ends
+
+	// Keep garbage tight so the heap reflects what the handler holds.
+	old := debug.SetGCPercent(10)
+	defer debug.SetGCPercent(old)
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+	var peak atomic.Uint64
+	stopSampling := make(chan struct{})
+	samplerDone := make(chan struct{})
+	go func() {
+		defer close(samplerDone)
+		for {
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			for p := peak.Load(); m.HeapAlloc > p && !peak.CompareAndSwap(p, m.HeapAlloc); p = peak.Load() {
+			}
+			select {
+			case <-stopSampling:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}()
+
+	req, _ := http.NewRequest("GET", server.URL+runPath(id, "/events"), nil)
+	req.Header.Set("Authorization", "Bearer "+f.adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// Count the lines without keeping the stream: each log line carries one "seq".
+	const marker = `"seq":`
+	counted := 0
+	buf := make([]byte, 32<<10)
+	tail, last := "", ""
+	for {
+		n, readErr := resp.Body.Read(buf)
+		chunk := tail + string(buf[:n])
+		counted += strings.Count(chunk, marker)
+		// A marker lies in the chunk or across its end; the tail is shorter than
+		// a marker, so nothing is counted twice.
+		tail = chunk[max(0, len(chunk)-(len(marker)-1)):]
+		last = (last + string(buf[:n]))[max(0, len(last)+n-16384):]
+		if readErr != nil {
+			break
+		}
+	}
+	ended := strings.Contains(last, "event: end")
+	close(stopSampling)
+	<-samplerDone
+
+	if want := 2*perLeg + 1; counted != want { // plus the run-level creation line
+		t.Fatalf("stream carried %d lines, want %d", counted, want)
+	}
+	if !ended {
+		t.Fatalf("the stream never sent end")
+	}
+	growth := int64(peak.Load()) - int64(base.HeapAlloc)
+	const bound = 24 << 20 // the log's JSON is over 20 MB; one page is about 100 KB
+	if growth > bound {
+		t.Fatalf("heap grew by %d MB while streaming %d lines, want under %d MB: the handler holds more than a page", growth>>20, counted, bound>>20)
 	}
 }

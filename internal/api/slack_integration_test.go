@@ -57,8 +57,8 @@ func TestSlackSettingsNeverReturnToken(t *testing.T) {
 	ctx := context.Background()
 
 	got := h.mustDo("GET", "/api/v1/admin/slack", nil, http.StatusOK)
-	if got["configured"] != false || got["set_at"] != nil || got["set_by"] != nil {
-		t.Fatalf("before any token: %v, want configured false with null set_at and set_by", got)
+	if got["token_set"] != false || got["set_at"] != nil || got["set_by_name"] != "" {
+		t.Fatalf("before any token: %v, want token_set false with null set_at and empty set_by_name", got)
 	}
 
 	for _, bad := range []any{map[string]any{"token": ""}, map[string]any{"token": "   "}, map[string]any{}} {
@@ -66,22 +66,22 @@ func TestSlackSettingsNeverReturnToken(t *testing.T) {
 			t.Errorf("PUT %v = %d %v, want 400 invalid", bad, code, body)
 		}
 	}
-	if got := h.mustDo("GET", "/api/v1/admin/slack", nil, http.StatusOK); got["configured"] != false {
+	if got := h.mustDo("GET", "/api/v1/admin/slack", nil, http.StatusOK); got["token_set"] != false {
 		t.Fatalf("a refused PUT stored something: %v", got)
 	}
 
 	put := h.mustDo("PUT", "/api/v1/admin/slack", map[string]any{"token": slackFakeToken}, http.StatusOK)
-	if put["configured"] != true || put["set_by"] != float64(h.admin.ID) {
-		t.Fatalf("PUT = %v, want configured true, set_by the admin", put)
+	if put["token_set"] != true || put["set_by_name"] != h.admin.Name {
+		t.Fatalf("PUT = %v, want token_set true, set_by_name the admin", put)
 	}
 	at, _ := put["set_at"].(string)
 	if parsed, err := time.Parse(time.RFC3339, at); err != nil || time.Since(parsed) > time.Minute {
 		t.Errorf("set_at = %v, want a recent RFC 3339 time", put["set_at"])
 	}
 	if len(put) != 3 {
-		t.Errorf("PUT answered with keys %v, want exactly configured, set_at and set_by", put)
+		t.Errorf("PUT answered with keys %v, want exactly token_set, set_at and set_by_name", put)
 	}
-	if again := h.mustDo("GET", "/api/v1/admin/slack", nil, http.StatusOK); again["configured"] != true || again["set_by"] != float64(h.admin.ID) || again["set_at"] != put["set_at"] {
+	if again := h.mustDo("GET", "/api/v1/admin/slack", nil, http.StatusOK); again["token_set"] != true || again["set_by_name"] != h.admin.Name || again["set_at"] != put["set_at"] {
 		t.Errorf("GET after PUT = %v, want the same as the PUT answer %v", again, put)
 	}
 
@@ -128,8 +128,8 @@ func TestSlackTestEndpointReportsCode(t *testing.T) {
 		t.Errorf("empty channel: %d %v, want 400 invalid", code, body)
 	}
 
-	if got := h.mustDo("POST", "/api/v1/admin/slack/test", map[string]any{"channel": "#deploys"}, http.StatusOK); len(got) != 1 || got["ok"] != true {
-		t.Fatalf("success = %v, want exactly {ok: true}", got)
+	if got := h.mustDo("POST", "/api/v1/admin/slack/test", map[string]any{"channel": "#deploys"}, http.StatusOK); len(got) != 2 || got["ok"] != true || got["code"] != "" {
+		t.Fatalf("success = %v, want exactly {ok: true, code: \"\"}", got)
 	}
 	if len(spy.posts) != 1 || spy.auth[0] != "Bearer "+slackFakeToken || spy.posts[0]["channel"] != "#deploys" || spy.posts[0]["text"] != "Yumdrake can post here." {
 		t.Fatalf("Slack received %v with %v, want the text to #deploys using the stored token", spy.posts, spy.auth)
@@ -137,17 +137,17 @@ func TestSlackTestEndpointReportsCode(t *testing.T) {
 
 	// Slack's code comes back; a hostile reply cannot carry the token out.
 	spy.setReply(`{"ok":false,"error":"channel_not_found","detail":"` + slackFakeToken + `"}`)
-	if got := h.mustDo("POST", "/api/v1/admin/slack/test", map[string]any{"channel": "#nope"}, http.StatusOK); len(got) != 2 || got["ok"] != false || got["error"] != "channel_not_found" {
-		t.Fatalf("failure = %v, want {ok: false, error: channel_not_found}", got)
+	if got := h.mustDo("POST", "/api/v1/admin/slack/test", map[string]any{"channel": "#nope"}, http.StatusOK); len(got) != 2 || got["ok"] != false || got["code"] != "channel_not_found" {
+		t.Fatalf("failure = %v, want {ok: false, code: channel_not_found}", got)
 	}
 	spy.setReply(`not slack`)
-	if got := h.mustDo("POST", "/api/v1/admin/slack/test", map[string]any{"channel": "#x"}, http.StatusOK); got["ok"] != false || got["error"] != "invalid_response" {
+	if got := h.mustDo("POST", "/api/v1/admin/slack/test", map[string]any{"channel": "#x"}, http.StatusOK); got["ok"] != false || got["code"] != "invalid_response" {
 		t.Fatalf("garbage reply = %v, want ok false and invalid_response", got)
 	}
 
 	// A Slack that cannot be reached is a failure to report, not a server error.
 	spy.srv.Close()
-	if got := h.mustDo("POST", "/api/v1/admin/slack/test", map[string]any{"channel": "#x"}, http.StatusOK); got["ok"] != false || got["error"] != "transport" {
+	if got := h.mustDo("POST", "/api/v1/admin/slack/test", map[string]any{"channel": "#x"}, http.StatusOK); got["ok"] != false || got["code"] != "transport" {
 		t.Fatalf("unreachable Slack = %v, want ok false and transport", got)
 	}
 

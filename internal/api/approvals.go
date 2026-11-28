@@ -13,35 +13,68 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
-// approvalView is the run's open approval, or its latest one.
-type approvalView struct {
-	RequestedBy int64      `json:"requested_by"`
-	RequestedAt time.Time  `json:"requested_at"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	ManifestID  string     `json:"manifest_id"`
-	Decision    string     `json:"decision"` // "" while open, then approved | rejected | expired
-	DecidedBy   *int64     `json:"decided_by"`
-	DecidedAt   *time.Time `json:"decided_at"`
-	Comment     string     `json:"comment"`
+// personName is a person's display name: their name, else their email. A user
+// who no longer exists has "". names caches lookups for one response.
+func (s *server) personName(ctx context.Context, names map[int64]string, id int64) (string, error) {
+	if name, known := names[id]; known {
+		return name, nil
+	}
+	user, err := store.UserByID(ctx, s.Pool, id)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return "", err
+	}
+	name := user.Name
+	if name == "" {
+		name = user.Email
+	}
+	names[id] = name
+	return name, nil
 }
 
-func shapeApproval(a store.Approval) *approvalView {
-	return &approvalView{
-		RequestedBy: a.RequestedBy, RequestedAt: a.RequestedAt, ExpiresAt: a.ExpiresAt, ManifestID: a.ManifestID,
-		Decision: a.Decision, DecidedBy: a.DecidedBy, DecidedAt: a.DecidedAt, Comment: a.Comment,
+// approvalView is the run's open approval, or its latest one.
+type approvalView struct {
+	RequestedBy     int64      `json:"requested_by"`
+	RequestedByName string     `json:"requested_by_name"`
+	RequestedAt     time.Time  `json:"requested_at"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	ManifestID      string     `json:"manifest_id"`
+	Decision        string     `json:"decision"` // "" while open, then approved | rejected | expired | withdrawn
+	DecidedBy       *int64     `json:"decided_by"`
+	DecidedByName   *string    `json:"decided_by_name"`
+	DecidedAt       *time.Time `json:"decided_at"`
+	Comment         string     `json:"comment"`
+}
+
+func (s *server) shapeApproval(ctx context.Context, names map[int64]string, a store.Approval) (*approvalView, error) {
+	requester, err := s.personName(ctx, names, a.RequestedBy)
+	if err != nil {
+		return nil, err
 	}
+	view := &approvalView{
+		RequestedBy: a.RequestedBy, RequestedByName: requester, RequestedAt: a.RequestedAt, ExpiresAt: a.ExpiresAt,
+		ManifestID: a.ManifestID, Decision: a.Decision, DecidedBy: a.DecidedBy, DecidedAt: a.DecidedAt, Comment: a.Comment,
+	}
+	if a.DecidedBy != nil {
+		decider, err := s.personName(ctx, names, *a.DecidedBy)
+		if err != nil {
+			return nil, err
+		}
+		view.DecidedByName = &decider
+	}
+	return view, nil
 }
 
 // approvalItemView is one run waiting for approval, as the approvals page shows it.
 type approvalItemView struct {
-	RunID       int64  `json:"run_id"`
-	JobID       string `json:"job_id"`
-	JobTitle    string `json:"job_title"`
-	Environment string `json:"environment"`
-	Label       string `json:"label"`
-	Versions    string `json:"versions"`
-	ManifestID  string `json:"manifest_id"`
-	RequestedBy int64  `json:"requested_by"`
+	RunID       int64                 `json:"run_id"`
+	JobID       string                `json:"job_id"`
+	JobName     string                `json:"job_name"`
+	JobSourceID int64                 `json:"job_source_id"`
+	Environment string                `json:"environment"`
+	Label       string                `json:"label"`
+	Versions    []engine.VersionEntry `json:"versions"`
+	ManifestID  string                `json:"manifest_id"`
+	RequestedBy int64                 `json:"requested_by"`
 	// RequestedByName is the requester's name, or their email when they have none.
 	RequestedByName string    `json:"requested_by_name"`
 	RequestedAt     time.Time `json:"requested_at"`
@@ -94,23 +127,17 @@ func (s *server) listApprovals(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		var job spec.Job
-		_ = json.Unmarshal(run.JobSnapshot, &job) // a snapshot that cannot be read just has no title
-		name, known := requesterNames[a.RequestedBy]
-		if !known {
-			requester, err := store.UserByID(r.Context(), s.Pool, a.RequestedBy)
-			if err != nil && !errors.Is(err, store.ErrNotFound) {
-				s.internalError(w, r, err)
-				return
-			}
-			if name = requester.Name; name == "" {
-				name = requester.Email
-			}
-			requesterNames[a.RequestedBy] = name
+		_ = json.Unmarshal(run.JobSnapshot, &job) // a snapshot that cannot be read just has no name
+		name, err := s.personName(r.Context(), requesterNames, a.RequestedBy)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
 		}
 		reason := approvalApproverReason(principal, run)
 		items = append(items, approvalItemView{
-			RunID: run.ID, JobID: run.JobID, JobTitle: job.Title, Environment: run.Environment, Label: run.Label,
-			Versions: engine.VersionsSummary(run), ManifestID: a.ManifestID, RequestedBy: a.RequestedBy, RequestedByName: name,
+			RunID: run.ID, JobID: run.JobID, JobName: job.Title, JobSourceID: run.JobSourceID,
+			Environment: run.Environment, Label: run.Label,
+			Versions: engine.VersionEntries(run), ManifestID: a.ManifestID, RequestedBy: a.RequestedBy, RequestedByName: name,
 			RequestedAt: a.RequestedAt, ExpiresAt: a.ExpiresAt, CanApprove: reason == "", Reason: reason,
 		})
 	}

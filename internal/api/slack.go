@@ -35,9 +35,17 @@ func (s *server) slackRoutes() []routeDef {
 // slackResponse says whether a Slack token is stored. The token itself is
 // never part of any response.
 type slackResponse struct {
-	Configured bool       `json:"configured"`
-	SetAt      *time.Time `json:"set_at"`
-	SetBy      *int64     `json:"set_by"`
+	TokenSet bool       `json:"token_set"`
+	SetAt    *time.Time `json:"set_at"`
+	// SetByName is who stored the token: their name, else their email; "" when unset.
+	SetByName string `json:"set_by_name"`
+}
+
+// slackTestResponse is Slack's answer to a test post. Code is Slack's error
+// code when the post failed, and "" when it did not.
+type slackTestResponse struct {
+	OK   bool   `json:"ok"`
+	Code string `json:"code"`
 }
 
 func (s *server) slackView(ctx context.Context) (slackResponse, error) {
@@ -45,10 +53,17 @@ func (s *server) slackView(ctx context.Context) (slackResponse, error) {
 	if err != nil {
 		return slackResponse{}, err
 	}
-	out := slackResponse{Configured: status.Configured, SetBy: status.SetBy}
+	out := slackResponse{TokenSet: status.Configured}
 	if status.SetAt != nil {
 		at := status.SetAt.UTC()
 		out.SetAt = &at
+	}
+	if status.SetBy != nil {
+		setBy, err := s.personName(ctx, map[int64]string{}, *status.SetBy)
+		if err != nil {
+			return slackResponse{}, err
+		}
+		out.SetByName = setBy
 	}
 	return out, nil
 }
@@ -128,11 +143,11 @@ func (s *server) testSlack(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), slackTestTimeout)
 	defer cancel()
-	result := map[string]any{"ok": true}
+	result := slackTestResponse{OK: true}
 	detail := map[string]any{"channel": channel, "ok": true}
 	if postErr := slack.Post(ctx, token, channel, slackTestMessage); postErr != nil {
 		code := notify.ErrorCode(postErr)
-		result = map[string]any{"ok": false, "error": code}
+		result = slackTestResponse{OK: false, Code: code}
 		detail = map[string]any{"channel": channel, "ok": false, "error": code}
 	}
 	if err := s.recordAudit(r.Context(), s.Pool, r, audit.Event{Action: "slack.test", TargetType: "slack", TargetID: "slack", Detail: detail}); err != nil {

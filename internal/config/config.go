@@ -68,6 +68,10 @@ type Orchestrator struct {
 	// SweepInterval is how often the engine loop sweeps expired leases and
 	// advances every active run, whether or not a wake-up arrived.
 	SweepInterval time.Duration
+	// RunnerGoneAfter is how long a runner may stay silent before the queue
+	// and System health pages stop counting it (YUMDRAKE_RUNNER_GONE_AFTER,
+	// default 2m).
+	RunnerGoneAfter time.Duration
 	// SlackAPIURL is the Slack Web API base (YUMDRAKE_SLACK_API_URL, default
 	// https://slack.com/api); tests point it at a fake. NotifyInterval is how
 	// often the sender looks for due notifications (YUMDRAKE_NOTIFY_INTERVAL, 5s).
@@ -254,6 +258,7 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	cfg.LogArchiveInterval = l.duration("YUMDRAKE_LOG_ARCHIVE_INTERVAL", "1m")
 	cfg.LogArchiveAfter = l.duration("YUMDRAKE_LOG_ARCHIVE_AFTER", "1h")
 	cfg.SweepInterval = l.duration("YUMDRAKE_SWEEP_INTERVAL", "2s")
+	cfg.RunnerGoneAfter = l.duration("YUMDRAKE_RUNNER_GONE_AFTER", "2m")
 	cfg.SlackAPIURL = l.valueOr("YUMDRAKE_SLACK_API_URL", "https://slack.com/api")
 	if reason := validateHTTPURL(cfg.SlackAPIURL); reason != "" {
 		l.fail("YUMDRAKE_SLACK_API_URL", reason)

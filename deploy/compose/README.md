@@ -102,7 +102,7 @@ Everything Yumdrake keeps is on named volumes (project name `yumdrake-compose`, 
 
 | Volume | Service | Path in the container | Holds | Encrypted by Yumdrake |
 | --- | --- | --- | --- | --- |
-| `postgres-data` | postgres | `/var/lib/postgresql/data` | the database: runs, settings, connections | Stored connections only |
+| `postgres-data` | postgres | `/var/lib/postgresql` | the database: runs, settings, connections | Stored connections only |
 | `valkey-data` | valkey | `/data` | cache and wake-up signals | No (disposable) |
 | `artifacts` | runner (all replicas) | `/var/lib/yumdrake/artifacts` (`YUMDRAKE_ARTIFACT_DIR`) | config copies of deployments; deleted after 30 days | Yes |
 | `log-archive` | orchestrator | `/var/lib/yumdrake/log-archive` (`YUMDRAKE_LOG_ARCHIVE_DIR`) | archived run logs | Yes |

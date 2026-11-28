@@ -114,5 +114,5 @@ or do not emit metrics, so match `image_version` to the plan you have.
 `make tf-check` from the repository root runs `terraform fmt -check -recursive`
 and, in this directory and in `target-account/`, `terraform init -backend=false`
 and `terraform validate`. No credentials are needed. Nothing is planned or applied.
-Terraform 1.5.7 or later 1.x, and the AWS provider 5.100.x, are what it was
+Terraform 1.17.2 or later 1.x, and the AWS provider 6.74.x, are what it was
 checked with.

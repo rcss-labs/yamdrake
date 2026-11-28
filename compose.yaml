@@ -4,7 +4,7 @@
 # the development stack.
 services:
   postgres:
-    image: postgres:17.12-alpine
+    image: postgres:19.0-alpine3.24
     environment:
       POSTGRES_DB: yumdrake
       POSTGRES_USER: yumdrake
@@ -17,7 +17,7 @@ services:
       timeout: 3s
       retries: 30
   valkey:
-    image: valkey/valkey:8.1.12
+    image: valkey/valkey:9.2.1-alpine3.24
     ports:
       - "127.0.0.1:${YUMDRAKE_VALKEY_PORT:-6379}:6379"
     healthcheck:

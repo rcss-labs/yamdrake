@@ -15,11 +15,22 @@ See the [design spec](docs/superpowers/specs/2026-11-27-yumdrake-design.md).
 ## Local services
 
 ```sh
-make dev-up     # start PostgreSQL 17 and Valkey 8 and wait until healthy
+make dev-up     # start PostgreSQL 17, Valkey 8 and Floci and wait until healthy
 make dev-down   # stop them and delete their volumes
 ```
 
-PostgreSQL listens on `localhost:5432` (database, user and password `yumdrake`). Valkey listens on `localhost:6379`.
+PostgreSQL listens on `localhost:5432` (database, user and password `yumdrake`). Valkey listens on `localhost:6379`. Floci listens on `localhost:4577`.
+
+### Floci (local AWS)
+
+[Floci](https://floci.io) emulates AWS (STS, IAM, ECR, ECS, S3, KMS) for the tests that need it. It runs as the `floci` Compose service on `127.0.0.1:4577` (port 4566 is deliberately not published, because another Floci may own it). It mounts the Docker socket: ECS tasks and the ECR registry run as sibling containers named `floci-aws-*`, and they are not removed when Floci stops.
+
+```sh
+make test-floci    # run every test, including the ones tagged floci (needs make dev-up first)
+make floci-clean   # remove the floci-aws-* containers that our Floci created
+```
+
+`make test-floci` points the tests at `YUMDRAKE_TEST_AWS_ENDPOINT` (default `http://localhost:4577`). The helpers in `test/awstest` seed accounts, roles, buckets, images and services, and offer a proxy that records calls and injects failures. `make floci-clean` only removes containers attached to the network of the Floci that publishes the endpoint port, never another Floci's. Floci keeps its state in memory: restart it for a clean slate.
 
 ## Running the services locally
 
@@ -245,8 +256,10 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_TOKEN_SSO_MAX_AGE` | orchestrator | `168h` | Go duration of at least `1h`. How recent a SAML user's last SSO sign-in must be for their CLI tokens to work. |
 | `YUMDRAKE_SYNC_INTERVAL` | orchestrator | `60s` | Go duration of at least `10s`. |
 | `YUMDRAKE_GITHUB_API_URL` | orchestrator | `https://api.github.com` | An `http://` or `https://` URL. Overridden in tests. |
+| `YUMDRAKE_AWS_ENDPOINT_URL` | orchestrator, runner | empty (real AWS) | An `http://` or `https://` URL that all AWS calls go to, for a local emulator such as Floci. |
 | `YUMDRAKE_TEST_DATABASE_URL` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_DATABASE_URL`. Set by `make test-integration` and CI. |
 | `YUMDRAKE_TEST_VALKEY_ADDR` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_VALKEY_ADDR`. Set by `make test-integration` and CI. |
+| `YUMDRAKE_TEST_AWS_ENDPOINT` | Floci tests | none (required with `-tags floci`) | URL of Floci, `http://localhost:4577`. Set by `make test-floci`. |
 
 ## Validating YAML
 
@@ -279,4 +292,4 @@ kind: Service
 
 ## CI
 
-The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration, smoke and web jobs on pull requests and on pushes to `main`.
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration, floci, smoke and web jobs on pull requests and on pushes to `main`.

@@ -461,3 +461,40 @@ func TestValkeyKeyPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestAWSEndpointURLRules(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantVar bool // true means the value is rejected
+	}{
+		{"unset", "", false},
+		{"http", "http://localhost:4577", false},
+		{"https", "https://aws.example.com", false},
+		{"ftp", "ftp://example.com", true},
+		{"no host", "http://", true},
+		{"not a url", "::::", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := requiredEnv()
+			env["YUMDRAKE_AWS_ENDPOINT_URL"] = tc.value
+			orch, orchErr := LoadOrchestrator(envFrom(env))
+			run, runErr := LoadRunner(envFrom(env))
+			if tc.wantVar {
+				for _, err := range []error{orchErr, runErr} {
+					if err == nil || !strings.Contains(err.Error(), "YUMDRAKE_AWS_ENDPOINT_URL") {
+						t.Fatalf("error = %v, want it to name YUMDRAKE_AWS_ENDPOINT_URL", err)
+					}
+				}
+				return
+			}
+			if orchErr != nil || runErr != nil {
+				t.Fatalf("errors = %v, %v", orchErr, runErr)
+			}
+			if orch.AWS.EndpointURL != tc.value || run.AWS.EndpointURL != tc.value {
+				t.Errorf("AWS.EndpointURL = %q and %q, want %q", orch.AWS.EndpointURL, run.AWS.EndpointURL, tc.value)
+			}
+		})
+	}
+}

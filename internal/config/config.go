@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rcss-labs/yamdrake/internal/awsx"
 )
 
 // Common holds the settings shared by both service binaries.
@@ -22,6 +24,8 @@ type Common struct {
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	StartupTimeout  time.Duration
+	// AWS holds the deployment-wide AWS settings (YUMDRAKE_AWS_ENDPOINT_URL).
+	AWS awsx.Options
 
 	SecretSettings
 }
@@ -94,6 +98,13 @@ func (l *loader) loadCommon() Common {
 	c.ShutdownTimeout = l.duration("YUMDRAKE_SHUTDOWN_TIMEOUT", "20s")
 	c.StartupTimeout = l.duration("YUMDRAKE_STARTUP_TIMEOUT", "60s")
 	c.SecretSettings = l.loadSecretSettings()
+
+	c.AWS.EndpointURL = l.getenv("YUMDRAKE_AWS_ENDPOINT_URL")
+	if c.AWS.EndpointURL != "" {
+		if reason := validateHTTPURL(c.AWS.EndpointURL); reason != "" {
+			l.fail("YUMDRAKE_AWS_ENDPOINT_URL", reason)
+		}
+	}
 	return c
 }
 

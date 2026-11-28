@@ -21,10 +21,10 @@ const (
 	sourceRunID     = 40
 	webOldTaskDef   = "arn:aws:ecs:eu-west-1:111122223333:task-definition/web:4"
 	webOldDigest    = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-	sourceEnvKey    = "manifests/40/web/env/previous/web.env"
-	sourceTomlKey   = "manifests/40/web/toml/previous/web.toml"
+	sourceEnvKey    = "manifests/40/web/previous/env/web.env"
+	sourceTomlKey   = "manifests/40/web/previous/toml/web.toml"
 	restoredEnvKey  = "manifests/42/web/env/web.env"
-	currentEnvKey   = "manifests/42/web/env/previous/web.env"
+	currentEnvKey   = "manifests/42/web/previous/env/web.env"
 	didNotExistNote = "did not exist before run #40; left in place"
 )
 
@@ -170,7 +170,7 @@ func TestRestoreLeavesFilesThatDidNotExistBefore(t *testing.T) {
 		t.Errorf("toml item = %+v, want it named, without content, and unchanged", toml)
 	}
 	// Its destination is still read, so the plan records what is there.
-	if !toml.PreviousExists || toml.PreviousSHA256 != sha(tomlContent) || h.artifacts.items["manifests/42/web/toml/previous/web.toml"] == nil {
+	if !toml.PreviousExists || toml.PreviousSHA256 != sha(tomlContent) || h.artifacts.items["manifests/42/web/previous/toml/web.toml"] == nil {
 		t.Errorf("toml item = %+v, want the current destination recorded as previous", toml)
 	}
 	if len(m.Failed()) != 0 {

@@ -270,11 +270,11 @@ func (a *stubArtifacts) Put(_ context.Context, run int64, service, kind, name st
 	if a.fail != nil {
 		return "", "", a.fail
 	}
-	key := fmt.Sprintf("manifests/%d/%s/%s/", run, service, kind)
+	key := fmt.Sprintf("manifests/%d/%s/", run, service)
 	if previous {
 		key += "previous/"
 	}
-	key += name
+	key += kind + "/" + name
 	a.mu.Lock()
 	a.items[key] = append([]byte(nil), data...)
 	a.mu.Unlock()

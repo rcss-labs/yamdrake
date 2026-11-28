@@ -44,7 +44,7 @@ func TestCopyConfigAgainstFloci(t *testing.T) {
 		{"env", "web.env", "web.env", []byte("KEY_A=floci-new\nKEY_B=1\n")},
 		{"toml", "web.toml", "conf/web.toml", []byte("token = \"floci-toml\"\n")},
 	}
-	stored := artifacts.New(s3.NewFromConfig(acct.AWSConfig(region), func(o *s3.Options) { o.UsePathStyle = true }), artifactBucket, "")
+	stored := artifacts.NewS3(s3.NewFromConfig(acct.AWSConfig(region), func(o *s3.Options) { o.UsePathStyle = true }), artifactBucket, "")
 	var items []manifest.ConfigItem
 	for _, f := range files {
 		key, hash, err := stored.Put(ctx, 9002, "web", f.kind, f.name, false, f.content)

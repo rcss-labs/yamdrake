@@ -226,7 +226,7 @@ func newHarness() *harness {
 	envItem := manifest.ConfigItem{
 		Kind: "env", Name: "web.env", Source: "acme/config/web.env", Destination: destEnvURI,
 		SHA256: sha(envNew), ArtifactKey: "manifests/42/web/env/web.env", Size: int64(len(envNew)),
-		PreviousExists: true, PreviousSHA256: sha(envPrev), PreviousArtifactKey: "manifests/42/web/env/previous/web.env", Change: "changed",
+		PreviousExists: true, PreviousSHA256: sha(envPrev), PreviousArtifactKey: "manifests/42/web/previous/env/web.env", Change: "changed",
 	}
 	tomlItem := manifest.ConfigItem{
 		Kind: "toml", Name: "web.toml", Source: "s3://config-source/web.toml", Destination: destTomlURI,
@@ -336,7 +336,7 @@ func TestRevalidatePassesWhenNothingChanged(t *testing.T) {
 		}
 	}
 	// Artifact keys come from the manifest only.
-	want := []string{"manifests/42/web/env/previous/web.env", "manifests/42/web/env/web.env", "manifests/42/web/toml/web.toml"}
+	want := []string{"manifests/42/web/env/web.env", "manifests/42/web/previous/env/web.env", "manifests/42/web/toml/web.toml"}
 	got := append([]string(nil), h.artifacts.asked...)
 	sort.Strings(got)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -444,7 +444,7 @@ func TestImageDeletedSincePlanningFails(t *testing.T) {
 }
 
 func TestCorruptArtifactFails(t *testing.T) {
-	for _, name := range []string{"manifests/42/web/env/web.env", "manifests/42/web/env/previous/web.env"} {
+	for _, name := range []string{"manifests/42/web/env/web.env", "manifests/42/web/previous/env/web.env"} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness()
 			h.artifacts.items[name] = []byte("tampered\n")

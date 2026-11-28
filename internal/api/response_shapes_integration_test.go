@@ -102,6 +102,13 @@ var notAListResponse = map[string]bool{
 	"GET /api/v1/admin/sso": true,
 	// sourceRequest holds only three strings.
 	"GET /api/v1/admin/inventory-source": true,
+	// The run routes need runs, so TestGetRunIncludesFailureSummary,
+	// TestListRunsFilters and TestLogEndpointFiltersPagesAndNeedsViewLogs check
+	// their lists with nullSlices; the event stream is not JSON.
+	"GET /api/v1/runs":             true,
+	"GET /api/v1/runs/{id}":        true,
+	"GET /api/v1/runs/{id}/log":    true,
+	"GET /api/v1/runs/{id}/events": true,
 }
 
 // Every list a route returns is [] when empty, never null, on an empty

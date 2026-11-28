@@ -9,11 +9,14 @@ Usage: scripts/smoke.sh [-h]
 
 Builds and starts the Compose "app" profile (postgres, valkey, orchestrator,
 runner) under its own Compose project (yumdrake-smoke) on host ports that do
-not clash with `make dev-up`, checks that /readyz reports status "ok", that
-/api/v1/me answers 401 without credentials (sign-in is wired in), that / serves
-the embedded web application (200, text/html, the root element and the
-X-Frame-Options: DENY header) and that both service containers are healthy. Only the smoke project's containers and
-volumes are removed on exit, so a running development stack is untouched.
+not clash with `make dev-up`. The runner runs here, and only here, with
+YUMDRAKE_ENV=dev and YUMDRAKE_FAKE_STEPS=true. Checks that /readyz reports
+status "ok", that /api/v1/me answers 401 without credentials (sign-in is wired
+in), that / serves the embedded web application (200, text/html, the root
+element and the X-Frame-Options: DENY header), that both service containers
+are healthy and that the runner registered the fake steps. Only the smoke
+project's containers and volumes are removed on exit, so a running development
+stack is untouched.
 
 Environment (defaults): YUMDRAKE_SMOKE_ORCHESTRATOR_PORT=18080,
 YUMDRAKE_SMOKE_POSTGRES_PORT=15432, YUMDRAKE_SMOKE_VALKEY_PORT=16379.
@@ -55,6 +58,10 @@ orchestrator_port="${YUMDRAKE_SMOKE_ORCHESTRATOR_PORT:-18080}"
 export YUMDRAKE_ORCHESTRATOR_PORT="$orchestrator_port"
 export YUMDRAKE_POSTGRES_PORT="${YUMDRAKE_SMOKE_POSTGRES_PORT:-15432}"
 export YUMDRAKE_VALKEY_PORT="${YUMDRAKE_SMOKE_VALKEY_PORT:-16379}"
+# The smoke stack alone runs the runner with fake steps (dev environment);
+# compose.yaml keeps both off by default.
+export YUMDRAKE_RUNNER_ENV=dev
+export YUMDRAKE_RUNNER_FAKE_STEPS=true
 
 compose() {
 	docker compose -p "$project" --profile app "$@"
@@ -130,5 +137,12 @@ for service in orchestrator runner; do
 	fi
 	echo "smoke: $service is healthy"
 done
+
+echo "smoke: checking that the runner registered the fake steps"
+runner_logs="$(compose logs runner 2>&1 || true)"
+if ! grep -q 'fake steps are registered' <<<"$runner_logs"; then
+	echo "smoke: FAIL: the runner did not register the fake steps (YUMDRAKE_ENV=dev, YUMDRAKE_FAKE_STEPS=true)" >&2
+	exit 1
+fi
 
 echo "smoke: PASS"

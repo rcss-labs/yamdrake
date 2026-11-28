@@ -41,6 +41,9 @@ type World struct {
 	Endpoint string
 
 	t *testing.T
+
+	imagesMu sync.Mutex
+	images   map[string]string // marker -> local image id
 }
 
 // New returns a World for t. It fails the test when the endpoint variable is

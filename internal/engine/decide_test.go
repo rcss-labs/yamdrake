@@ -565,14 +565,16 @@ func TestDecideDoesNotMutateItsInput(t *testing.T) {
 	}
 }
 
-func TestCancelFlagsAQueuedLegThatWasAttemptedInsteadOfCancellingIt(t *testing.T) {
-	attempted := stepLeg(10, 1, "s1", "queued")
-	attempted.Attempt = 1
-	fresh := stepLeg(11, 1, "s2", "queued")
-	legs := withRevalidated(attempted, fresh, stepLeg(12, 2, "s1", "pending"))
+func TestCancelFlagsAQueuedLegWithAnIntendedOperationInsteadOfCancellingIt(t *testing.T) {
+	intended := stepLeg(10, 1, "s1", "queued")
+	intended.Attempt = 1
+	// Released after a claim, no operation: attempted, but nothing changed.
+	released := stepLeg(11, 1, "s2", "queued")
+	released.Attempt = 1
+	legs := withRevalidated(intended, released, stepLeg(12, 2, "s1", "pending"))
 
 	for _, state := range []string{"running", "cancelling"} {
-		d := Decide(View{Run: cancelled(run(state)), Legs: legs})
+		d := Decide(View{Run: cancelled(run(state)), Legs: legs, IntendedLegs: map[int64]bool{10: true}})
 		wantIDs(t, state+" CancelLegs", d.CancelLegs, 11, 12)
 		wantIDs(t, state+" MarkCancelRequested", d.MarkCancelRequested, 10)
 	}

@@ -1213,3 +1213,67 @@ func TestLegFailsWithAClearReasonWhenItsLogCannotBeStored(t *testing.T) {
 		t.Errorf("failure = %q / %q, want a clear log-storage reason", got.FailureShort, got.FailureDetail)
 	}
 }
+
+// A leg that an earlier runner claimed and released, or died on before its first
+// operation, has changed nothing: with a cancel requested it is settled as
+// cancelled without calling the executor, whatever its attempt count.
+func TestReleasedLegWithNoIntendedOperationIsNotExecutedAfterCancel(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	ctx := context.Background()
+	leg := h.addLeg("billing")
+	c, err := h.q.Claim(ctx, "gone")
+	if err != nil || c == nil {
+		t.Fatalf("Claim = %v, %v", c, err)
+	}
+	if err := h.q.Release(ctx, c.Leg.ID, c.Leg.Generation); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if err := store.FlagLegCancel(ctx, h.pool, leg.ID); err != nil {
+		t.Fatalf("FlagLegCancel: %v", err)
+	}
+	var executed atomic.Int32
+	rr := h.startRunner(h.q, runnerOptions{executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(context.Context, Env, queue.Claimed) queue.Outcome {
+			executed.Add(1)
+			return succeed(`{}`)
+		}),
+	}})
+	waitFor(t, "the leg to settle", func() bool { return h.leg(leg.ID).State == "cancelled" })
+	if err := rr.stop(t); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if n := executed.Load(); n != 0 {
+		t.Errorf("the executor ran %d times for a leg with no intended operation, want 0", n)
+	}
+}
+
+// When the log sink refuses lines the leg is stopped, but an executor that
+// answers unknown (it may have changed something) must not be downgraded to
+// failed: failed would release the run's locks over an uncertain change.
+func TestLogStorageFailureNeverDowngradesAnUnknownOutcome(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	leg := h.addLeg("billing")
+	sink := &recordingSink{failAfter: 3}
+	rr := h.startRunner(h.q, runnerOptions{sink: sink, executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			for i := 0; ; i++ {
+				select {
+				case <-ctx.Done():
+					return queue.Outcome{State: "unknown", FailureShort: "change may have been applied"}
+				case <-time.After(time.Millisecond):
+					env.Log("info", fmt.Sprintf("line %d", i))
+				}
+			}
+		}),
+	}})
+	waitFor(t, "the leg to settle", func() bool {
+		s := h.leg(leg.ID).State
+		return s != "queued" && s != "claimed" && s != "running"
+	})
+	_ = rr.stop(t)
+	if got := h.leg(leg.ID); got.State != "unknown" {
+		t.Fatalf("leg = %s (%s), want unknown: the executor said unknown and the log failure must not downgrade it", got.State, got.FailureShort)
+	}
+}

@@ -1195,3 +1195,37 @@ func TestRunHeldBackByTheEnvironmentLimitSaysSoAndClearsItWhenLegsAreQueued(t *t
 		t.Fatalf("B's leg is %s, want queued", got)
 	}
 }
+
+// A runner that claims a leg and releases it (shutdown, a failed start) or dies
+// before its first operation has changed nothing: the leg is queued with
+// attempt 1 and no intended operation. Cancel settles it directly; flagging it
+// would let the next runner run the executor, which deploys.
+func TestCancelSettlesAReleasedLegThatNeverStartedAChange(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	ctx := context.Background()
+	q := queue.New(h.pool, 30*time.Second, h.clock.Now)
+
+	run := h.running("s1")
+	h.pastRevalidation(run.ID)
+	claimed, err := q.Claim(ctx, "runner-1")
+	if err != nil || claimed == nil {
+		t.Fatalf("Claim: %v, %v", claimed, err)
+	}
+	if err := q.Release(ctx, claimed.Leg.ID, claimed.Leg.Generation); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if got := h.stepLeg(run.ID, "config", claimed.Leg.Service); got.State != "queued" || got.Attempt != 1 {
+		t.Fatalf("released leg: %+v, want queued after one attempt", got)
+	}
+
+	if err := h.eng.Cancel(ctx, h.starter, run.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	h.advance(run.ID)
+	if got := h.stepLeg(run.ID, "config", claimed.Leg.Service); got.State != "cancelled" {
+		t.Fatalf("released leg is %s, want cancelled directly so no executor runs for it", got.State)
+	}
+	if again, err := q.Claim(ctx, "runner-2"); err != nil || again != nil {
+		t.Fatalf("a cancelled leg was claimed: %+v, %v", again, err)
+	}
+}

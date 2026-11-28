@@ -4,6 +4,7 @@ package logs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rcss-labs/yamdrake/internal/db"
@@ -1159,5 +1161,163 @@ func TestWriteWaitsForRoomWhenTheDatabaseComesBack(t *testing.T) {
 	}
 	if got := len(e.stored(t, leg)); got != 12 {
 		t.Fatalf("%d lines stored, want 12", got)
+	}
+}
+
+// After a leg's first refusal, later Writes for it fail at once instead of
+// each making the executor wait the full time again, until the queue drains.
+func TestWriteRefusesAtOnceAfterTheFirstRefusalUntilTheQueueDrains(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 1)
+	leg := e.legs[0].ID
+	w := newTestWriter(e, 2, nil).WithQueueLimit(3, 400*time.Millisecond)
+	t.Cleanup(func() { _ = w.Close(context.Background()) })
+	var down atomic.Bool
+	down.Store(true)
+	w.beforeInsert = func() error {
+		if down.Load() {
+			return errors.New("database unreachable")
+		}
+		return nil
+	}
+	var first error
+	for i := 1; i <= 10 && first == nil; i++ {
+		first = w.Write(e.runID, leg, 0, "info", fmt.Sprintf("line %d", i))
+	}
+	if !errors.Is(first, ErrBufferFull) {
+		t.Fatalf("no Write was refused, got %v", first)
+	}
+	for i := 0; i < 5; i++ {
+		started := time.Now()
+		err := w.Write(e.runID, leg, 0, "info", "after the refusal")
+		if !errors.Is(err, ErrBufferFull) {
+			t.Fatalf("Write after the refusal = %v, want ErrBufferFull", err)
+		}
+		if d := time.Since(started); d > 100*time.Millisecond {
+			t.Fatalf("Write after the refusal took %v, want it to fail at once", d)
+		}
+	}
+	down.Store(false)
+	if err := w.Flush(context.Background(), leg); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if err := w.Write(e.runID, leg, 0, "info", "after the queue drained"); err != nil {
+		t.Fatalf("Write after the queue drained = %v, want it accepted", err)
+	}
+}
+
+// Legs that ran one after the other must not all sit decoded in the session:
+// a leg is decoded when the page needs it and dropped once the cursor is past
+// it, so memory is about one leg plus one page. Each leg is still fetched once.
+func TestSessionHoldsAtMostTheLegBeingRead(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 4)
+	ctx := context.Background()
+	const perLeg = 40
+	for leg := 0; leg < 4; leg++ {
+		for s := int64(1); s <= perLeg; s++ {
+			at := baseTime.Add(time.Duration(leg)*time.Hour + time.Duration(s)*time.Second)
+			e.seed(t, e.line(leg, s, at, "info", fmt.Sprintf("leg %d line %d", leg, s)))
+		}
+	}
+	settle(t, e, "succeeded")
+	archive := &getCountingArchive{Archive: newDirArchiveT(t)}
+	now := baseTime.Add(48 * time.Hour)
+	if n, err := NewArchiver(e.pool, archive, time.Hour, func() time.Time { return now }, nil).ArchiveSettledLegs(ctx); err != nil || n != 4 {
+		t.Fatalf("ArchiveSettledLegs = %d, %v; want 4", n, err)
+	}
+	session := NewReader(e.pool, archive).NewSession(e.runID)
+	var cursor Cursor
+	total, held := 0, 0
+	for {
+		page, err := session.Read(ctx, Filter{}, cursor, 7)
+		if err != nil {
+			t.Fatalf("session Read: %v", err)
+		}
+		if len(page.Lines) == 0 {
+			break
+		}
+		total += len(page.Lines)
+		cursor = page.Next
+		if n := len(session.cache); n > held {
+			held = n
+		}
+	}
+	if total != 4*perLeg {
+		t.Fatalf("read %d lines, want %d", total, 4*perLeg)
+	}
+	if held > 1 {
+		t.Fatalf("the session held %d decoded legs at once, want at most 1 for legs that ran one after another", held)
+	}
+	if n := archive.total(); n != 4 {
+		t.Fatalf("archive Get called %d times, want 4 (once per archived leg)", n)
+	}
+}
+
+// explainingQuerier runs every statement under EXPLAIN ANALYZE first and adds
+// the rows its log_lines scans produced to scanned, then runs it for real.
+type explainingQuerier struct {
+	pool    *pgxpool.Pool
+	scanned *int64
+}
+
+func (q explainingQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	var raw []byte
+	if err := q.pool.QueryRow(ctx, "EXPLAIN (ANALYZE, FORMAT JSON) "+sql, args...).Scan(&raw); err != nil {
+		return nil, err
+	}
+	var plans []struct{ Plan map[string]any }
+	if err := json.Unmarshal(raw, &plans); err != nil {
+		return nil, err
+	}
+	var walk func(node map[string]any)
+	walk = func(node map[string]any) {
+		if rel, _ := node["Relation Name"].(string); rel == "log_lines" {
+			rows, _ := node["Actual Rows"].(float64)
+			loops, _ := node["Actual Loops"].(float64)
+			*q.scanned += int64(rows * loops)
+		}
+		kids, _ := node["Plans"].([]any)
+		for _, k := range kids {
+			if m, ok := k.(map[string]any); ok {
+				walk(m)
+			}
+		}
+	}
+	for _, p := range plans {
+		walk(p.Plan)
+	}
+	return q.pool.Query(ctx, sql, args...)
+}
+
+// The unfiltered read of a page must look at about one page of rows per leg,
+// not every row after the cursor: that is what keeps a paged read of N lines
+// linear. It fails if the per-leg LIMIT is replaced by a rescan of the rest.
+func TestUnfilteredPageReadsOnlyAPageOfRowsPerLeg(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 1)
+	ctx := context.Background()
+	const total, limit = 6000, 10
+	if _, err := e.pool.Exec(ctx, `INSERT INTO log_lines (run_id, leg_id, seq, at, level, text)
+		SELECT $1, $2, g, $3::timestamptz + g * interval '1 second', 'info', 'line ' || g FROM generate_series(1, $4) g`,
+		e.runID, e.legs[0].ID, baseTime, total); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := e.pool.Exec(ctx, `ANALYZE log_lines`); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	reader := NewReader(e.pool, nil)
+	for _, cursor := range []map[int64]int64{nil, {e.legs[0].ID: 100}} {
+		var scanned int64
+		cands, err := reader.queryRows(ctx, explainingQuerier{pool: e.pool, scanned: &scanned}, e.runID, Filter{}, cursor, limit, nil)
+		if err != nil {
+			t.Fatalf("queryRows: %v", err)
+		}
+		if len(cands) != limit {
+			t.Fatalf("got %d rows, want %d", len(cands), limit)
+		}
+		if scanned > 10*limit {
+			t.Fatalf("the query scanned %d log_lines rows for a page of %d (cursor %v); it must stop after the page", scanned, limit, cursor)
+		}
 	}
 }

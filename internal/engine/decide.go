@@ -16,6 +16,9 @@ type View struct {
 	Legs  []store.Leg // every leg of the run
 	// LocksHeld reports whether the run currently holds its locks.
 	LocksHeld bool
+	// IntendedLegs holds the ids of legs that have an operation in the intended
+	// state: a change may have been made and its outcome is not recorded.
+	IntendedLegs map[int64]bool
 	// Frozen is a non-empty reason when a freeze blocks the environment
 	// (always "" until Plan 7).
 	Frozen string
@@ -126,7 +129,7 @@ func Decide(v View) Decision {
 			if allSettled(v.Legs) {
 				return finish(v, true)
 			}
-			d := stopLegs(v.Legs)
+			d := stopLegs(v)
 			d.NewState = "cancelling"
 			return d
 		}
@@ -136,7 +139,7 @@ func Decide(v View) Decision {
 		if allSettled(v.Legs) {
 			return finish(v, true)
 		}
-		return stopLegs(v.Legs)
+		return stopLegs(v)
 
 	case state == "needs_reconciliation":
 		return decideReconciling(v, cancelRequested)
@@ -174,28 +177,30 @@ func anyUnknown(legs []store.Leg) bool {
 	return false
 }
 
-// stopLegs cancels every pending leg and every queued leg that was never
-// attempted, and flags every claimed or running leg, and every queued leg that
-// was attempted before, that is not flagged yet. Nothing is queued.
+// stopLegs cancels every pending leg and every queued leg without an intended
+// operation, and flags every claimed or running leg, and every queued leg with
+// an intended operation, that is not flagged yet. Nothing is queued.
 //
-// A queued leg with attempt > 0 was claimed once and may have recorded an
-// intent whose outcome nobody knows (the runner died and the sweep requeued
-// it). Settling it as cancelled would end the run and release its locks with
-// the outcome still uncertain, so it stays queued, flagged: a runner claims it,
-// reconciles and settles it as succeeded, failed or unknown. The attempt count
-// is enough to tell, because an operation can only be recorded after a claim.
-func stopLegs(legs []store.Leg) Decision {
-	return stopLegsWith(legs, true)
+// A queued leg with an intended operation may have changed something whose
+// outcome nobody knows (the runner died and the sweep requeued it). Settling it
+// as cancelled would end the run and release its locks with the outcome still
+// uncertain, so it stays queued, flagged: a runner claims it, reconciles and
+// settles it as succeeded, failed or unknown. A queued leg without one (never
+// claimed, or claimed and released or lost before its first operation) has
+// changed nothing, whatever its attempt count, and is cancelled directly so no
+// executor runs for it.
+func stopLegs(v View) Decision {
+	return stopLegsWith(v, true)
 }
 
 // stopLegsWith is stopLegs; reconcileAttempted false cancels every queued leg
-// whatever its attempts, for a run that has not started running and so has made
-// no external change (its only leg is the read-only resolve).
-func stopLegsWith(legs []store.Leg, reconcileAttempted bool) Decision {
+// whatever its operations, for a run that has not started running and so has
+// made no external change (its only leg is the read-only resolve).
+func stopLegsWith(v View, reconcileAttempted bool) Decision {
 	var d Decision
-	for _, l := range legs {
+	for _, l := range v.Legs {
 		switch {
-		case l.State == legPending, l.State == legQueued && (l.Attempt == 0 || !reconcileAttempted):
+		case l.State == legPending, l.State == legQueued && (!v.IntendedLegs[l.ID] || !reconcileAttempted):
 			d.CancelLegs = append(d.CancelLegs, l.ID)
 		case l.State == legQueued, l.State == legClaimed, l.State == legRunning:
 			if !l.CancelRequested {
@@ -210,7 +215,7 @@ func stopLegsWith(legs []store.Leg, reconcileAttempted bool) Decision {
 // run is cancelled and its legs are stopped. No locks are held yet, but the
 // release is requested if they somehow are.
 func cancelBeforeStart(v View) Decision {
-	d := stopLegsWith(v.Legs, false)
+	d := stopLegsWith(v, false)
 	d.NewState = "cancelled"
 	d.ReleaseLocks = v.LocksHeld
 	return d
@@ -253,12 +258,12 @@ func decideRunning(v View) Decision {
 		return Decision{}
 	case legUnknown:
 		// Keep the locks; the pending step legs will never run.
-		d := stopLegs(v.Legs)
+		d := stopLegs(v)
 		d.NewState = "needs_reconciliation"
 		return d
 	case legFailed, legSkipped, legCancelled:
 		// Nothing ran; the plan is no longer valid. Pending legs will never run.
-		d := stopLegs(v.Legs)
+		d := stopLegs(v)
 		d.NewState = "invalidated"
 		d.ReleaseLocks = true
 		return d

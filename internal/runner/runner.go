@@ -250,14 +250,15 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 	env := newLegEnv(r.q, r.sink, leg, log)
 	env.onLogFailure = func(error) { cancel(errLogUnavailable) }
 	// A leg whose cancel was requested before it started does not run (spec 7.9),
-	// but only a leg on its first attempt with no recorded operation: nothing it
-	// did can be in doubt. Any other leg (requeued after a dead runner, or
-	// checked again after unknown) may have an intended operation, so the
-	// executor runs, with CancelRequested true, to reconcile it and stop.
+	// but only a leg with no operation in the intended state, whatever its
+	// attempt: nothing it did can be in doubt. A leg with an intended operation
+	// (requeued after a dead runner, or checked again after unknown) may have
+	// changed something, so the executor runs, with CancelRequested true, to
+	// reconcile it and stop.
 	// The flag is read after MarkRunning so a cancel that landed between the
 	// claim and now is seen; one that lands later reaches the executor through
 	// Env.CancelRequested.
-	if requested, err := r.q.CancelRequested(ctx, leg.ID); err == nil && requested && r.neverAttempted(ctx, leg, log) {
+	if requested, err := r.q.CancelRequested(ctx, leg.ID); err == nil && requested && r.hasNoIntendedOperation(ctx, leg, log) {
 		r.settleCancelledBeforeStart(ctx, leg, log)
 		return
 	}
@@ -271,7 +272,9 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 	stopHeartbeat()
 
 	cause := context.Cause(ctx)
-	if errors.Is(cause, errLogUnavailable) && outcome.State != "succeeded" {
+	// An outcome that is already unknown stays unknown: the log failure must
+	// never turn a possibly applied change into a plain failure.
+	if errors.Is(cause, errLogUnavailable) && outcome.State != "succeeded" && outcome.State != "unknown" {
 		outcome = r.logUnavailableOutcome(context.WithoutCancel(ctx), leg, log)
 	}
 	settle, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
@@ -306,19 +309,22 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 	}
 }
 
-// neverAttempted reports whether the claimed leg is on its first attempt and has
-// no recorded operation. When the operations cannot be read it answers false:
-// running the executor is the safe side.
-func (r *Runner) neverAttempted(ctx context.Context, leg store.Leg, log *slog.Logger) bool {
-	if leg.Attempt > 1 {
-		return false
-	}
+// hasNoIntendedOperation reports whether none of the leg's operations is in the
+// intended state, whatever the attempt: then no change of it can be in doubt.
+// When the operations cannot be read it answers false: running the executor is
+// the safe side.
+func (r *Runner) hasNoIntendedOperation(ctx context.Context, leg store.Leg, log *slog.Logger) bool {
 	ops, err := r.q.Ops(ctx, leg.ID)
 	if err != nil {
 		log.Warn("could not read the leg's operations; running it so it can reconcile", "error", err.Error())
 		return false
 	}
-	return len(ops) == 0
+	for _, op := range ops {
+		if op.State == "intended" {
+			return false
+		}
+	}
+	return true
 }
 
 // logUnavailableOutcome is how a leg ends when its log could not be stored and

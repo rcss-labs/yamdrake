@@ -213,7 +213,7 @@ func (r *Reader) read(ctx context.Context, runID int64, f Filter, after Cursor, 
 	}
 	archiveGaps := map[int64][]Gap{} // per archived leg, every gap after the cursor
 	if len(archived) > 0 {
-		archCands, gaps, err := r.readArchived(ctx, tx, runID, f, cursor, archived, limit, cache)
+		archCands, gaps, err := r.readArchived(ctx, tx, runID, f, cursor, archived, limit, cache, cands)
 		if err != nil {
 			return Page{}, err
 		}

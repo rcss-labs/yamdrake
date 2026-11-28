@@ -321,8 +321,8 @@ Cancelling is not rolling back.
 
 | Leg is | What happens |
 |---|---|
-| Pending, or queued and never attempted | Cancelled without running |
-| Queued after an earlier attempt (the runner died or the leg was checked again) | Not cancelled: it is flagged and stays queued. A runner claims it, runs its executor with the cancel flag set, reconciles any operation the earlier attempt left intended, and then stops. The leg ends succeeded, failed or unknown, never silently cancelled |
+| Pending, or queued with no `intended` operation (never claimed, or claimed and released or lost before its first operation) | Cancelled without running, whatever its attempt count |
+| Queued with an `intended` operation (the runner died after recording an intent, or the leg was checked again) | Not cancelled: it is flagged and stays queued. A runner claims it, runs its executor with the cancel flag set, reconciles any operation the earlier attempt left intended, and then stops. The leg ends succeeded, failed or unknown, never silently cancelled |
 | Copying config | Stops after the current file. The log lists what was written |
 | Waiting on an ECS rollout it started | Keeps observing until ECS finishes, then records the real outcome |
 | Finished | Left as it is |
@@ -339,7 +339,7 @@ A run in `needs_reconciliation` shows each unknown leg with what was intended an
 - The runner commits lines to PostgreSQL in batches. A committed line is stored. An archiver moves finished legs to compressed objects in S3 and removes the rows once the object is confirmed.
 - The orchestrator serves a log by merging archive and recent rows, filtered by step, service, level or text. A browser following a running log over SSE resumes with `Last-Event-ID`.
 - A missing sequence range is shown as a gap, never hidden. Lines a runner produced but had not committed when it died are lost; the next attempt's continuation line, at `warn` level, says that lines of the previous attempt may be missing.
-- A leg's in-memory queue of uncommitted lines is capped (10,000 lines by default). When it is full and PostgreSQL is not taking lines, the writer blocks the executor briefly and then refuses the line; the runner stops the leg and fails it as "log storage unavailable" (unknown when an operation is still intended) instead of growing memory.
+- A leg's in-memory queue of uncommitted lines is capped (10,000 lines by default). When it is full and PostgreSQL is not taking lines, the writer blocks the executor briefly and then refuses the line; the runner stops the leg and fails it as "log storage unavailable" (unknown when an operation is still intended; an outcome the executor already reported as unknown stays unknown), and later lines of that leg are refused at once until the queue drains instead of growing memory.
 - A panic in an executor puts only a generic "the step crashed; see the service log" in the leg log and failure fields, which every signed-in person can read. The panic text goes to the service's own log.
 - A followed log is written to the browser one page at a time, and a paged read of a whole log costs time proportional to its length (each archived leg is decompressed once per read sequence).
 - Every AWS and GitHub call is logged with its outcome. Errors keep the full message and request id. Request bodies and config contents are never logged. Known secrets are redacted, on a best-effort basis.

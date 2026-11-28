@@ -46,6 +46,9 @@ type legBuffer struct {
 	// Guarded by Writer.mu.
 	runID int64
 	queue []pendingLine
+	// refusing is set after the first ErrBufferFull: later Writes fail at once
+	// until the queue has room again.
+	refusing bool
 
 	// Guarded by flushMu.
 	numbered   bool  // next and generation are valid
@@ -127,6 +130,10 @@ func (w *Writer) Write(runID, legID, generation int64, level, text string) error
 	}
 	// A leg's queue is capped: with PostgreSQL unreachable it would otherwise
 	// grow until the runner runs out of memory. Wait briefly for room, then refuse.
+	if len(lb.queue) >= w.maxQueued && lb.refusing {
+		w.mu.Unlock()
+		return ErrBufferFull
+	}
 	if len(lb.queue) >= w.maxQueued {
 		deadline := time.Now().Add(w.fullWait)
 		for len(lb.queue) >= w.maxQueued {
@@ -138,6 +145,11 @@ func (w *Writer) Write(runID, legID, generation int64, level, text string) error
 			if !time.Now().Before(deadline) {
 				w.log.Error("log queue of a leg is full and PostgreSQL is not taking lines; line refused",
 					"run", runID, "leg", legID, "queued", w.maxQueued)
+				w.mu.Lock()
+				if cur := w.legs[legID]; cur != nil {
+					cur.refusing = true
+				}
+				w.mu.Unlock()
 				return ErrBufferFull
 			}
 			time.Sleep(fullPollInterval)
@@ -149,6 +161,7 @@ func (w *Writer) Write(runID, legID, generation int64, level, text string) error
 			}
 		}
 	}
+	lb.refusing = false
 	lb.queue = append(lb.queue, line)
 	full := len(lb.queue) >= w.maxBatch
 	w.mu.Unlock()

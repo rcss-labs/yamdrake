@@ -204,12 +204,6 @@
   outline: 2px solid #7fa6f5;
   outline-offset: -2px;
 }
-/* Thousands of rows stay cheap: the browser skips layout and paint for rows far from the view. */
-.con-ln,
-.con-gap {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 20px;
-}
 .con-ln {
   display: flex;
   gap: 12px;

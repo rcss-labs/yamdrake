@@ -228,7 +228,7 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 	go func() { exited <- svc.Wait() }()
 	cleanup.add(func() { stopChild("orchestrator", svc, exited) })
 
-	if err := waitReady(ctx, base+"/readyz", exited); err != nil {
+	if err := waitReady(ctx, "the orchestrator", base+"/readyz", exited); err != nil {
 		return ready{}, err
 	}
 
@@ -255,8 +255,8 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 	runnerExited := make(chan error, 1)
 	go func() { runnerExited <- runnerCmd.Wait() }()
 	cleanup.add(func() { stopChild("runner", runnerCmd, runnerExited) })
-	if err := waitReady(ctx, "http://"+runnerHealthAddr+"/readyz", runnerExited); err != nil {
-		return ready{}, fmt.Errorf("runner: %w", err)
+	if err := waitReady(ctx, "the runner", "http://"+runnerHealthAddr+"/readyz", runnerExited); err != nil {
+		return ready{}, err
 	}
 
 	// An operator's way in: the create-admin subcommand, password on standard input.
@@ -397,11 +397,12 @@ func waitUntil(ctx context.Context, what string, cond func() (bool, error)) erro
 	}
 }
 
-func waitReady(ctx context.Context, readyURL string, exited <-chan error) error {
-	return waitUntil(ctx, "the orchestrator to answer /readyz", func() (bool, error) {
+// waitReady waits for the named service ("the orchestrator", "the runner") to answer /readyz.
+func waitReady(ctx context.Context, service, readyURL string, exited <-chan error) error {
+	return waitUntil(ctx, service+" to answer /readyz", func() (bool, error) {
 		select {
 		case err := <-exited:
-			return false, fmt.Errorf("the orchestrator exited early: %w", err)
+			return false, fmt.Errorf("%s exited early: %w", service, err)
 		default:
 		}
 		resp, err := http.Get(readyURL) //nolint:gosec,noctx // local service

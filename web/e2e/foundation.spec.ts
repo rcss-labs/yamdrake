@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -9,6 +9,19 @@ const password = process.env.YUMDRAKE_E2E_PASSWORD ?? ''
 const jobTitle = 'Backend and microservices'
 const folderName = 'Backend'
 const groupName = 'Release managers'
+
+/**
+ * Puts a secret into a field the way typing would (value set natively, then an input event, so React sees it)
+ * without Playwright writing the value into a step title in the HTML report, which `fill` does.
+ * The value is passed as an argument, which no step title shows.
+ */
+async function typeSecret(field: Locator, value: string) {
+  await field.evaluate((element, secret) => {
+    const input = element as HTMLInputElement
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, secret)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }, value)
+}
 
 /** Screenshots go to YUMDRAKE_E2E_SHOTS_DIR when set, otherwise into Playwright's output folder. */
 async function shot(page: Page, testOutputDir: string, name: string) {
@@ -62,7 +75,7 @@ test('a person signs in, reads jobs and inventory, manages access and signs out'
   await expect(page.getByLabel('Email')).toBeVisible()
   await shot(page, testInfo.outputDir, '01-sign-in')
   await page.getByLabel('Email').fill(email)
-  await page.getByLabel('Password').fill(password)
+  await typeSecret(page.getByLabel('Password'), password)
   await page.getByRole('button', { name: 'Sign in' }).click()
 
   // Jobs: the registered job is listed under its folder, and the person is back where they were going.

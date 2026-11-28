@@ -12,7 +12,8 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   timeout: 90_000,
   expect: { timeout: 15_000 },
-  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
+  // The guard must come after the html reporter: it reads the report that reporter writes.
+  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }], ['./e2e/secret-guard-reporter.ts']],
   outputDir: 'test-results',
   use: {
     ...devices['Desktop Chrome'],

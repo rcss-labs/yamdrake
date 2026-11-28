@@ -1,7 +1,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
-import { adminMe, eventSources, qaMe, requests, runIds, viewerMe } from '../../test/server'
+import { adminMe, eventSources, failNext, mockState, qaMe, requests, runIds, viewerMe } from '../../test/server'
 import { actionNames, moveStoredRun, renderRun, storedRun } from './runTestUtils'
 
 const lead = () => screen.findByTestId('run-lead')
@@ -215,5 +215,68 @@ describe('who can see logs', () => {
     renderRun(runIds.waitingApproval, qaMe)
     await lead()
     expect(requests.filter((request) => request.path.endsWith('/log'))).toEqual([])
+  })
+})
+
+describe('when the log or the live updates fail', () => {
+  it('says the log could not be read in the console, never "No log lines yet", and Retry reads it again', async () => {
+    failNext('GET', `/api/v1/runs/${runIds.succeeded}/log`, 500, 'internal', 'log store down')
+    renderRun(runIds.succeeded, adminMe)
+    const consolePanel = await screen.findByRole('region', { name: 'Console' })
+    expect(await within(consolePanel).findByRole('alert')).toHaveTextContent('The log could not be read completely: log store down')
+    expect(within(consolePanel).queryByText('No log lines yet')).not.toBeInTheDocument()
+    await userEvent.click(within(consolePanel).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(within(consolePanel).queryByRole('alert')).not.toBeInTheDocument())
+    expect(consolePanel.querySelectorAll('.con-ln').length).toBeGreaterThan(0)
+  })
+
+  it('stops saying the run is live when the stream is refused later, and labels the state as the last known', async () => {
+    renderRun(runIds.running, adminMe)
+    await waitFor(() => expect(eventSources.all.length).toBeGreaterThan(0))
+    const stream = eventSources.last()!
+    act(() => stream.open())
+    failNext('GET', `/api/v1/runs/${runIds.running}`, 403, 'forbidden', 'You may not view this run')
+    act(() => stream.fail())
+    const note = await screen.findByTestId('live-stopped', undefined, { timeout: 5000 })
+    expect(note).toHaveTextContent('Live updates stopped: You may not view this run')
+    expect(note).toHaveTextContent('last known state')
+    expect(screen.getByTestId('run-lead')).toBeInTheDocument()
+  })
+})
+
+describe('the plan of a run that is still being planned', () => {
+  it('appears on its own once the run leaves resolving, for a person who cannot start it', async () => {
+    const plan = mockState().plans[runIds.planned]!
+    delete mockState().plans[runIds.planned]
+    moveStoredRun(runIds.planned, 'resolving')
+    renderRun(runIds.planned, viewerMe)
+    expect(await screen.findByText(/Loading plan/)).toBeInTheDocument()
+    mockState().plans[runIds.planned] = plan
+    const run = moveStoredRun(runIds.planned, 'planned')
+    await waitFor(() => expect(eventSources.all.length).toBeGreaterThan(0))
+    act(() => {
+      eventSources.last()?.open()
+      eventSources.last()?.emit('state', {
+        id: run.id,
+        state: 'planned',
+        wait_reason: '',
+        end_reason: '',
+        state_changed_at: '2026-11-27T12:01:00Z',
+        started_at: null,
+        finished_at: null,
+        cancel_requested: false,
+        legs: run.legs,
+        locks: run.locks ?? [],
+        summary: run.summary,
+      })
+    })
+    expect(await screen.findByRole('table', { name: 'Plan' })).toBeInTheDocument()
+  })
+
+  it('says the run has no plan once it is final and none was made', async () => {
+    delete mockState().plans[runIds.succeeded]
+    renderRun(runIds.succeeded, viewerMe)
+    expect(await screen.findByText('This run has no plan.')).toBeInTheDocument()
+    expect(screen.queryByText(/Loading plan/)).not.toBeInTheDocument()
   })
 })

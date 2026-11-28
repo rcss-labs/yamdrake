@@ -56,3 +56,15 @@
   color: var(--ink2);
   min-width: 56px;
 }
+.plan-failed {
+  margin-bottom: 12px;
+}
+/* A table wider than the card scrolls inside it. The fade at the right edge says there is more; it goes away at the end. */
+.plan-body .ui-table-scroll {
+  background:
+    linear-gradient(to left, Canvas 30%, transparent) right center / 32px 100% local no-repeat,
+    linear-gradient(to left, rgba(23, 26, 31, 0.22), transparent) right center / 16px 100% scroll no-repeat;
+}
+.plan-body .ui-table th {
+  background: transparent;
+}

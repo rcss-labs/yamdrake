@@ -160,3 +160,12 @@ describe('PlanPanel', () => {
     expect(document.body.textContent).not.toContain(secret)
   })
 })
+
+describe('PlanPanel after the run has failed its preflight', () => {
+  it('shows the failed check note without opening the plan card', async () => {
+    const run = runOf(runIds.plannedFailedCheck)
+    run.state = 'failed'
+    renderApp(<PlanPanel run={run} />)
+    expect(await screen.findByText('This run cannot start.')).toBeVisible()
+  })
+})

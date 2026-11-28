@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+import { isFinalRunState } from '../../api/types'
 import type { Check, ConfigItem, Plan, PlanService, RunDetail } from '../../api/types'
 import { Card, DataTable, Loading, Note, Tag, type DataColumn } from '../../ui'
 import { failedChecks, fallbackItems } from './planModel'
@@ -138,13 +140,29 @@ function columnsFor(restore: boolean): DataColumn<PlanService>[] {
 }
 
 export function PlanPanel({ run }: { run: RunDetail }) {
-  const { data: plan, error, isPending } = useRunPlan(run.id)
+  const { data: plan, error, isPending, refetch } = useRunPlan(run.id)
 
-  if (isPending || (error && error.status === 404)) {
+  // A 404 means "not planned yet". When the run's state moves past resolving (a state event on an open page),
+  // ask again, so the plan appears without a reload, also for a person who cannot start the run.
+  const stateAtLastAsk = useRef(run.state)
+  const notPlanned = error?.status === 404
+  useEffect(() => {
+    if (stateAtLastAsk.current === run.state) return
+    stateAtLastAsk.current = run.state
+    if (notPlanned && run.state !== 'resolving') void refetch()
+  }, [run.state, notPlanned, refetch])
+
+  if (isPending || notPlanned) {
     return (
       <Card>
         <h2 className="plan-title">Plan</h2>
-        {isPending ? <Loading /> : <p className="plan-old">Loading plan. It appears once the run has been planned.</p>}
+        {isPending ? (
+          <Loading />
+        ) : isFinalRunState(run.state) ? (
+          <p className="plan-old">This run has no plan.</p>
+        ) : (
+          <p className="plan-old">Loading plan. It appears once the run has been planned.</p>
+        )}
       </Card>
     )
   }
@@ -165,20 +183,21 @@ export function PlanPanel({ run }: { run: RunDetail }) {
 
   return (
     <Card className="plan-panel">
+      {/* Outside the details: in a failed run the card is closed and this is the reason it failed. */}
+      {failed.length > 0 && (
+        <Note tone="error" className="plan-failed">
+          <p>
+            <strong>This run cannot start.</strong> {plural(failed.length, 'check failed', 'checks failed')}.
+          </p>
+          <CheckList checks={failed} />
+        </Note>
+      )}
       <details open={OPEN_STATES.includes(run.state)}>
         <summary>
           <span className="plan-title">Plan</span>
           <span className="plan-summary">{summaryLine(plan)}</span>
         </summary>
         <div className="plan-body">
-          {failed.length > 0 && (
-            <Note tone="error">
-              <p>
-                <strong>This run cannot start.</strong> {plural(failed.length, 'check failed', 'checks failed')}.
-              </p>
-              <CheckList checks={failed} />
-            </Note>
-          )}
           {fallbackGroups.length > 0 && (
             <Note tone="warning">
               {fallbackGroups.map((group) => (

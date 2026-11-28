@@ -161,6 +161,24 @@ status_of() {
 		-d "$4" "$base_url$3"
 }
 
+# --- loopback only ----------------------------------------------------------
+# The demo uses public credentials, so it must publish on 127.0.0.1 even when the
+# environment asks for more.
+published_host_ip() {
+	YUMDRAKE_HTTP_BIND=0.0.0.0 compose config --format json |
+		python3 -c 'import json,sys
+cfg=json.load(sys.stdin)
+for port in cfg["services"]["orchestrator"].get("ports", []):
+    print(port.get("host_ip", ""))'
+}
+host_ips="$(published_host_ip 2>/dev/null)" || host_ips=""
+if [ "$host_ips" = "127.0.0.1" ]; then
+	pass "the orchestrator publishes only on 127.0.0.1, even with YUMDRAKE_HTTP_BIND=0.0.0.0"
+else
+	fail "the orchestrator's published host_ip is '$(echo "$host_ips" | tr '\n' ' ')' with YUMDRAKE_HTTP_BIND=0.0.0.0, want only 127.0.0.1"
+	exit 1
+fi
+
 # --- start ------------------------------------------------------------------
 echo "demo-check: building and starting the demo (project $project, port $port)"
 started=1
@@ -190,11 +208,25 @@ if [ "$viewer_status" = "403" ]; then
 else
 	fail "the viewer planning a run got status $viewer_status, want 403"
 fi
-deployer_status="$(status_of "$deployer_jar" POST "/api/v1/jobs/$job_id/runs" "$run_body")" || deployer_status="error"
+planned_run="$(curl -sS -w '\n%{http_code}' -b "$deployer_jar" -X POST \
+	-H "Origin: $base_url" -H 'Content-Type: application/json' \
+	-d "$run_body" "$base_url/api/v1/jobs/$job_id/runs")" || planned_run=""
+deployer_status="${planned_run##*$'\n'}"
 if [ "$deployer_status" = "201" ]; then
 	pass "the deployer may plan a run in dev (201)"
 else
 	fail "the deployer planning a run got status $deployer_status, want 201"
+fi
+planned_run_id="$(printf '%s' "${planned_run%$'\n'*}" | json_field id 2>/dev/null)" || planned_run_id=""
+if [ -z "$planned_run_id" ]; then
+	fail "no planned run to try starting as the viewer"
+else
+	viewer_start="$(status_of "$viewer_jar" POST "/api/v1/runs/$planned_run_id/start" '{}')" || viewer_start="error"
+	if [ "$viewer_start" = "403" ]; then
+		pass "the viewer is refused when starting a planned run (403)"
+	else
+		fail "the viewer starting a planned run got status $viewer_start, want 403"
+	fi
 fi
 
 # --- the CLI ----------------------------------------------------------------

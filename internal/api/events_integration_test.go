@@ -197,10 +197,19 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 		t.Error("no ping event on an idle stream")
 	}
 
+	// A state change is sent before the lines that follow it.
+	f.setRun(id, "cancelling")
+	change := stream.nextNamed(t, 3*time.Second)
+	if change.Name != "state" || !strings.Contains(change.Data, `"cancelling"`) {
+		t.Fatalf("event after the state changed = %q %s, want the state event first", change.Name, change.Data)
+	}
+	// The line and the final state are separate commits, so the stream may send the line before the
+	// final state; only the end is fixed: after the final state and after every line.
 	f.addLines(id, store.LogLine{LegID: leg, Seq: 3, Text: "last line"})
 	f.setRun(id, "succeeded")
 	var names []string
 	var lines []string
+	finalStateAt := -1
 	for {
 		e, ok := stream.next(3 * time.Second)
 		if !ok {
@@ -210,6 +219,9 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 			continue
 		}
 		names = append(names, e.Name)
+		if e.Name == "state" && strings.Contains(e.Data, `"succeeded"`) {
+			finalStateAt = len(names) - 1
+		}
 		if e.Name == "log" {
 			var b logBatch
 			_ = json.Unmarshal([]byte(e.Data), &b)
@@ -218,8 +230,8 @@ func TestEventsSendStateThenLogsThenEnd(t *testing.T) {
 			}
 		}
 	}
-	if len(names) < 3 || names[0] != "state" || names[len(names)-1] != "end" {
-		t.Fatalf("events after the run finished = %v, want state, log..., end and then the stream closes", names)
+	if len(names) < 3 || names[len(names)-1] != "end" || finalStateAt < 0 || finalStateAt > len(names)-2 {
+		t.Fatalf("events after the run finished = %v, want the final state and the log in either order, then end and then the stream closes", names)
 	}
 	if fmt.Sprint(lines) != "[last line]" {
 		t.Errorf("lines after finishing = %v, want the last line exactly once", lines)

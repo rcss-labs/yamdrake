@@ -681,7 +681,7 @@ func TestArchiveThenReadIsIdenticalToBefore(t *testing.T) {
 	}
 	e.seed(t, e.line(2, 1, baseTime.Add(500*time.Millisecond), "info", "live line"))
 
-	archive, err := NewDirArchive(t.TempDir())
+	archive, err := NewDirArchive(t.TempDir(), archiveTestCipher(t, "0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatalf("NewDirArchive: %v", err)
 	}
@@ -748,7 +748,7 @@ func TestArchiveFailureKeepsRows(t *testing.T) {
 	ctx := context.Background()
 	seedForArchive(t, e)
 	settle(t, e, "failed")
-	real, err := NewDirArchive(t.TempDir())
+	real, err := NewDirArchive(t.TempDir(), archiveTestCipher(t, "0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatalf("NewDirArchive: %v", err)
 	}
@@ -801,7 +801,7 @@ func TestArchiverIsIdempotent(t *testing.T) {
 
 func newDirArchiveT(t *testing.T) Archive {
 	t.Helper()
-	a, err := NewDirArchive(t.TempDir())
+	a, err := NewDirArchive(t.TempDir(), archiveTestCipher(t, "0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatalf("NewDirArchive: %v", err)
 	}

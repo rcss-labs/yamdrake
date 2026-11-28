@@ -78,6 +78,10 @@ type Runner struct {
 	Env string
 	// FakeSteps registers the fake step executors instead of real ones.
 	FakeSteps bool
+	// ArtifactDir is the directory for config copies (YUMDRAKE_ARTIFACT_DIR).
+	// It is optional until the S3 store arrives; then exactly one of the bucket
+	// and the directory is required.
+	ArtifactDir string
 	// Concurrency is how many legs one runner executes at once.
 	Concurrency int
 	// Lease is how long a claimed leg stays with its runner without a
@@ -205,6 +209,10 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 	}
 	if cfg.FakeSteps && cfg.Env != "dev" {
 		l.fail("YUMDRAKE_FAKE_STEPS", `is allowed only with YUMDRAKE_ENV=dev`)
+	}
+	cfg.ArtifactDir = l.getenv("YUMDRAKE_ARTIFACT_DIR")
+	if cfg.ArtifactDir != "" && !filepath.IsAbs(cfg.ArtifactDir) {
+		l.fail("YUMDRAKE_ARTIFACT_DIR", "must be an absolute path")
 	}
 	cfg.Concurrency = l.positiveInt("YUMDRAKE_RUNNER_CONCURRENCY", "8")
 	cfg.Lease = l.duration("YUMDRAKE_LEASE", "30s")

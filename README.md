@@ -249,8 +249,9 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_MIGRATE_ON_START` | orchestrator | `true` | Must be `true` or `false`. |
 | `YUMDRAKE_HEALTH_ADDR` | runner | `127.0.0.1:8081` | `host:port`, with a port from 1 to 65535. Also read by `healthcheck`. |
 | `YUMDRAKE_RUNNER_ID` | runner | the host name | Identifies the runner in its logs. If unset and the host name cannot be determined, startup fails. |
-| `YUMDRAKE_SECRETS_MODE` | orchestrator, runner | `local` | Only `local` is supported in this release; any other value is a config error. |
+| `YUMDRAKE_SECRETS_MODE` | orchestrator, runner | `local` | `local` or `kms`. With `kms` the secrets are encrypted by an AWS KMS key (`YUMDRAKE_KMS_KEY_ID`) using the default AWS credential chain and region (`AWS_REGION`); the purpose of each secret is the KMS encryption context. Any other value is a config error. |
 | `YUMDRAKE_LOCAL_SECRET_KEY` | orchestrator, runner | none (required when the mode is `local`) | Base64 of exactly 32 bytes (for example `openssl rand -base64 32`). Encrypts stored GitHub credentials. For development and tests only; never printed. |
+| `YUMDRAKE_KMS_KEY_ID` | orchestrator, runner | none (required when the mode is `kms`) | Id, ARN or alias of the KMS key that encrypts stored secrets (GitHub and AWS credentials). |
 | `YUMDRAKE_PUBLIC_URL` | orchestrator | none (required) | Address users reach the service at, such as `https://yumdrake.example.com`: scheme, host and optional port only. Must be `https://`, except `http://` for `localhost` and `127.0.0.1`. Requests that carry a session cookie and change state must come from this origin. |
 | `YUMDRAKE_VALKEY_KEY_PREFIX` | orchestrator | empty | At most 64 of letters, digits, `-`, `_`, `:`. Put in front of the Valkey keys of sessions and sign-in counters; set it only to separate services (or test runs) that share one Valkey. |
 | `YUMDRAKE_TOKEN_SSO_MAX_AGE` | orchestrator | `168h` | Go duration of at least `1h`. How recent a SAML user's last SSO sign-in must be for their CLI tokens to work. |

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/jackc/pgx/v5/pgxpool"
 	valkey "github.com/valkey-io/valkey-go"
 
@@ -88,6 +89,11 @@ type Deps struct {
 	// identity provider refresh only at sign-in, so this bounds how long a
 	// person removed there keeps their access through a token.
 	TokenSSOMaxAge time.Duration
+	// AWSConfig is the orchestrator's own AWS configuration (default
+	// credential chain, optional endpoint override). The connection test of an
+	// account assumes a discovery role from it. It may be empty when the
+	// service runs without AWS credentials; the test then reports a failure.
+	AWSConfig aws.Config
 }
 
 // valkeyTimeout bounds every Valkey call made for a request: against a dead
@@ -238,6 +244,9 @@ func (s *server) routes() []routeDef {
 		{"PUT /api/v1/admin/inventory-source", auth.ManageConnections, s.putInventorySource},
 		{"GET /api/v1/admin/github-connections", auth.ManageConnections, s.listConnections},
 		{"POST /api/v1/admin/github-connections", auth.ManageConnections, s.createConnection},
+		{"GET /api/v1/admin/aws-accounts", auth.ManageConnections, s.listAWSAccounts},
+		{"POST /api/v1/admin/aws-accounts", auth.ManageConnections, s.createAWSAccount},
+		{"POST /api/v1/admin/aws-accounts/{id}/test", auth.ManageConnections, s.testAWSAccount},
 		{"GET /api/v1/admin/sso", auth.ManageAccess, s.getSSO},
 		{"PUT /api/v1/admin/sso", auth.ManageAccess, s.putSSO},
 		{"POST /api/v1/admin/sso/test", auth.ManageAccess, s.testSSO},

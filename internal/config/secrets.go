@@ -11,6 +11,7 @@ import (
 
 const (
 	secretsModeLocal      = "local"
+	secretsModeKMS        = "kms"
 	localSecretKeyBytes   = 32
 	minSyncInterval       = 10 * time.Second
 	defaultGitHubAPIURL   = "https://api.github.com"
@@ -39,8 +40,11 @@ func (Secret) MarshalText() ([]byte, error) { return []byte(redactedSecretDispla
 
 // SecretSettings is read by both binaries.
 type SecretSettings struct {
-	SecretsMode    string
-	LocalSecretKey Secret // the decoded 32 key bytes
+	SecretsMode    string // "local" or "kms"
+	LocalSecretKey Secret // the decoded 32 key bytes (mode local)
+	// KMSKeyID is the id, ARN or alias of the KMS key (mode kms). It names a
+	// key and holds no key material.
+	KMSKeyID string
 }
 
 // SyncSettings is read by the orchestrator only.
@@ -52,8 +56,20 @@ type SyncSettings struct {
 func (l *loader) loadSecretSettings() SecretSettings {
 	var s SecretSettings
 	s.SecretsMode = l.valueOr("YUMDRAKE_SECRETS_MODE", secretsModeLocal)
-	if s.SecretsMode != secretsModeLocal {
-		l.fail("YUMDRAKE_SECRETS_MODE", `must be "local"`)
+	switch s.SecretsMode {
+	case secretsModeLocal:
+	case secretsModeKMS:
+		// Not secret, but kept out of messages like every value here.
+		s.KMSKeyID = l.getenv("YUMDRAKE_KMS_KEY_ID")
+		switch {
+		case s.KMSKeyID == "":
+			l.fail("YUMDRAKE_KMS_KEY_ID", "is required when YUMDRAKE_SECRETS_MODE is kms")
+		case len(s.KMSKeyID) > 2048 || strings.ContainsFunc(s.KMSKeyID, func(r rune) bool { return r <= ' ' || r == 0x7f }):
+			l.fail("YUMDRAKE_KMS_KEY_ID", "must be a KMS key id, ARN or alias without spaces or control characters")
+		}
+		return s
+	default:
+		l.fail("YUMDRAKE_SECRETS_MODE", `must be "local" or "kms"`)
 		return s
 	}
 	// The messages below never include the value: it is key material.

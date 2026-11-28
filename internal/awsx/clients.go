@@ -35,3 +35,19 @@ func Config(ctx context.Context, region string, creds aws.CredentialsProvider, o
 	}
 	return cfg, nil
 }
+
+// BaseConfig builds the configuration of the service's own AWS identity: the
+// SDK default chain (environment, shared files, container or instance role)
+// with the optional endpoint override. Nothing is resolved until a call is
+// made, so a service without AWS credentials still starts.
+func BaseConfig(ctx context.Context, o Options) (aws.Config, error) {
+	var opts []func(*awsconfig.LoadOptions) error
+	if o.EndpointURL != "" {
+		opts = append(opts, awsconfig.WithBaseEndpoint(o.EndpointURL))
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("awsx: load the default AWS configuration: %w", err)
+	}
+	return cfg, nil
+}

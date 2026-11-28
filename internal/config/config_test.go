@@ -326,7 +326,10 @@ func TestSecretAndSyncRules(t *testing.T) {
 		{"key missing", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": ""}, "YUMDRAKE_LOCAL_SECRET_KEY"},
 		{"key not base64", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": "not base64 !!"}, "YUMDRAKE_LOCAL_SECRET_KEY"},
 		{"key wrong length", map[string]string{"YUMDRAKE_LOCAL_SECRET_KEY": "c2hvcnQ="}, "YUMDRAKE_LOCAL_SECRET_KEY"}, //nolint:gosec // test value
-		{"mode not local", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms"}, "YUMDRAKE_SECRETS_MODE"},
+		{"mode unknown", map[string]string{"YUMDRAKE_SECRETS_MODE": "vault"}, "YUMDRAKE_SECRETS_MODE"},
+		{"kms without key id", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms", "YUMDRAKE_LOCAL_SECRET_KEY": ""}, "YUMDRAKE_KMS_KEY_ID"},
+		{"kms key id with spaces", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms", "YUMDRAKE_KMS_KEY_ID": "a b"}, "YUMDRAKE_KMS_KEY_ID"},
+		{"kms needs no local key", map[string]string{"YUMDRAKE_SECRETS_MODE": "kms", "YUMDRAKE_KMS_KEY_ID": "alias/yumdrake", "YUMDRAKE_LOCAL_SECRET_KEY": ""}, ""},
 		{"interval too short", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "9s"}, "YUMDRAKE_SYNC_INTERVAL"},
 		{"interval minimum", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "10s"}, ""},
 		{"interval not duration", map[string]string{"YUMDRAKE_SYNC_INTERVAL": "soon"}, "YUMDRAKE_SYNC_INTERVAL"},
@@ -496,5 +499,27 @@ func TestAWSEndpointURLRules(t *testing.T) {
 				t.Errorf("AWS.EndpointURL = %q and %q, want %q", orch.AWS.EndpointURL, run.AWS.EndpointURL, tc.value)
 			}
 		})
+	}
+}
+
+func TestKMSModeCarriesTheKeyIDAndNeverEchoesBadValues(t *testing.T) {
+	env := requiredEnv()
+	delete(env, "YUMDRAKE_LOCAL_SECRET_KEY")
+	env["YUMDRAKE_SECRETS_MODE"] = "kms"
+	env["YUMDRAKE_KMS_KEY_ID"] = "arn:aws:kms:eu-west-1:123456789012:key/abcd"
+	cfg, err := LoadOrchestrator(envFrom(env))
+	if err != nil {
+		t.Fatalf("LoadOrchestrator() error = %v", err)
+	}
+	if cfg.SecretsMode != "kms" || cfg.KMSKeyID != env["YUMDRAKE_KMS_KEY_ID"] {
+		t.Errorf("SecretsMode = %q, KMSKeyID = %q", cfg.SecretsMode, cfg.KMSKeyID)
+	}
+	if runner, err := LoadRunner(envFrom(env)); err != nil || runner.KMSKeyID != cfg.KMSKeyID {
+		t.Errorf("runner KMS settings = %q, %v", runner.KMSKeyID, err)
+	}
+
+	env["YUMDRAKE_SECRETS_MODE"] = "hunter2-mode"
+	if _, err := LoadOrchestrator(envFrom(env)); err == nil || strings.Contains(err.Error(), "hunter2-mode") {
+		t.Errorf("an unknown mode error = %v; it must exist and not echo the value", err)
 	}
 }

@@ -47,7 +47,8 @@ function FreezeForm() {
       if (!Number.isInteger(count) || count < 1 || count > maxDays) {
         found.days = `A freeze lasts between 1 and ${maxDays} days`
       } else {
-        duration = count * dayMs
+        // One minute under the limit, so a slow request or fast clock is not refused for 30 days exactly.
+        duration = Math.min(count * dayMs, maxDays * dayMs - 60_000)
       }
     }
     setErrors(found)

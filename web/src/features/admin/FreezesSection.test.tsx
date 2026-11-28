@@ -77,7 +77,7 @@ describe('the freezes section', () => {
     await userEvent.type(screen.getByLabelText('Days'), '30')
     await userEvent.click(screen.getByRole('button', { name: 'Freeze deployments' }))
     await waitFor(() => expect(posts()).toHaveLength(1))
-    expect(posts()[0]?.body).toEqual({ label: 'dev', reason: 'Holiday', expires_at: '2026-12-27T12:00:00.000Z' })
+    expect(posts()[0]?.body).toEqual({ label: 'dev', reason: 'Holiday', expires_at: '2026-12-27T11:59:00.000Z' })
   })
 
   it('asks before lifting a freeze, then moves it to the ended list', async () => {

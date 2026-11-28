@@ -18,7 +18,7 @@ function TokenForm() {
       setError('Paste the bot token first')
       return
     }
-    const value = token
+    const value = token.trim()
     // The secret never stays in the form, whatever the result.
     setToken('')
     setError('')

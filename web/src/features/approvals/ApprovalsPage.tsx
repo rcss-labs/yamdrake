@@ -1,9 +1,10 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { errorMessage } from '../../api/client'
 import type { ApprovalItem } from '../../api/types'
 import { Button, Card, ConfirmDialog, ErrorState, Loading, Note, PageHeader, Tag, Time } from '../../ui'
-import { useApprovals } from '../runs/queries'
+import { approvalsKey, useApprovals } from '../runs/queries'
 import { useRejectRun } from './approvalsActions'
 import './approvals.css'
 
@@ -44,6 +45,7 @@ function ApprovalCard({ item, onReject }: { item: ApprovalItem; onReject: (item:
 export function ApprovalsPage() {
   const approvals = useApprovals()
   const reject = useRejectRun()
+  const queryClient = useQueryClient()
   const [rejecting, setRejecting] = useState<ApprovalItem | null>(null)
   const [failure, setFailure] = useState('')
 
@@ -56,6 +58,8 @@ export function ApprovalsPage() {
       await reject.mutateAsync({ runId: item.run_id })
     } catch (error) {
       setFailure(errorMessage(error))
+      // The run may have been decided meanwhile: show the current list, not the stale card.
+      await queryClient.invalidateQueries({ queryKey: approvalsKey })
     } finally {
       reject.reset()
     }

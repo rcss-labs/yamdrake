@@ -66,8 +66,13 @@ describe('the approvals page', () => {
     failNext('POST', '/api/v1/runs/103/reject', 409, 'conflict', 'This run was already decided.')
     renderApp(<App />, { route, me: adminMe })
     await userEvent.click(await screen.findByRole('button', { name: 'Reject' }))
+    // Someone else decided it meanwhile.
+    const run = mockState().runs.find((candidate) => candidate.id === 103)
+    if (run) run.state = 'queued'
     await userEvent.click(await screen.findByRole('button', { name: 'Reject run' }))
     expect(await screen.findByText('This run was already decided.')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(await screen.findByText('Nothing is waiting for approval')).toBeInTheDocument()
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
   })
 })

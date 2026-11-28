@@ -418,3 +418,30 @@ func TestLoopFollowsTheApprovalRow(t *testing.T) {
 	h.clock.Advance(2 * time.Hour)
 	h.waitRunState(later.ID, "expired")
 }
+
+func TestApproveAfterExpiryIsRefusedEvenBeforeTheSweep(t *testing.T) {
+	for _, action := range []string{"approve", "reject"} {
+		t.Run(action, func(t *testing.T) {
+			h := newHarness(t, harnessOptions{approvalFor: []string{testLabel}, approvalExpiry: time.Hour})
+			ctx := context.Background()
+			run := h.waitingRun(h.starter, "s1")
+			h.clock.Advance(3 * time.Hour) // the sweep has not run
+
+			var err error
+			if action == "approve" {
+				err = h.eng.Approve(ctx, h.approver, run.ID, run.ManifestID, "")
+			} else {
+				err = h.eng.Reject(ctx, h.approver, run.ID, "")
+			}
+			if !errors.Is(err, ErrApprovalExpired) {
+				t.Fatalf("%s after expiry = %v, want ErrApprovalExpired", action, err)
+			}
+			if got := h.expectState(run.ID, "expired"); got.EndReason == "" {
+				t.Errorf("the run was expired without an end reason")
+			}
+			if a := h.latestApproval(run.ID); a.Decision != "expired" || a.DecidedBy != nil {
+				t.Errorf("approval = %+v, want decision expired by nobody", a)
+			}
+		})
+	}
+}

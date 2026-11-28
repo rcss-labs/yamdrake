@@ -314,6 +314,8 @@ func (s *server) engineError(w http.ResponseWriter, r *http.Request, err error) 
 		forbidden(w)
 	case errors.Is(err, engine.ErrManifestChanged):
 		writeError(w, http.StatusConflict, codeConflict, "The plan changed. Reload and review it again.")
+	case errors.Is(err, engine.ErrApprovalExpired):
+		writeError(w, http.StatusConflict, codeConflict, "The approval expired before the decision. The run has been expired.")
 	case errors.Is(err, store.ErrAlreadyDecided):
 		writeError(w, http.StatusConflict, codeConflict, "This run was already decided.")
 	case errors.Is(err, engine.ErrWrongState), errors.Is(err, engine.ErrNotRunnable):

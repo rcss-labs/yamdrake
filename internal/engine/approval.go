@@ -20,6 +20,10 @@ import (
 // run's: nothing was recorded.
 var ErrManifestChanged = errors.New("the plan changed")
 
+// ErrApprovalExpired means the approval's time ran out before the decision;
+// the run has been expired instead.
+var ErrApprovalExpired = errors.New("the approval expired")
+
 // onEnterState carries out what entering a state means beyond the state
 // itself. Every path that changes a run's state calls it, in the same
 // transaction, once the new state is stored and only when the state really
@@ -98,7 +102,8 @@ func (e *Engine) Reject(ctx context.Context, p auth.Principal, runID int64, comm
 // run row lock makes two deciders take turns; store.DecideApproval's own
 // conditional update is the second line of defence.
 func (e *Engine) decide(ctx context.Context, p auth.Principal, runID int64, action, decision, next string, manifestID *string, comment string) error {
-	return e.inTx(ctx, runID, func(tx pgx.Tx, o *outcome) error {
+	expiredNow := false
+	err := e.inTx(ctx, runID, func(tx pgx.Tx, o *outcome) error {
 		run, err := store.LockRun(ctx, tx, runID)
 		if err != nil {
 			return fmt.Errorf("%s %d: %w", action, runID, err)
@@ -127,6 +132,19 @@ func (e *Engine) decide(ctx context.Context, p auth.Principal, runID int64, acti
 			return fmt.Errorf("%s %d: %w: it has no open approval", action, runID, ErrWrongState)
 		}
 		now := e.now()
+		if !now.Before(open.ExpiresAt) {
+			// Too late. Expire the run here, in this transaction, so the
+			// outcome does not depend on the sweep having got there first.
+			if err := e.expireApproval(ctx, tx, run.ID); err != nil {
+				return err
+			}
+			window := open.ExpiresAt.Sub(open.RequestedAt)
+			if err := e.moveTo(ctx, tx, run, "expired", "nobody approved the plan within "+window.String(), "", o); err != nil {
+				return err
+			}
+			expiredNow = true
+			return e.record(ctx, tx, nil, "run.expire", runID, map[string]any{"was": run.State})
+		}
 		if err := store.DecideApproval(ctx, tx, open.ID, decision, &p.UserID, comment, now); err != nil {
 			return fmt.Errorf("%s %d: %w", action, runID, err)
 		}
@@ -144,6 +162,10 @@ func (e *Engine) decide(ctx context.Context, p auth.Principal, runID int64, acti
 		}
 		return e.record(ctx, tx, &p, action, runID, map[string]any{"manifest_id": run.ManifestID, "comment": comment})
 	})
+	if err == nil && expiredNow {
+		return fmt.Errorf("%s %d: %w", action, runID, ErrApprovalExpired)
+	}
+	return err
 }
 
 // expireApproval closes the run's open approval as expired, by nobody. It is

@@ -82,6 +82,8 @@ services:
       YUMDRAKE_LOG_ARCHIVE_DIR: /var/lib/yumdrake/log-archive
       AWS_ACCESS_KEY_ID: ${YUMDRAKE_ORCHESTRATOR_AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${YUMDRAKE_ORCHESTRATOR_AWS_SECRET_ACCESS_KEY:-}
+    # Longer than YUMDRAKE_SHUTDOWN_TIMEOUT (20s) so in-flight legs and buffered logs drain.
+    stop_grace_period: 30s
     ports:
       - "${YUMDRAKE_HTTP_BIND:-127.0.0.1}:${YUMDRAKE_HTTP_PORT:-8080}:8080"
     volumes:
@@ -118,6 +120,8 @@ services:
       YUMDRAKE_ARTIFACT_DIR: /var/lib/yumdrake/artifacts
       AWS_ACCESS_KEY_ID: ${YUMDRAKE_RUNNER_AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${YUMDRAKE_RUNNER_AWS_SECRET_ACCESS_KEY:-}
+    # Longer than YUMDRAKE_SHUTDOWN_TIMEOUT (20s) so in-flight legs and buffered logs drain.
+    stop_grace_period: 30s
     volumes:
       - artifacts:/var/lib/yumdrake/artifacts
     # The runner starts only once the orchestrator is healthy, that is after it

@@ -5,6 +5,28 @@ on a single machine with only Docker installed. It uses the same images as the
 ECS setup and needs no AWS service of its own. Run every command below in this
 directory (`deploy/compose`).
 
+## 0. Get the files
+
+A host with only Docker needs this directory. Download the source archive of
+the release tag that matches `YUMDRAKE_VERSION` from
+github.com/rcss-labs/yumdrake (Releases page), or clone it:
+
+```sh
+git clone --branch v1.0.0 https://github.com/rcss-labs/yumdrake.git
+cd yumdrake/deploy/compose
+```
+
+The release workflow publishes the images to ghcr.io
+(`ghcr.io/rcss-labs/yumdrake-orchestrator:<tag>` and `...-runner:<tag>`) on each
+version tag. With no published release, build them from a checkout with
+`make images` and tag them, then set `YUMDRAKE_IMAGE_REPO=local` and
+`YUMDRAKE_VERSION=dev` in `.env`:
+
+```sh
+docker tag yumdrake-orchestrator:dev local/yumdrake-orchestrator:dev
+docker tag yumdrake-runner:dev local/yumdrake-runner:dev
+```
+
 ## 1. Prerequisites
 
 - Docker Engine with Docker Compose v2.24 or newer (`docker compose version`).
@@ -70,6 +92,23 @@ application:
    under "AWS access" below).
 2. Connect GitHub.
 3. Set the inventory source.
+
+## Storage
+
+Everything Yumdrake keeps is on named volumes (project name `yumdrake`, so
+`yumdrake_<volume>`). The directories inside the containers are fixed.
+
+| Volume | Service | Path in the container | Holds | Encrypted by Yumdrake |
+| --- | --- | --- | --- | --- |
+| `postgres-data` | postgres | `/var/lib/postgresql/data` | the database: runs, settings, connections | Stored connections only |
+| `valkey-data` | valkey | `/data` | cache and wake-up signals | No (disposable) |
+| `artifacts` | runner (all replicas) | `/var/lib/yumdrake/artifacts` (`YUMDRAKE_ARTIFACT_DIR`) | config copies of deployments; deleted after 30 days | Yes |
+| `log-archive` | orchestrator | `/var/lib/yumdrake/log-archive` (`YUMDRAKE_LOG_ARCHIVE_DIR`) | archived run logs | Yes |
+| `caddy-data` | caddy | `/data` | certificates and the ACME account | No |
+| `caddy-config` | caddy | `/config` | Caddy's saved configuration | No |
+
+The encryption key is `YUMDRAKE_LOCAL_SECRET_KEY`. `docker compose down -v`
+deletes all of these.
 
 ## AWS access
 

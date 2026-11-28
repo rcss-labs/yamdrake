@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -476,15 +477,11 @@ func TestLeaseLostCancelsExecutorAndDropsItsResult(t *testing.T) {
 	}
 
 	close(letGo)
-	waitFor(t, "the stale runner to flush and try to complete", func() bool {
-		for _, e := range sink.snapshot() {
-			if e.kind == "flush" {
-				return true
-			}
-		}
-		return false
-	})
-	time.Sleep(100 * time.Millisecond) // the refused Complete follows the flush
+	// Run returns only after the stale leg goroutine has flushed and tried to
+	// complete, so what follows sees the outcome of that refused Complete.
+	if err := rr.stop(t); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
 	got := h.leg(leg.ID)
 	if got.State != "claimed" || got.RunnerID != "fresh" || got.Generation != 2 || got.Result != nil {
 		t.Fatalf("leg = state %s runner %q generation %d result %s; the stale result must not touch it", got.State, got.RunnerID, got.Generation, got.Result)
@@ -504,7 +501,6 @@ func TestLeaseLostCancelsExecutorAndDropsItsResult(t *testing.T) {
 	if n := executions.Load(); n != 1 {
 		t.Errorf("stale runner executed %d times, want once", n)
 	}
-	_ = rr.stop(t)
 }
 
 // afterAbandonedOp leaves behind an operation written by an attempt that has
@@ -845,5 +841,121 @@ func TestFirstAttemptWritesNoContinuationLine(t *testing.T) {
 		if e.level == "warn" {
 			t.Errorf("unexpected warn line %q on a first attempt", e.text)
 		}
+	}
+}
+
+// A change cut short by shutdown may have been applied, so the next attempt
+// must be told it is ambiguous, not that it failed.
+func TestShutdownDuringChangeLeavesOperationAmbiguousForNextAttempt(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	leg := h.addLeg("billing")
+	system := &externalSystem{}
+	const key = "deploy-billing"
+
+	inFn := make(chan struct{})
+	first := h.startRunner(h.q, runnerOptions{id: "first", shutdown: 100 * time.Millisecond, executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			_, err := env.Do(ctx, "deploy", key, nil, func() (any, error) {
+				system.apply(key) // the call went out, then the context ended before the answer
+				close(inFn)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			})
+			return queue.Outcome{State: "unknown", FailureDetail: errString(err)}
+		}),
+	}})
+	<-inFn
+	if err := first.stop(t); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if got := h.leg(leg.ID); got.State != "queued" {
+		t.Fatalf("leg state = %s, want released to queued", got.State)
+	}
+	ops, err := store.OpsOfLeg(context.Background(), h.pool, leg.ID)
+	if err != nil || len(ops) != 1 || ops[0].State != "intended" {
+		t.Fatalf("ops = %+v, %v; want one operation still intended", ops, err)
+	}
+
+	var secondFn atomic.Int32
+	var got atomic.Value
+	second := h.startRunner(h.q, runnerOptions{id: "second", executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			_, err := env.Do(ctx, "deploy", key, nil, func() (any, error) { secondFn.Add(1); return nil, nil })
+			got.Store(doResult{err: err})
+			if errors.Is(err, ErrAmbiguous) && system.count(key) == 1 {
+				return succeed(`{}`)
+			}
+			return queue.Outcome{State: "failed", FailureShort: "Do said " + errString(err)}
+		}),
+	}})
+	waitFor(t, "second attempt to settle", func() bool { return h.leg(leg.ID).State == "succeeded" })
+	_ = second.stop(t)
+	if r, _ := got.Load().(doResult); !errors.Is(r.err, ErrAmbiguous) || errors.Is(r.err, ErrPreviouslyFailed) || secondFn.Load() != 0 {
+		t.Errorf("second attempt: Do error = %v, fn calls = %d; want ErrAmbiguous and no call", r.err, secondFn.Load())
+	}
+}
+
+func TestDoLeavesOperationIntendedWhenFnReportsMaybeApplied(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	leg := h.addLeg("billing")
+	var doErr atomic.Value
+	rr := h.startRunner(h.q, runnerOptions{executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			_, err := env.Do(ctx, "deploy", "k", nil, func() (any, error) {
+				return nil, fmt.Errorf("connection reset after sending: %w", ErrMaybeApplied)
+			})
+			doErr.Store(doResult{err: err})
+			return queue.Outcome{State: "unknown", FailureShort: "maybe applied"}
+		}),
+	}})
+	waitFor(t, "leg to settle", func() bool { return h.leg(leg.ID).State == "unknown" })
+	_ = rr.stop(t)
+	if r, _ := doErr.Load().(doResult); !errors.Is(r.err, ErrMaybeApplied) {
+		t.Errorf("Do error = %v, want it to wrap ErrMaybeApplied", r.err)
+	}
+	ops, err := store.OpsOfLeg(context.Background(), h.pool, leg.ID)
+	if err != nil || len(ops) != 1 || ops[0].State != "intended" {
+		t.Errorf("ops = %+v, %v; want one operation still intended", ops, err)
+	}
+}
+
+func TestUnregisteredResolveAndRevalidateFailWithReason(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	var ids []int64
+	for _, kind := range []string{"resolve", "revalidate"} {
+		queuedAt := h.clock.Now()
+		l, err := store.InsertLeg(context.Background(), h.pool, store.Leg{RunID: h.runID, Kind: kind, State: "queued", QueuedAt: &queuedAt})
+		if err != nil {
+			t.Fatalf("InsertLeg %s: %v", kind, err)
+		}
+		ids = append(ids, l.ID)
+	}
+	rr := h.startRunner(h.q, runnerOptions{poll: 20 * time.Millisecond})
+	for i, kind := range []string{"resolve", "revalidate"} {
+		id := ids[i]
+		waitFor(t, kind+" leg to fail", func() bool { return h.leg(id).State == "failed" })
+		if d := h.leg(id).FailureDetail; !strings.Contains(d, `"`+kind+`"`) {
+			t.Errorf("%s leg failure detail = %q, want it to name the kind", kind, d)
+		}
+	}
+	_ = rr.stop(t)
+}
+
+func TestQueuedLegIsNotClaimedAfterContextEnds(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	leg := h.addLeg("billing")
+	r := New(h.q, &recordingSink{}, "late", 1, time.Second, time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r.Register("ecs-deploy", execFunc(func(context.Context, Env, queue.Claimed) queue.Outcome { return succeed(`{}`) }))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := r.Run(ctx, nil); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if got := h.leg(leg.ID); got.State != "queued" || got.Attempt != 0 {
+		t.Errorf("leg = state %s attempt %d, want untouched in the queue", got.State, got.Attempt)
 	}
 }

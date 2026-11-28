@@ -18,7 +18,11 @@
 //   - Return queue.Outcome: succeeded, failed (with a short reason a person can
 //     read and a detail), unknown (the change may or may not have happened) or
 //     cancelled (after Env.CancelRequested). A panic counts as unknown.
-//   - Env.Log lines are batched; the runner flushes them before completing.
+//   - Env.Log lines are batched; the runner flushes them before completing. If
+//     the flush fails it is logged and the leg is completed anyway: settling
+//     the leg matters more than its log.
+//   - A panic in the executor's own goroutine is recovered. A panic in a
+//     goroutine the executor started is not: recover it there.
 package runner
 
 import (
@@ -52,6 +56,9 @@ const (
 	// stopGrace is how long Run waits for executors to return after it has
 	// told them to stop at the end of the shutdown timeout.
 	stopGrace = 5 * time.Second
+	// completeTries and completeRetryWait bound the retry of a failed Complete.
+	completeTries     = 3
+	completeRetryWait = 200 * time.Millisecond
 )
 
 var (
@@ -205,7 +212,17 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 	defer cancel(nil)
 
 	if err := r.q.MarkRunning(ctx, leg.ID, leg.Generation); err != nil {
-		log.Warn("could not start the leg; dropping it", "error", err.Error())
+		if errors.Is(err, queue.ErrLeaseLost) {
+			log.Warn("lease lost before the leg started; dropping it")
+			return
+		}
+		// Not ours to lose: give the leg back rather than hold it until the lease runs out.
+		log.Error("could not start the leg; releasing it", "error", err.Error())
+		releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+		defer cancelRelease()
+		if err := r.q.Release(releaseCtx, leg.ID, leg.Generation); err != nil {
+			log.Warn("could not release the leg", "error", err.Error())
+		}
 		return
 	}
 	env := newLegEnv(r.q, r.sink, leg, log)
@@ -235,16 +252,33 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 		log.Info("leg released for another attempt")
 		return
 	}
-	if err := r.q.Complete(settle, leg.ID, leg.Generation, outcome); err != nil {
-		if errors.Is(err, queue.ErrLeaseLost) {
-			log.Warn("lease lost; result dropped", "state", outcome.State, "failure", outcome.FailureShort)
-			return
-		}
+	err := r.completeWithRetry(settle, leg.ID, leg.Generation, outcome)
+	if errors.Is(err, queue.ErrLeaseLost) {
+		log.Warn("lease lost; result dropped", "state", outcome.State, "failure", outcome.FailureShort)
+		return
+	}
+	if err != nil {
 		// Not settled: the lease runs out and the leg is swept to another attempt.
 		log.Error("could not complete the leg", "error", err.Error())
 		return
 	}
 	log.Info("leg settled", "state", outcome.State)
+}
+
+// completeWithRetry retries a transient failure a few times; ErrLeaseLost is final.
+func (r *Runner) completeWithRetry(ctx context.Context, legID, generation int64, outcome queue.Outcome) error {
+	var err error
+	for attempt := 0; attempt < completeTries; attempt++ {
+		if err = r.q.Complete(ctx, legID, generation, outcome); err == nil || errors.Is(err, queue.ErrLeaseLost) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(completeRetryWait):
+		}
+	}
+	return err
 }
 
 // execute finds the executor and runs it, turning a panic into an unknown outcome.

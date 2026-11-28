@@ -58,15 +58,35 @@ type Env interface {
 	//   - Failed before: returned with ErrPreviouslyFailed, fn not called.
 	//   - Otherwise: the intent (JSON of intent) is recorded, the lease is
 	//     checked, fn is called, and its result (JSON) is recorded as done.
-	//     If fn returns an error the operation is recorded as failed and the
-	//     error is returned.
 	//
-	// The recorded intent must be enough for a later attempt to reconcile.
+	// What fn's error means. A plain error means "not applied": the system
+	// refused or the call never went out; the operation is recorded as failed
+	// and the error returned. If the call may have taken effect, wrap
+	// ErrMaybeApplied. The same is assumed when the leg's context ended during
+	// fn or fn returned context.Canceled or context.DeadlineExceeded. In those
+	// cases nothing is recorded, the operation stays intended, and the next
+	// attempt gets ErrAmbiguous. ErrPreviouslyFailed therefore only ever means
+	// a definite refusal; it also appears when a leg that failed is re-queued
+	// by a "check again" and calls Do with the same key, in which case choose a
+	// new key (for example with a counter) for a deliberate second try.
+	//
+	// Do must not be called concurrently with the same key. The recorded intent
+	// must be enough for a later attempt to reconcile.
 	Do(ctx context.Context, name, key string, intent any, fn func() (result any, err error)) (store.Op, error)
 
 	// CancelRequested reports whether a person asked for this leg to stop.
-	// Executors check it between stages and return a cancelled outcome.
+	// Executors check it between stages and return a cancelled outcome. It
+	// never cancels ctx, and it returns false when the flag cannot be read
+	// (database error, logged by the runner).
 	CancelRequested(ctx context.Context) bool
+}
+
+// fnMayHaveApplied reports whether an error from Do's fn leaves the change in
+// doubt: fn said so (ErrMaybeApplied), or the leg's context ended (lease lost
+// or shutdown), or fn itself was cut by a cancellation or deadline.
+func fnMayHaveApplied(ctx context.Context, err error) bool {
+	return errors.Is(err, ErrMaybeApplied) || ctx.Err() != nil ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // legEnv implements Env for one claimed leg.
@@ -171,6 +191,11 @@ func (e *legEnv) Do(ctx context.Context, name, key string, intent any, fn func()
 	// Record the outcome even when the leg's context ended during fn: the
 	// change happened, and the record is what stops the next attempt guessing.
 	recordCtx := context.WithoutCancel(ctx)
+	if fnErr != nil && fnMayHaveApplied(ctx, fnErr) {
+		// Cut short, not refused: the change may have gone through. Leave the
+		// operation intended so the next attempt gets ErrAmbiguous and checks.
+		return op, fmt.Errorf("do %q: %w", key, fnErr)
+	}
 	if fnErr != nil {
 		failure, _ := json.Marshal(map[string]string{"error": fnErr.Error()})
 		if err := e.q.Finish(recordCtx, e.leg.ID, e.leg.Generation, op.ID, false, failure); err != nil {
@@ -189,3 +214,8 @@ func (e *legEnv) Do(ctx context.Context, name, key string, intent any, fn func()
 	op.State, op.Result = "done", resultJSON
 	return op, nil
 }
+
+// ErrMaybeApplied is for Do's fn to wrap when its call may have taken effect
+// although it returned an error (a timeout or a dropped connection after the
+// request was sent).
+var ErrMaybeApplied = errors.New("change may have been applied")

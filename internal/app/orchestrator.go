@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	valkey "github.com/valkey-io/valkey-go"
 
@@ -63,7 +64,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 	return func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (Extension, error) {
 		awsConfig, err := awsx.BaseConfig(ctx, cfg.AWS)
 		if err != nil {
-			if cfg.SecretsMode == "kms" {
+			if cfg.SecretsMode == "kms" || cfg.LogBucket != "" {
 				return Extension{}, err
 			}
 			// Without KMS the AWS configuration is only for discovery (the connection test).
@@ -82,13 +83,19 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Log:       log,
 			Publisher: bus,
 		})
-		// Archived legs are read back from the same directory they were written to.
+		// Archived legs are read back from the bucket or directory they were written to.
 		var archive logs.Archive
 		var archiver *logs.Archiver
-		if cfg.LogArchiveDir != "" {
+		switch {
+		case cfg.LogBucket != "":
+			// Yumdrake's own account and identity, not a connected account's.
+			archive = logs.NewS3Archive(s3.NewFromConfig(awsConfig, func(o *s3.Options) { o.UsePathStyle = cfg.AWS.UsePathStyleS3() }), cfg.LogBucket)
+		case cfg.LogArchiveDir != "":
 			if archive, err = logs.NewDirArchive(cfg.LogArchiveDir); err != nil {
 				return Extension{}, fmt.Errorf("log archive: %w", err)
 			}
+		}
+		if archive != nil {
 			archiver = logs.NewArchiver(pool, archive, cfg.LogArchiveAfter, nil, log)
 		}
 		handler := api.New(api.Deps{

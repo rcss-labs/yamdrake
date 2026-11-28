@@ -46,8 +46,11 @@ type Orchestrator struct {
 	// that share one Valkey.
 	ValkeyKeyPrefix string
 	// LogArchiveDir is the directory settled legs' logs are archived to. Empty
-	// means archiving is off (until object storage arrives in Plan 5).
+	// means no directory archive (see LogBucket).
 	LogArchiveDir string
+	// LogBucket (YUMDRAKE_LOG_BUCKET) is the S3 bucket settled legs' logs are
+	// archived to instead of LogArchiveDir; setting both is a config error.
+	LogBucket string
 	// LogArchiveInterval is how often settled legs are archived, and
 	// LogArchiveAfter how long a leg must have been settled first. Both apply
 	// only when LogArchiveDir is set.
@@ -168,6 +171,15 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	cfg.LogArchiveDir = l.getenv("YUMDRAKE_LOG_ARCHIVE_DIR")
 	if cfg.LogArchiveDir != "" && !filepath.IsAbs(cfg.LogArchiveDir) {
 		l.fail("YUMDRAKE_LOG_ARCHIVE_DIR", "must be an absolute path")
+	}
+	cfg.LogBucket = l.getenv("YUMDRAKE_LOG_BUCKET")
+	if cfg.LogBucket != "" {
+		if !bucketNamePattern.MatchString(cfg.LogBucket) || strings.Contains(cfg.LogBucket, "..") {
+			l.fail("YUMDRAKE_LOG_BUCKET", "must be a valid S3 bucket name (3 to 63 lowercase letters, digits, '-' or '.')")
+		}
+		if cfg.LogArchiveDir != "" {
+			l.fail("YUMDRAKE_LOG_BUCKET", "cannot be combined with YUMDRAKE_LOG_ARCHIVE_DIR; set only one of them")
+		}
 	}
 	cfg.LogArchiveInterval = l.duration("YUMDRAKE_LOG_ARCHIVE_INTERVAL", "1m")
 	cfg.LogArchiveAfter = l.duration("YUMDRAKE_LOG_ARCHIVE_AFTER", "1h")

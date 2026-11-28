@@ -286,8 +286,9 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_LIMIT_PER_ENVIRONMENT` | orchestrator | `10` | Positive integer. At most this many legs of other runs run at once in one environment. A soft limit: orchestrators advancing two runs at the same moment may overshoot it briefly. |
 | `YUMDRAKE_LIMIT_PER_ACCOUNT` | orchestrator | `20` | Positive integer. The same limit for one AWS account. |
 | `YUMDRAKE_LOG_ARCHIVE_DIR` | orchestrator | empty (no archiving) | Absolute path of a directory. When set, the logs of legs settled longer than `YUMDRAKE_LOG_ARCHIVE_AFTER` are moved there from PostgreSQL and are still served by the API. |
-| `YUMDRAKE_LOG_ARCHIVE_INTERVAL` | orchestrator | `1m` | Go duration greater than zero. How often settled legs are archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
-| `YUMDRAKE_LOG_ARCHIVE_AFTER` | orchestrator | `1h` | Go duration. How long a leg must have been settled before its log is archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
+| `YUMDRAKE_LOG_BUCKET` | orchestrator | empty (no S3 archive) | S3 bucket (3 to 63 lowercase letters, digits, `-`, `.`) that settled legs' logs are archived to, under `runs/<run>/legs/<leg>.ndjson.gz`, encrypted with S3-managed keys. Uses Yumdrake's own AWS identity. Replaces `YUMDRAKE_LOG_ARCHIVE_DIR`: setting both is a configuration error. |
+| `YUMDRAKE_LOG_ARCHIVE_INTERVAL` | orchestrator | `1m` | Go duration greater than zero. How often settled legs are archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR` or `YUMDRAKE_LOG_BUCKET`. |
+| `YUMDRAKE_LOG_ARCHIVE_AFTER` | orchestrator | `1h` | Go duration. How long a leg must have been settled before its log is archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR` or `YUMDRAKE_LOG_BUCKET`. |
 | `YUMDRAKE_ENV` | runner | `prod` | `dev` or `prod`. Fake steps are allowed only with `dev`. |
 | `YUMDRAKE_FAKE_STEPS` | runner | `false` | `true` or `false`. When `true` (only with `YUMDRAKE_ENV=dev`; the runner refuses to start otherwise) the runner executes pretend steps that change nothing real. See [Trying a run with fake steps](#trying-a-run-with-fake-steps). |
 | `YUMDRAKE_RUNNER_CONCURRENCY` | runner | `8` | Positive integer. How many legs one runner executes at once. |

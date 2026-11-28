@@ -645,6 +645,28 @@ func TestLoadOrchestratorLogArchiveDir(t *testing.T) {
 	}
 }
 
+func TestLoadOrchestratorLogBucket(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.LogBucket != "" {
+		t.Fatalf("default: bucket = %q, err = %v; want none", cfg.LogBucket, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_LOG_BUCKET"] = "yumdrake-logs"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.LogBucket != "yumdrake-logs" {
+		t.Fatalf("bucket = %q, err = %v", cfg.LogBucket, err)
+	}
+	env["YUMDRAKE_LOG_BUCKET"] = "Not_A_Bucket"
+	if _, err = LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_LOG_BUCKET") {
+		t.Fatalf("invalid name: err = %v, want a complaint naming the variable", err)
+	}
+	env["YUMDRAKE_LOG_BUCKET"] = "yumdrake-logs"
+	env["YUMDRAKE_LOG_ARCHIVE_DIR"] = "/var/lib/yumdrake/logs"
+	if _, err = LoadOrchestrator(envFrom(env)); err == nil ||
+		!strings.Contains(err.Error(), "YUMDRAKE_LOG_BUCKET") || !strings.Contains(err.Error(), "YUMDRAKE_LOG_ARCHIVE_DIR") {
+		t.Fatalf("bucket and directory together: err = %v, want a complaint naming both variables", err)
+	}
+}
+
 func TestOrchestratorEngineSettings(t *testing.T) {
 	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
 	if err != nil || cfg.SweepInterval != 2*time.Second || cfg.LimitPerEnvironment != 10 || cfg.LimitPerAccount != 20 {

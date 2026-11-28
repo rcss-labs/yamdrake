@@ -26,8 +26,12 @@ const (
 	claimBatch = 50
 	// maxRoundsPerDelivery bounds one DeliverDue call so a flood cannot hold it forever.
 	maxRoundsPerDelivery = 200
-	// shutdownWriteTimeout bounds the write that releases a claim after shutdown began.
+	// shutdownWriteTimeout bounds the write that releases a claim, or records a
+	// sent post, after shutdown began.
 	shutdownWriteTimeout = 5 * time.Second
+	// claimPostingBudget is the 2-minute claim lease minus the 10s Slack timeout
+	// and a margin, so a row is never posted after its lease may have run out.
+	claimPostingBudget = 90 * time.Second
 )
 
 // Sender delivers the notification outbox to Slack.
@@ -93,7 +97,8 @@ func (s *Sender) DeliverDue(ctx context.Context) (sent, retried, failed int, err
 		return 0, 0, 0, err
 	}
 	for range maxRoundsPerDelivery {
-		due, err := store.ClaimDueNotifications(ctx, s.pool, s.now(), claimBatch)
+		claimedAt := s.now()
+		due, err := store.ClaimDueNotifications(ctx, s.pool, claimedAt, claimBatch)
 		if err != nil {
 			return sent, retried, failed, err
 		}
@@ -106,6 +111,10 @@ func (s *Sender) DeliverDue(ctx context.Context) (sent, retried, failed int, err
 					return sent, retried, failed, err
 				}
 				continue
+			}
+			if s.now().Sub(claimedAt) >= claimPostingBudget {
+				// The rest of the batch may now be held by another sender; their leases run out on their own.
+				return sent, retried, failed, nil
 			}
 			deliveryResult, err := s.deliver(ctx, token, n)
 			if err != nil {
@@ -148,7 +157,10 @@ func (s *Sender) deliver(ctx context.Context, token string, n store.Notification
 
 	postErr := s.slack.Post(ctx, token, n.Channel, text)
 	if postErr == nil {
-		return s.record(ctx, n, store.MarkNotificationSent(ctx, s.pool, n.ID, s.now()), deliveryResultSent)
+		// The post happened, so the sent mark is written even if shutdown began during it.
+		markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownWriteTimeout)
+		defer cancel()
+		return s.record(markCtx, n, store.MarkNotificationSent(markCtx, s.pool, n.ID, s.now()), deliveryResultSent)
 	}
 	if ctx.Err() != nil {
 		// Shutdown: the post's result is unknown; give the message back as it was.

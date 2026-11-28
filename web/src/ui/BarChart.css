@@ -79,10 +79,16 @@
   padding: 0 4px;
   margin: 6px 0 0 28px;
 }
-.ui-chart-axis span {
+/* Each slot matches a bar's width; a label wider than its slot overflows equally on both sides, so it stays centred under the bar. */
+.ui-chart-axis > span {
   flex: 1;
   min-width: 0;
-  text-align: center;
+  display: flex;
+  justify-content: center;
+  min-height: 16px;
+}
+.ui-chart-axis > span > span {
+  flex: none;
   white-space: nowrap;
   font: 11px/16px 'IBM Plex Mono', ui-monospace, monospace;
   color: var(--ink3);

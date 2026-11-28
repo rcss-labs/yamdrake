@@ -1,7 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
-import { BarChart } from './BarChart'
+import { BarChart, visibleLabelIndexes } from './BarChart'
 
 const series = [
   { key: 'succeeded', label: 'Succeeded', color: '#5B8DC9' },
@@ -85,5 +85,25 @@ describe('BarChart', () => {
     expect(screen.getByText('No runs in this period')).toBeInTheDocument()
     expect(container.querySelectorAll('[data-series]')).toHaveLength(0)
     expect(Array.from(container.querySelectorAll('[data-tick]')).map((tick) => tick.textContent)).toEqual(['0'])
+  })
+})
+
+describe('visibleLabelIndexes', () => {
+  const sorted = (set: Set<number>) => Array.from(set).sort((a, b) => a - b)
+
+  it('labels every day when each bar is wide enough for its label', () => {
+    expect(sorted(visibleLabelIndexes(5, 60))).toEqual([0, 1, 2, 3, 4])
+  })
+
+  it('keeps the first and last day and leaves a label width between labels when bars are narrow', () => {
+    const shown = sorted(visibleLabelIndexes(14, 20))
+    expect(shown[0]).toBe(0)
+    expect(shown[shown.length - 1]).toBe(13)
+    shown.slice(1).forEach((index, position) => expect((index - shown[position]!) * 20).toBeGreaterThanOrEqual(48))
+  })
+
+  it('drops the grid label next to the first day rather than printing two labels over each other', () => {
+    // 6 days, step 3: counted back from the end the grid is days 5 and 2, and day 2 would sit beside day 0
+    expect(sorted(visibleLabelIndexes(6, 16))).toEqual([0, 5])
   })
 })

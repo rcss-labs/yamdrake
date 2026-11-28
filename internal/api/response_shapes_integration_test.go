@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rcss-labs/yamdrake/internal/running"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/versions"
@@ -187,6 +188,7 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 	}
 	listed["GET /api/v1/jobs/{id}"] = true // checked below with the id of the registered job
 	listed["GET /api/v1/jobs/{id}/versions"] = true
+	listed["GET /api/v1/versions/running"] = true // 409 on an empty database; checked populated below
 	for _, route := range (&server{}).routes() {
 		if strings.HasPrefix(route.pattern, "GET ") && !listed[route.pattern] && !notAListResponse[route.pattern] {
 			t.Errorf("%s is neither in the list-shape table nor in notAListResponse", route.pattern)
@@ -215,6 +217,7 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 	// No AWS account is connected here, so every service is "unavailable":
 	// the empty and unavailable shapes must still be lists and maps, never null.
 	populated = append(populated, list("GET /api/v1/jobs/{id}/versions", "/api/v1/jobs/"+jobID+"/versions?environment=prod-01", reflect.TypeFor[versions.JobVersions]()))
+	populated = append(populated, list("GET /api/v1/versions/running", "/api/v1/versions/running", reflect.TypeFor[running.Matrix]()))
 	check("populated database", populated)
 
 	// The stored job definition is raw JSON in the response type; walk it as a spec.Job.

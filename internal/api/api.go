@@ -24,6 +24,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/engine"
 	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/notify"
+	"github.com/rcss-labs/yamdrake/internal/running"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -135,6 +136,9 @@ type Deps struct {
 	// Versions lists the image versions of a job's services. Optional: New
 	// builds one from the default Discovery and Valkey.
 	Versions VersionLister
+	// Running reads the versions running in ECS. Optional: New builds one from
+	// the default Discovery, the pool and Valkey.
+	Running RunningReader
 }
 
 // valkeyTimeout bounds every Valkey call made for a request: against a dead
@@ -194,6 +198,12 @@ func New(deps Deps) http.Handler {
 		if provider, ok := deps.Discovery.(versions.Discovery); ok {
 			deps.Versions = versions.New(versions.Config{
 				Discovery: provider, Valkey: deps.Valkey, KeyPrefix: deps.KeyPrefix, AWS: deps.AWSOptions})
+		}
+	}
+	if deps.Running == nil {
+		if provider, ok := deps.Discovery.(running.Discovery); ok {
+			deps.Running = running.New(running.Config{
+				Discovery: provider, Valkey: deps.Valkey, KeyPrefix: deps.KeyPrefix, AWS: deps.AWSOptions, DB: deps.Pool})
 		}
 	}
 	dummy, err := dummyPasswordHash()
@@ -319,7 +329,7 @@ func (s *server) routes() []routeDef {
 		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
 		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
 		{"GET /api/v1/jobs/{id}/versions", auth.View, s.getJobVersions},
-	}, append(s.runRoutes(), append(s.accessRoutes(), append(s.freezeRoutes(), s.slackRoutes()...)...)...)...)
+	}, append(s.runRoutes(), append(s.accessRoutes(), append(s.freezeRoutes(), append(s.slackRoutes(), s.versionRoutes()...)...)...)...)...)
 }
 
 type errorBody struct {

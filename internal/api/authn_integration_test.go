@@ -353,6 +353,7 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		"PATCH /api/v1/jobs/{id}":                      auth.ManageJobs,
 		"POST /api/v1/jobs/{id}/sync":                  auth.ManageJobs,
 		"GET /api/v1/jobs/{id}/versions":               auth.View,
+		"GET /api/v1/versions/running":                 auth.View,
 		"GET /api/v1/admin/users":                      auth.ManageAccess,
 		"POST /api/v1/admin/users":                     auth.ManageAccess,
 		"POST /api/v1/admin/users/{id}/tokens":         auth.ManageAccess,

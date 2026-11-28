@@ -138,7 +138,16 @@ describe('what failed', () => {
     expect(within(rows[1]!).getByText('billing')).toBeInTheDocument()
     expect(within(rows[1]!).getByText('copy-config')).toBeInTheDocument()
     expect(within(rows[1]!).getByText(/does not exist \(NoSuchKey\)/)).toBeInTheDocument()
-    expect(within(panel).getByText(/billing: deploy and verify were skipped/)).toBeInTheDocument()
+    expect(within(panel).getByText(/: deploy and verify were skipped/).textContent).toBe('billing: deploy and verify were skipped')
+  })
+
+  it('links the failed service and the service named in the skipped line to its page', async () => {
+    renderRun(runIds.partiallySucceeded)
+    const panel = await screen.findByRole('region', { name: 'What failed' })
+    const links = within(panel).getAllByRole('link', { name: 'billing' })
+    expect(links).toHaveLength(2)
+    for (const link of links) expect(link).toHaveAttribute('href', '/services/billing')
+    expect(within(panel).getByText(/: deploy and verify were skipped/)).toBeInTheDocument()
   })
 
   it('"Show its log" puts the service in the address, which is the console scope', async () => {

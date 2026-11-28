@@ -1,8 +1,9 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
-import { adminMe, eventSources, failNext, jobManagerMe, mockState, qaMe, requests, runIds, viewerMe } from '../../test/server'
-import type { Me } from '../../api/types'
+import { adminMe, eventSources, failNext, jobManagerMe, mockState, qaMe, requests, runIds, server, viewerMe } from '../../test/server'
+import type { ApprovalItem, Me } from '../../api/types'
 import { actionNames, moveStoredRun, renderRun, storedRun } from './runTestUtils'
 
 const grantee = (id: number, ...actions: Me['grants'][number]['action'][]): Me => ({
@@ -39,7 +40,8 @@ describe('which buttons each state shows an admin', () => {
     if (buttons.length === 0) {
       await waitFor(() => expect(screen.queryByRole('group', { name: 'Run actions' })).not.toBeInTheDocument())
     } else {
-      expect(await actionNames()).toEqual(buttons)
+      // Approve and Reject wait for the approvals list, so the bar may fill in after it first shows.
+      await waitFor(async () => expect(await actionNames()).toEqual(buttons))
     }
   })
 
@@ -66,9 +68,48 @@ describe('a person who may only view', () => {
     expect(within(document.body).queryAllByRole('button', { name: /^(Start|Discard|Cancel|Approve|Reject|Restore|Re-run failed|Plan again)$/ })).toEqual([])
   })
 
-  it('is told why they cannot approve', async () => {
+  it('does not ask for the approvals list, and shows no reason', async () => {
     renderRun(runIds.waitingApproval, viewerMe)
-    expect(await screen.findByText(/You do not have permission to approve in prod/)).toBeInTheDocument()
+    await screen.findByTestId('run-lead')
+    expect(requests.some((request) => request.path === '/api/v1/approvals')).toBe(false)
+    expect(screen.queryByText(/You do not have permission to approve/)).not.toBeInTheDocument()
+  })
+})
+
+describe('the approvals row decides Approve and Reject', () => {
+  const row = (extra: Partial<ApprovalItem>): ApprovalItem => ({ run_id: runIds.waitingApproval, job_id: 'x', environment: 'prod-01', requested_by_name: 'Yael Barak', requested_at: '', expires_at: '', versions: [], can_approve: true, reason: '', ...extra })
+  let answered = false
+  const answerWith = (rows: ApprovalItem[]) => {
+    answered = false
+    server.use(
+      http.get('/api/v1/approvals', () => {
+        answered = true
+        return HttpResponse.json({ approvals: rows })
+      }),
+    )
+  }
+
+  it('shows Approve and Reject when the row for this run says the viewer can approve', async () => {
+    answerWith([row({ can_approve: true })])
+    renderRun(runIds.waitingApproval, adminMe)
+    await waitFor(async () => expect(await actionNames()).toEqual(['Approve', 'Reject', 'Cancel']))
+  })
+
+  it('shows the reason and no Approve or Reject when the row says the viewer cannot', async () => {
+    answerWith([row({ can_approve: false, reason: 'You asked for this run.' })])
+    renderRun(runIds.waitingApproval, adminMe)
+    expect(await screen.findByText('You asked for this run.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
+  })
+
+  it('shows no Approve or Reject when no row is for this run', async () => {
+    answerWith([row({ run_id: 999 })])
+    renderRun(runIds.waitingApproval, adminMe)
+    await waitFor(() => expect(answered).toBe(true))
+    expect(await actionNames()).toEqual(['Cancel'])
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
   })
 })
 
@@ -254,6 +295,7 @@ describe('Re-run failed', () => {
     const view = renderRun(runIds.partiallySucceeded, adminMe)
     await userEvent.click(await screen.findByRole('button', { name: 'Re-run failed' }))
     await waitFor(() => expect(posts('/rerun-failed')).toHaveLength(1))
+    expect(posts('/rerun-failed')[0]!.body).toEqual({})
     await waitFor(() => expect(view.location().pathname).toBe('/runs/110'))
     expect(await screen.findByRole('heading', { level: 1, name: /Run #110/ })).toBeInTheDocument()
   })

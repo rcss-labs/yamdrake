@@ -15,7 +15,7 @@ import {
   useStartRun,
 } from './actions'
 import { failedChecks } from './planModel'
-import { useRunPlan } from './queries'
+import { useApprovals, useRunPlan } from './queries'
 import { changedServices, plural, selectionToRepeat, serviceProgress } from './runModel'
 
 type Confirming = 'start' | 'cancel' | 'discard' | 'reject' | 'restore'
@@ -46,7 +46,11 @@ export function RunActions({ run, reload }: RunActionsProps) {
   const mayRun = can('run', target)
   const mayCancel = can('cancel', target)
   const mayRestore = can('restore', target)
-  const mayApprove = can('approve', target) && run.approval?.can_approve === true
+  // Whether this viewer may decide the run, and why not, is the /approvals row of this run; no row, no buttons.
+  const mayAsk = run.state === 'waiting_approval' && can('approve', target)
+  const approvals = useApprovals({ enabled: mayAsk })
+  const approvalRow = mayAsk ? approvals.data?.approvals.find((item) => item.run_id === run.id) : undefined
+  const mayApprove = approvalRow?.can_approve === true
 
   // Start waits for the plan: it is hidden until the plan has loaded and while any of its checks failed.
   const plan = useRunPlan(run.id, { enabled: run.state === 'planned' && mayRun })
@@ -106,7 +110,7 @@ export function RunActions({ run, reload }: RunActionsProps) {
   const progress = serviceProgress(run)
   const changed = changedServices(run)
   if (mayRerun.includes(state) && mayRun && progress.some((service) => !service.updated)) {
-    buttons.push({ name: 'Re-run failed', onClick: () => void perform(() => rerun.mutateAsync(), true) })
+    buttons.push({ name: 'Re-run failed', onClick: () => void perform(() => rerun.mutateAsync({}), true) })
   }
   if (restorable.includes(state) && mayRestore && changed.length > 0) {
     buttons.push({ name: 'Restore', onClick: () => setConfirming('restore') })
@@ -122,7 +126,7 @@ export function RunActions({ run, reload }: RunActionsProps) {
     })
   }
 
-  const approvalReason = state === 'waiting_approval' && run.approval && !run.approval.can_approve ? run.approval.cannot_approve_reason : ''
+  const approvalReason = approvalRow && !approvalRow.can_approve ? approvalRow.reason : ''
 
   return (
     <div className="run-actions-area">

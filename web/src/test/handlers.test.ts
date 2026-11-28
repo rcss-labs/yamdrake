@@ -308,8 +308,8 @@ describe('the mock run routes keep state and answer like the server', () => {
   it('lets only another person approve, only the plan they saw, and only once', async () => {
     signInAs({ ...grantee('approve'), id: 6, name: 'Yael Barak' })
     await expect(api('POST', `/api/v1/runs/${runIds.waitingApproval}/approve`, { manifest_id: fakeHash(103) })).rejects.toMatchObject({ status: 403 })
-    const own = await api<{ approvals: { run_id: number; can_approve: boolean; cannot_approve_reason: string }[] }>('GET', '/api/v1/approvals')
-    expect(own.approvals).toEqual([expect.objectContaining({ run_id: 103, can_approve: false, cannot_approve_reason: expect.stringContaining('You started this run') })])
+    const own = await api<{ approvals: { run_id: number; can_approve: boolean; reason: string }[] }>('GET', '/api/v1/approvals')
+    expect(own.approvals).toEqual([expect.objectContaining({ run_id: 103, can_approve: false, reason: expect.stringContaining('You started this run') })])
 
     signInAs(grantee('approve'))
     await expect(api('POST', `/api/v1/runs/${runIds.waitingApproval}/approve`, { manifest_id: 'stale' })).rejects.toMatchObject({
@@ -333,7 +333,7 @@ describe('the mock run routes keep state and answer like the server', () => {
 
   it('re-runs the failed and skipped services of a run with the versions they had', async () => {
     signInAs(adminMe)
-    const rerun = await api<RunDetail>('POST', `/api/v1/runs/${runIds.partiallySucceeded}/rerun-failed`)
+    const rerun = await api<RunDetail>('POST', `/api/v1/runs/${runIds.partiallySucceeded}/rerun-failed`, {})
     expect(rerun.state).toBe('planned')
     expect(rerun.selection).toEqual({ portal: { version: '2.3.9' } })
     expect([...new Set(rerun.legs.filter((leg) => leg.kind === 'step').map((leg) => leg.service))]).toEqual(['billing'])

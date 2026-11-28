@@ -154,7 +154,7 @@ describe('what failed', () => {
 describe('watching a run change under the page', () => {
   it('swaps the buttons when a state event moves 103 from waiting approval to running', async () => {
     renderRun(runIds.waitingApproval)
-    expect(await actionNames()).toEqual(['Approve', 'Reject', 'Cancel'])
+    await waitFor(async () => expect(await actionNames()).toEqual(['Approve', 'Reject', 'Cancel']))
     const run = storedRun(runIds.waitingApproval)
     await waitFor(() => expect(eventSources.all.length).toBeGreaterThan(0))
     act(() => {

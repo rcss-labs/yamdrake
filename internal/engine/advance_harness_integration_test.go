@@ -70,6 +70,7 @@ type harnessOptions struct {
 	approvalExpiry time.Duration
 	noInventory    bool
 	limits         Limits
+	slackChannel   string // job.notify.slack; empty means no notifications
 }
 
 // harness is a migrated database with a job, an inventory and some people.
@@ -111,6 +112,20 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		for _, action := range actions {
 			p.Grants = append(p.Grants, store.Grant{Action: action})
 		}
+		// The engine re-resolves the requester from the database when a queued
+		// run starts, so the person's group and grants are stored as well.
+		group, err := store.CreateGroup(ctx, pool, name+"-group", admin)
+		if err != nil {
+			t.Fatalf("CreateGroup %s: %v", name, err)
+		}
+		if err := store.SetManualMembership(ctx, pool, user.ID, group.ID, true); err != nil {
+			t.Fatalf("SetManualMembership %s: %v", name, err)
+		}
+		for _, action := range actions {
+			if _, err := store.CreateGrant(ctx, pool, store.Grant{GroupID: group.ID, Action: action}); err != nil {
+				t.Fatalf("CreateGrant %s %s: %v", name, action, err)
+			}
+		}
 		return p
 	}
 	h.admin = person("admin", true)
@@ -148,6 +163,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 			{Name: "deploy", Use: "ecs-deploy", Group: "g", Needs: []spec.Need{{Step: "config", Scope: "service"}}},
 		},
 	}
+	h.job.SlackChannel = opts.slackChannel
 	if len(opts.approvalFor) > 0 {
 		h.job.Approval = &spec.Approval{Labels: opts.approvalFor, Expires: opts.approvalExpiry}
 	}
@@ -171,7 +187,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		h.snapshot = snapshot
 	}
 
-	h.eng = New(Deps{DB: pool, Limits: opts.limits, Now: h.clock.Now, Publisher: h.pub})
+	h.eng = New(Deps{DB: pool, Limits: opts.limits, Now: h.clock.Now, Publisher: h.pub, PublicURL: "https://yum.example"})
 	return h
 }
 
@@ -311,7 +327,7 @@ func (h *harness) running(services ...string) store.Run {
 		h.t.Fatalf("Start: %v", err)
 	}
 	if h.run(run.ID).State == "waiting_approval" {
-		if err := h.eng.Approve(context.Background(), h.approver, run.ID); err != nil {
+		if err := h.eng.Approve(context.Background(), h.approver, run.ID, h.run(run.ID).ManifestID, ""); err != nil {
 			h.t.Fatalf("Approve: %v", err)
 		}
 		h.advance(run.ID)

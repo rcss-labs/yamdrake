@@ -57,6 +57,8 @@ type Deps struct {
 	Log    *slog.Logger
 	// Publisher is optional: nil means no wake-ups.
 	Publisher Publisher
+	// PublicURL is the address notifications link to (config.PublicURL).
+	PublicURL string
 }
 
 // Engine creates runs, advances them under a run row lock and carries out
@@ -67,11 +69,13 @@ type Engine struct {
 	now    func() time.Time
 	log    *slog.Logger
 	pub    Publisher
+	// publicURL is the base of the run links in notifications.
+	publicURL string
 }
 
 // New builds an Engine, filling defaults for the clock, logger and limits.
 func New(deps Deps) *Engine {
-	e := &Engine{db: deps.DB, limits: deps.Limits, now: deps.Now, log: deps.Log, pub: deps.Publisher}
+	e := &Engine{db: deps.DB, limits: deps.Limits, now: deps.Now, log: deps.Log, pub: deps.Publisher, publicURL: deps.PublicURL}
 	if e.limits == (Limits{}) {
 		e.limits = Limits{PerEnvironment: defaultLimitPerEnvironment, PerAccount: defaultLimitPerAccount}
 	}
@@ -183,6 +187,11 @@ func (e *Engine) advanceLocked(ctx context.Context, tx pgx.Tx, run store.Run, o 
 			return err
 		}
 	}
+	if run.State == "queued" {
+		if err := e.checkQueuedRun(ctx, tx, &view); err != nil {
+			return err
+		}
+	}
 	return e.apply(ctx, tx, run, legs, Decide(view), o)
 }
 
@@ -281,6 +290,9 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 		}
 		o.runChanged = true
 		if newState != run.State {
+			if err := e.onEnterState(ctx, tx, run, newState, now); err != nil {
+				return err
+			}
 			level, text := transitionLine(run.State, newState, d.Reason)
 			if err := store.AppendRunLine(ctx, tx, run.ID, level, text, now); err != nil {
 				return err
@@ -288,6 +300,11 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 		}
 	}
 
+	if d.FailUnauthorized {
+		if err := e.recordUnauthorizedEnd(ctx, tx, run, d.Reason); err != nil {
+			return err
+		}
+	}
 	if d.ReleaseLocks || (d.NewState != "" && isFinalRunState(d.NewState)) {
 		if err := store.ReleaseLocks(ctx, tx, run.ID); err != nil {
 			return err

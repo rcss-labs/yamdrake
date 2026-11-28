@@ -273,6 +273,8 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_LOG_ARCHIVE_DIR` | orchestrator | empty (no archiving) | Absolute path of a directory. When set, the logs of legs settled longer than `YUMDRAKE_LOG_ARCHIVE_AFTER` are moved there from PostgreSQL and are still served by the API. |
 | `YUMDRAKE_LOG_ARCHIVE_INTERVAL` | orchestrator | `1m` | Go duration greater than zero. How often settled legs are archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
 | `YUMDRAKE_LOG_ARCHIVE_AFTER` | orchestrator | `1h` | Go duration. How long a leg must have been settled before its log is archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
+| `YUMDRAKE_SLACK_API_URL` | orchestrator | `https://slack.com/api` | An `http://` or `https://` URL with a host. The Slack Web API that notifications are posted to. Overridden in tests. |
+| `YUMDRAKE_NOTIFY_INTERVAL` | orchestrator | `5s` | Go duration greater than zero. How often the sender looks for notifications that are due. |
 | `YUMDRAKE_ENV` | runner | `prod` | `dev` or `prod`. Fake steps are allowed only with `dev`. |
 | `YUMDRAKE_FAKE_STEPS` | runner | `false` | `true` or `false`. When `true` (only with `YUMDRAKE_ENV=dev`; the runner refuses to start otherwise) the runner executes pretend steps that change nothing real. See [Trying a run with fake steps](#trying-a-run-with-fake-steps). |
 | `YUMDRAKE_RUNNER_CONCURRENCY` | runner | `8` | Positive integer. How many legs one runner executes at once. |

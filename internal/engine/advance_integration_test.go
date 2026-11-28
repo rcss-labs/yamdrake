@@ -342,7 +342,7 @@ func TestApprovalRequiredWaitsAndHoldsNoLocks(t *testing.T) {
 		}
 	}
 
-	if err := h.eng.Approve(ctx, h.approver, run.ID); err != nil {
+	if err := h.eng.Approve(ctx, h.approver, run.ID, run.ManifestID, ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 	approved := h.expectState(run.ID, "queued")
@@ -355,8 +355,8 @@ func TestApprovalRequiredWaitsAndHoldsNoLocks(t *testing.T) {
 	if len(h.locks(run.ID)) == 0 {
 		t.Fatalf("approved run took no locks")
 	}
-	if err := h.eng.Approve(ctx, h.approver, run.ID); !errors.Is(err, ErrWrongState) {
-		t.Fatalf("Approve of a running run = %v, want ErrWrongState", err)
+	if err := h.eng.Approve(ctx, h.approver, run.ID, run.ManifestID, ""); !errors.Is(err, store.ErrAlreadyDecided) {
+		t.Fatalf("Approve of a running run = %v, want store.ErrAlreadyDecided", err)
 	}
 }
 
@@ -372,13 +372,13 @@ func TestApproveByStarterIsRefusedUnlessAdmin(t *testing.T) {
 	}
 
 	run := start(h.starterApprover)
-	if err := h.eng.Approve(ctx, h.starterApprover, run.ID); !errors.Is(err, ErrForbidden) {
+	if err := h.eng.Approve(ctx, h.starterApprover, run.ID, run.ManifestID, ""); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("starter approving own run = %v, want ErrForbidden", err)
 	}
-	if err := h.eng.Approve(ctx, h.stranger, run.ID); !errors.Is(err, ErrForbidden) {
+	if err := h.eng.Approve(ctx, h.stranger, run.ID, run.ManifestID, ""); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("approval without the grant = %v, want ErrForbidden", err)
 	}
-	if err := h.eng.Reject(ctx, h.starterApprover, run.ID); !errors.Is(err, ErrForbidden) {
+	if err := h.eng.Reject(ctx, h.starterApprover, run.ID, ""); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("starter rejecting own run = %v, want ErrForbidden", err)
 	}
 	h.expectState(run.ID, "waiting_approval")
@@ -387,7 +387,7 @@ func TestApproveByStarterIsRefusedUnlessAdmin(t *testing.T) {
 	}
 
 	adminRun := start(h.admin)
-	if err := h.eng.Approve(ctx, h.admin, adminRun.ID); err != nil {
+	if err := h.eng.Approve(ctx, h.admin, adminRun.ID, adminRun.ManifestID, ""); err != nil {
 		t.Fatalf("admin approving own run: %v", err)
 	}
 	h.expectState(adminRun.ID, "queued")
@@ -405,14 +405,14 @@ func TestRejectAndExpire(t *testing.T) {
 	}
 
 	rejected := waiting()
-	if err := h.eng.Reject(ctx, h.approver, rejected.ID); err != nil {
+	if err := h.eng.Reject(ctx, h.approver, rejected.ID, ""); err != nil {
 		t.Fatalf("Reject: %v", err)
 	}
 	if got := h.expectState(rejected.ID, "rejected"); got.EndReason == "" || got.WaitReason != "" {
 		t.Fatalf("rejected run: end reason %q, wait reason %q", got.EndReason, got.WaitReason)
 	}
-	if err := h.eng.Reject(ctx, h.approver, rejected.ID); !errors.Is(err, ErrWrongState) {
-		t.Fatalf("second Reject = %v, want ErrWrongState", err)
+	if err := h.eng.Reject(ctx, h.approver, rejected.ID, ""); !errors.Is(err, store.ErrAlreadyDecided) {
+		t.Fatalf("second Reject = %v, want store.ErrAlreadyDecided", err)
 	}
 	before := len(h.runLines(rejected.ID))
 	h.advance(rejected.ID) // a late result for a final run is harmless
@@ -995,10 +995,10 @@ func TestEveryPersonActionIsAudited(t *testing.T) {
 
 	approved := h.planned(h.starter, "s1")
 	must(h.eng.Start(ctx, h.starter, approved.ID))
-	must(h.eng.Approve(ctx, h.approver, approved.ID))
+	must(h.eng.Approve(ctx, h.approver, approved.ID, approved.ManifestID, ""))
 	rejected := h.planned(h.starter, "s2")
 	must(h.eng.Start(ctx, h.starter, rejected.ID))
-	must(h.eng.Reject(ctx, h.approver, rejected.ID))
+	must(h.eng.Reject(ctx, h.approver, rejected.ID, ""))
 	cancelled := h.planned(h.starter, "s3")
 	must(h.eng.Cancel(ctx, h.starter, cancelled.ID))
 

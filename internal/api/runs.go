@@ -49,6 +49,9 @@ func (s *server) runRoutes() []routeDef {
 		{"GET /api/v1/runs/{id}/events", auth.View, s.streamEvents},
 		{"POST /api/v1/runs/{id}/start", auth.View, s.startRun},
 		{"POST /api/v1/runs/{id}/cancel", auth.View, s.cancelRun},
+		{"GET /api/v1/approvals", auth.View, s.listApprovals},
+		{"POST /api/v1/runs/{id}/approve", auth.View, s.approveRun},
+		{"POST /api/v1/runs/{id}/reject", auth.View, s.rejectRun},
 		{"POST /api/v1/runs/{id}/legs/{leg}/reconcile", auth.View, s.reconcileLeg},
 		{"POST /api/v1/runs/{id}/legs/{leg}/check-again", auth.View, s.checkLegAgain},
 		{"POST /api/v1/admin/runs/{id}/release-locks", auth.ManageAccess, s.releaseLocks},
@@ -142,13 +145,15 @@ type runSummaryView struct {
 
 type runDetailView struct {
 	runSummaryView
-	AWSAccount       string     `json:"aws_account"`
-	FolderID         int64      `json:"folder_id"`
-	InventoryCommit  string     `json:"inventory_commit"`
-	JobCommit        string     `json:"job_commit"`
-	ApprovalRequired bool       `json:"approval_required"`
-	AutoStart        bool       `json:"auto_start"`
-	Steps            []stepView `json:"steps"`
+	AWSAccount       string `json:"aws_account"`
+	FolderID         int64  `json:"folder_id"`
+	InventoryCommit  string `json:"inventory_commit"`
+	JobCommit        string `json:"job_commit"`
+	ApprovalRequired bool   `json:"approval_required"`
+	AutoStart        bool   `json:"auto_start"`
+	// Approval is the run's open approval, else the latest one; null when it never asked.
+	Approval *approvalView `json:"approval"`
+	Steps    []stepView    `json:"steps"`
 	runProgress
 }
 
@@ -233,6 +238,16 @@ func (s *server) buildDetail(ctx context.Context, run store.Run) (runDetailView,
 	for _, st := range steps {
 		out.Steps = append(out.Steps, stepView{ID: st.ID, Name: st.Name, Use: st.Use, Group: st.GroupID, Position: st.Position, MaxParallel: st.MaxParallel})
 	}
+	approval, asked, err := store.LatestApproval(ctx, s.Pool, run.ID)
+	if err != nil {
+		return runDetailView{}, err
+	}
+	if asked {
+		out.Approval, err = s.shapeApproval(ctx, map[int64]string{}, approval)
+		if err != nil {
+			return runDetailView{}, err
+		}
+	}
 	return out, nil
 }
 
@@ -297,6 +312,12 @@ func (s *server) engineError(w http.ResponseWriter, r *http.Request, err error) 
 		writeJSON(w, http.StatusUnprocessableEntity, body)
 	case errors.Is(err, engine.ErrForbidden):
 		forbidden(w)
+	case errors.Is(err, engine.ErrManifestChanged):
+		writeError(w, http.StatusConflict, codeConflict, "The plan changed. Reload and review it again.")
+	case errors.Is(err, engine.ErrApprovalExpired):
+		writeError(w, http.StatusConflict, codeConflict, "The approval expired before the decision. The run has been expired.")
+	case errors.Is(err, store.ErrAlreadyDecided):
+		writeError(w, http.StatusConflict, codeConflict, "This run was already decided.")
 	case errors.Is(err, engine.ErrWrongState), errors.Is(err, engine.ErrNotRunnable):
 		writeError(w, http.StatusConflict, codeConflict, errorMessageOf(err))
 	case errors.Is(err, store.ErrNotFound):

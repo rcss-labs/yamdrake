@@ -23,12 +23,12 @@ import (
 
 // startLoop runs h.eng.Loop and returns a function that stops it and checks
 // that it returns promptly.
-func (h *harness) startLoop(wakeRuns <-chan int64, every time.Duration, q *queue.Queue, expire func(store.Run) time.Duration) (stop func()) {
+func (h *harness) startLoop(wakeRuns <-chan int64, every time.Duration, q *queue.Queue) (stop func()) {
 	h.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		h.eng.Loop(ctx, wakeRuns, every, q, expire)
+		h.eng.Loop(ctx, wakeRuns, every, q)
 		close(done)
 	}()
 	var once sync.Once
@@ -73,7 +73,7 @@ func TestLoopAdvancesOnWake(t *testing.T) {
 	h.resolved(run.ID) // the runner's work is done; only the orchestrator's step is missing
 
 	wakes := make(chan int64, 1)
-	h.startLoop(wakes, time.Hour, nil, nil) // no timer tick can help within the test
+	h.startLoop(wakes, time.Hour, nil) // no timer tick can help within the test
 	time.Sleep(100 * time.Millisecond)
 	h.expectState(run.ID, "resolving")
 
@@ -94,7 +94,7 @@ func TestLoopMakesProgressWithoutValkey(t *testing.T) {
 	run := h.create(h.starter, true, "s1", "s2") // auto-start: no person is needed
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	h.startLoop(bus.Subscribe(ctx, wake.TopicRuns), 20*time.Millisecond, nil, nil)
+	h.startLoop(bus.Subscribe(ctx, wake.TopicRuns), 20*time.Millisecond, nil)
 
 	// A runner stand-in settles whatever the loop queues.
 	deadline := time.Now().Add(20 * time.Second)
@@ -116,7 +116,7 @@ func TestLoopSweepsExpiredLeasesAndExpiresApprovals(t *testing.T) {
 		}
 		h.clock.Advance(time.Minute) // the runner went silent
 
-		h.startLoop(nil, 20*time.Millisecond, q, nil)
+		h.startLoop(nil, 20*time.Millisecond, q)
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) && h.legByKind(run.ID, "resolve").State != "queued" {
 			time.Sleep(10 * time.Millisecond)
@@ -135,7 +135,7 @@ func TestLoopSweepsExpiredLeasesAndExpiresApprovals(t *testing.T) {
 		}
 		h.expectState(run.ID, "waiting_approval")
 
-		h.startLoop(nil, 20*time.Millisecond, nil, nil)
+		h.startLoop(nil, 20*time.Millisecond, nil)
 		h.clock.Advance(30 * time.Minute)
 		time.Sleep(200 * time.Millisecond) // several ticks
 		h.expectState(run.ID, "waiting_approval")
@@ -144,22 +144,11 @@ func TestLoopSweepsExpiredLeasesAndExpiresApprovals(t *testing.T) {
 		h.waitRunState(run.ID, "expired")
 	})
 
-	t.Run("the given function sets the approval time", func(t *testing.T) {
-		h := newHarness(t, harnessOptions{approvalFor: []string{testLabel}, approvalExpiry: 24 * time.Hour})
-		run := h.planned(h.starter, "s1")
-		if err := h.eng.Start(context.Background(), h.starter, run.ID); err != nil {
-			t.Fatalf("Start: %v", err)
-		}
-		h.clock.Advance(2 * time.Minute)
-		h.startLoop(nil, 20*time.Millisecond, nil, func(store.Run) time.Duration { return time.Minute })
-		h.waitRunState(run.ID, "expired")
-	})
-
 	t.Run("a planned run nobody started expires", func(t *testing.T) {
 		h := newHarness(t, harnessOptions{})
 		run := h.planned(h.starter, "s1")
 		h.clock.Advance(2 * time.Hour)
-		h.startLoop(nil, 20*time.Millisecond, nil, nil)
+		h.startLoop(nil, 20*time.Millisecond, nil)
 		h.waitRunState(run.ID, "expired")
 	})
 }
@@ -241,7 +230,7 @@ func TestOneFailingRunDoesNotBlockOthers(t *testing.T) {
 
 	t.Run("on the timer", func(t *testing.T) {
 		h, bad, good, logs := setup(t, false)
-		h.startLoop(nil, 20*time.Millisecond, nil, nil)
+		h.startLoop(nil, 20*time.Millisecond, nil)
 		h.waitRunState(good.ID, "planned")
 		h.expectState(bad.ID, "resolving")
 		assertFailureLogged(t, logs)
@@ -250,7 +239,7 @@ func TestOneFailingRunDoesNotBlockOthers(t *testing.T) {
 	t.Run("on wake-ups", func(t *testing.T) {
 		h, bad, good, logs := setup(t, false)
 		wakes := make(chan int64, 2)
-		h.startLoop(wakes, time.Hour, nil, nil)
+		h.startLoop(wakes, time.Hour, nil)
 		wakes <- bad.ID
 		wakes <- good.ID
 		h.waitRunState(good.ID, "planned")
@@ -273,7 +262,7 @@ func TestPanicInOneRunDoesNotStopTheLoop(t *testing.T) {
 				wakes <- bad.ID
 				wakes <- good.ID
 			}
-			h.startLoop(wakes, every, nil, nil)
+			h.startLoop(wakes, every, nil)
 			h.waitRunState(good.ID, "planned")
 			h.expectState(bad.ID, "resolving")
 			// The loop is still alive: a run resolved after the panic is advanced too.

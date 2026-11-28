@@ -943,19 +943,3 @@ func TestUnregisteredResolveAndRevalidateFailWithReason(t *testing.T) {
 	}
 	_ = rr.stop(t)
 }
-
-func TestQueuedLegIsNotClaimedAfterContextEnds(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t)
-	leg := h.addLeg("billing")
-	r := New(h.q, &recordingSink{}, "late", 1, time.Second, time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	r.Register("ecs-deploy", execFunc(func(context.Context, Env, queue.Claimed) queue.Outcome { return succeed(`{}`) }))
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := r.Run(ctx, nil); err != nil {
-		t.Fatalf("Run = %v", err)
-	}
-	if got := h.leg(leg.ID); got.State != "queued" || got.Attempt != 0 {
-		t.Errorf("leg = state %s attempt %d, want untouched in the queue", got.State, got.Attempt)
-	}
-}

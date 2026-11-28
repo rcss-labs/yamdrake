@@ -1,15 +1,23 @@
-# The demo: an overlay on compose.yaml that builds the images locally, runs the
-# runner with FAKE steps and adds a helper that serves a fake GitHub and fills
-# a fresh Yumdrake with sample data. Nothing real is read or changed.
+# The demo: an overlay on compose.yaml that builds the images locally, adds a
+# local AWS emulator (Floci) and a helper that seeds it, serves a fake GitHub
+# and fills a fresh Yumdrake with sample data. The runner runs the real steps
+# (copy-config, ecs-deploy, resolve, revalidate) against Floci: services really
+# roll in containers there, and one version of the API really crashes. Nothing
+# real is read or changed: Floci, the fake GitHub and every credential are
+# local and public.
 #
 #   docker compose -p yumdrake-demo --env-file deploy/compose/demo/demo.env \
 #     -f deploy/compose/compose.yaml -f deploy/compose/compose.demo.yaml up -d --build --wait
 #
 # or `make demo`. See README.md, "Try the demo".
 #
-# NOT YET IN THE DEMO: a local AWS emulator (Floci) with seeded accounts,
-# images, buckets and config files, and real steps against it. They join this
-# file later; until then every deployment step is a fake.
+# Floci is published on no host port (4566 and 4577 belong to other tools). Its
+# ECS tasks and its image registry are sibling containers started through the
+# Docker socket. The tasks are named floci-aws-ecs-* like the development
+# Floci's, so the name cannot tell them apart; they sit on this project's
+# Compose network, which is how `make demo-down` and demo-check find and remove
+# exactly the ones this demo caused (see scripts/floci-clean.sh). The registry
+# container gets the demo's own name and port range.
 name: yumdrake-demo
 
 services:
@@ -31,6 +39,9 @@ services:
       # The fake GitHub served by the demo service.
       YUMDRAKE_GITHUB_API_URL: http://demo:9000
       YUMDRAKE_SYNC_INTERVAL: 10s
+    depends_on:
+      floci:
+        condition: service_healthy
 
   runner:
     build:
@@ -41,9 +52,40 @@ services:
         COMMIT: ${COMMIT:-unknown}
     environment:
       YUMDRAKE_ENV: dev
-      YUMDRAKE_FAKE_STEPS: "true"
-      # The demo has no AWS or GitHub, so resolve and revalidate stay fake too.
-      YUMDRAKE_FAKE_RESOLVE: "true"
+      # Config copies are read from the fake GitHub; they and the run's artifacts stay on the runner's volume.
+      YUMDRAKE_GITHUB_API_URL: http://demo:9000
+      # Rolling out a service in Floci takes a stability window and a container start.
+      YUMDRAKE_ROLLOUT_POLL: 2s
+      YUMDRAKE_ROLLOUT_TIMEOUT: 5m
+    depends_on:
+      floci:
+        condition: service_healthy
+
+  floci:
+    image: floci/floci:2.5.0
+    restart: unless-stopped
+    # Services reach it at http://floci:4566. It is published only on loopback, on a port Docker picks (never 4566
+    # or 4577, which other tools use): Floci starts every ECS task by asking the Docker daemon to pull its image
+    # from a registry address on the host, and it works out that address from the port it is published on.
+    # Without a published port the daemon would be told to pull from localhost:4566, which is not Floci.
+    ports:
+      - "127.0.0.1::4566"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      FLOCI_HOSTNAME: floci
+      # The registry container gets the demo's own name and port range (demo-check sets its own), so two demos on
+      # one Docker daemon never meet. Floci offers no setting for the registry's data volume: it is always
+      # floci-aws-ecr-registry-data, shared with any other Floci on the daemon. Everything the demo puts in it is under
+      # its own account ids (111111111111, 222222222222, 333333333333) and names (yd-*-demo-*).
+      FLOCI_SERVICES_ECR_REGISTRY_CONTAINER_NAME: ${YUMDRAKE_DEMO_REGISTRY_NAME:-floci-aws-demo-ecr-registry}
+      FLOCI_SERVICES_ECR_REGISTRY_BASE_PORT: ${YUMDRAKE_DEMO_REGISTRY_PORT_FROM:-5300}
+      FLOCI_SERVICES_ECR_REGISTRY_MAX_PORT: ${YUMDRAKE_DEMO_REGISTRY_PORT_TO:-5399}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   demo:
     image: ${YUMDRAKE_IMAGE_REPO}/yumdrake-demo:${YUMDRAKE_VERSION}
@@ -54,6 +96,7 @@ services:
     environment:
       YUMDRAKE_DEMO_LISTEN: ":9000"
       YUMDRAKE_DEMO_ORCHESTRATOR_URL: http://orchestrator:8080
+      YUMDRAKE_DEMO_AWS_ENDPOINT: http://floci:4566
       YUMDRAKE_PUBLIC_URL: ${YUMDRAKE_PUBLIC_URL}
       YUMDRAKE_DATABASE_URL: postgres://yumdrake@postgres:5432/yumdrake?sslmode=disable
       PGPASSWORD: ${YUMDRAKE_DATABASE_PASSWORD}
@@ -61,11 +104,14 @@ services:
     depends_on:
       orchestrator:
         condition: service_healthy
+      floci:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/yumdrake-demo", "healthcheck"]
       interval: 5s
       timeout: 3s
-      retries: 30
+      retries: 90
+      # Seeding the local AWS (services, images, buckets) takes a few minutes.
       start_period: 20s
     read_only: true
     user: "65532:65532"
@@ -77,4 +123,4 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: 128m
+          memory: 256m

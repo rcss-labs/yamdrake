@@ -248,6 +248,16 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
-      # Builds the images and runs the production Compose setup and the demo for real.
-      # The images build the web app inside Docker, so Node is not needed here.
+      # demo-check runs a browser test against the demo (web/e2e/demo.spec.ts), so it needs Node,
+      # the web dependencies and Chromium. The images themselves build the web app inside Docker.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: make web-install
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      # Builds the images and runs the production Compose setup and the demo for real: the demo's local AWS
+      # (Floci) takes a deployment, a failure and a restore through the API, the CLI and the browser.
       - run: make compose-check demo-check

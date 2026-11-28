@@ -26,7 +26,7 @@ Open http://localhost:18280 and sign in as one of these:
 make demo-down   # stop it and delete its data
 ```
 
-The demo runs on fake steps that change nothing, and it refuses to run anywhere but localhost. To run Yumdrake for real on one host, see [deploy/compose/README.md](deploy/compose/README.md); for ECS, see [deploy/terraform/example/README.md](deploy/terraform/example/README.md).
+The demo runs the real deployment steps against a local AWS emulator (Floci) that it starts itself, so nothing real is touched, and it refuses to run anywhere but localhost. To run Yumdrake for real on one host, see [deploy/compose/README.md](deploy/compose/README.md); for ECS, see [deploy/terraform/example/README.md](deploy/terraform/example/README.md).
 
 ## Prerequisites
 
@@ -321,7 +321,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_METRICS` | orchestrator | empty (off) | `emf` writes CloudWatch embedded-metric-format lines to standard output every minute. Any other non-empty value is a config error. |
 | `YUMDRAKE_METRICS_DIMENSIONS` | orchestrator | empty | `Name=value,Name=value`: dimensions put on every metric (at most the number the config allows). Used with `YUMDRAKE_METRICS`. |
 | `YUMDRAKE_FAKE_STEPS` | runner | `false` | `true` or `false`. When `true` (only with `YUMDRAKE_ENV=dev`; the runner refuses to start otherwise) the runner executes pretend steps that change nothing real. See [Trying a run with fake steps](#trying-a-run-with-fake-steps). |
-| `YUMDRAKE_FAKE_RESOLVE` | runner | `false` | `true` or `false`. Keeps the fake resolve and revalidate steps instead of the real ones; only with `YUMDRAKE_FAKE_STEPS=true`. The Compose demo sets it because it has no AWS or GitHub. |
+| `YUMDRAKE_FAKE_RESOLVE` | runner | `false` | `true` or `false`. Keeps the fake resolve and revalidate steps instead of the real ones; only with `YUMDRAKE_FAKE_STEPS=true`. |
 | `YUMDRAKE_RUNNER_CONCURRENCY` | runner | `8` | Positive integer. How many legs one runner executes at once. |
 | `YUMDRAKE_LEASE` | runner | `30s` | Go duration. How long a claimed leg belongs to a runner without a heartbeat. After that another runner may take it (at most 5 times, then the leg becomes `unknown`). |
 | `YUMDRAKE_HEARTBEAT` | runner | `10s` | Go duration; must be shorter than `YUMDRAKE_LEASE`. How often the runner renews the leases of its legs. |

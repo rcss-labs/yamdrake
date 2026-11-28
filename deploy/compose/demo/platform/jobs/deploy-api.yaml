@@ -1,15 +1,15 @@
 apiVersion: yumdrake/v1
 kind: Job
-job: deploy-backend-api
-title: "Deploy the backend API"
+job: deploy-api
+title: "Deploy the API"
 
 environment:
   labels: [dev, preprod, prod]
 
 groups:
   api:
-    label: Backend API
-    services: [backend-api]
+    label: API
+    services: [api]
 
 approval:
   when:
@@ -17,11 +17,13 @@ approval:
   expires: 24h
 
 steps:
-  - name: config-api
+  - name: config
     use: copy-config
     group: api
-  - name: roll-api
+  - name: roll
     use: ecs-deploy
     group: api
     timeout: 15m
-    needs: [config-api]
+    needs:
+      - step: config
+        scope: service

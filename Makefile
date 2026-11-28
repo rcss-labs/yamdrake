@@ -110,14 +110,17 @@ compose-check: ## Run the production Compose setup (deploy/compose) for real: si
 # The demo runs under its own Compose project, so it never touches the dev stack (project yumdrake).
 DEMO_COMPOSE := docker compose -p yumdrake-demo --env-file deploy/compose/demo/demo.env -f deploy/compose/compose.yaml -f deploy/compose/compose.demo.yaml
 
-demo: ## Start the demo (fake steps, sample data) on http://localhost:18280 and print the sign-ins
-	$(DEMO_COMPOSE) up -d --build --wait
+demo: ## Start the demo (a local AWS with real steps, sample data) on http://localhost:18280 and print the sign-ins
+	$(DEMO_COMPOSE) up -d --build --wait --wait-timeout 600
 	@$(DEMO_COMPOSE) logs --no-log-prefix demo | grep -A 7 'Yumdrake demo is ready' | tail -n 8
 
-demo-down: ## Stop the demo and delete its data (project yumdrake-demo only)
+# The demo's Floci starts its ECS tasks and its registry as sibling containers, which Compose does not know:
+# they are removed first, by the demo project's own network and nothing else (the development Floci's are never touched).
+demo-down: ## Stop the demo and delete its data and its local AWS's containers (project yumdrake-demo only)
+	./scripts/floci-clean.sh --network yumdrake-demo_default
 	$(DEMO_COMPOSE) down -v --remove-orphans
 
-demo-check: ## Run the demo for real: sign-ins, permissions and a fake deployment through the API and CLI
+demo-check: ## Run the demo for real: sign-ins, permissions, a deployment, a failure and a restore in a local AWS, through the API, the CLI and a browser
 	./scripts/demo-check.sh
 
 web-install: ## Install the web application's dependencies from the lockfile

@@ -52,6 +52,30 @@ describe('the Run tab', () => {
     expect(options).toEqual(['hetzner-01 (dev)', 'hetzner-02 (dev)', 'hetzner-03 (dev)', 'prod-01 (prod)'])
   })
 
+  it('treats a null unavailable map as empty, as Go sends a nil map', async () => {
+    const image = { tag: '1.9.4', digest: 'sha256:1.9.4', pushed_at: '2026-11-26T12:00:00Z' }
+    server.use(
+      http.get('/api/v1/jobs/3/versions', () =>
+        HttpResponse.json({ groups: { portal: { common: ['1.9.4'], services: { 'backend-api': [image] }, unavailable: null } } }),
+      ),
+    )
+    renderRunTab(3)
+    expect(await planButton()).toBeInTheDocument()
+    expect(await portalGroup()).toBeChecked()
+    expect(screen.getByText('1 of 2 selected')).toBeInTheDocument()
+  })
+
+  it('treats a null services map as empty', async () => {
+    server.use(
+      http.get('/api/v1/jobs/3/versions', () =>
+        HttpResponse.json({ groups: { portal: { common: null, services: null, unavailable: { billing: 'not in this environment' } } } }),
+      ),
+    )
+    renderRunTab(3)
+    expect(await planButton()).toBeInTheDocument()
+    expect(screen.queryByText(/something went wrong/i)).not.toBeInTheDocument()
+  })
+
   it('keeps the environment choice in the URL beside the tab', async () => {
     const view = renderRunTab(3)
     await userEvent.selectOptions(await environmentSelect(), 'hetzner-02')

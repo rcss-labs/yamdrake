@@ -49,12 +49,27 @@ export function useRunPlan(runId: number | string, options: QueryOptions = {}) {
   return useApiGet<Plan>(runPlanKey(runId), `/api/v1/runs/${runId}/plan`, options)
 }
 
+/** A map Go sent as null (a nil map) is empty; the client's list rule has already turned some of those into []. */
+const mapOrEmpty = <T>(value: Record<string, T> | null | undefined | T[]): Record<string, T> =>
+  value === null || value === undefined || Array.isArray(value) ? {} : value
+
+/** The versions response with every null map or list made empty, so the screens never test `in` on null. */
+function normaliseVersions(data: JobVersions): JobVersions {
+  const groups = Object.fromEntries(
+    Object.entries(mapOrEmpty(data.groups)).map(([id, group]) => [
+      id,
+      { common: group.common ?? [], services: mapOrEmpty(group.services), unavailable: mapOrEmpty(group.unavailable) },
+    ]),
+  )
+  return { groups }
+}
+
 /** GET /api/v1/jobs/{id}/versions?environment=: what each group's services can be deployed at. Waits for an environment. */
 export function useJobVersions(jobId: number | string, environment: string, options: QueryOptions = {}) {
   return useApiGet<JobVersions>(
     jobVersionsKey(jobId, environment),
     `/api/v1/jobs/${jobId}/versions?environment=${encodeURIComponent(environment)}`,
-    { ...options, enabled: environment !== '' && (options.enabled ?? true) },
+    { ...options, enabled: environment !== '' && (options.enabled ?? true), select: normaliseVersions },
   )
 }
 

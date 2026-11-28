@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { describe, expect, it } from 'vitest'
 import type { ApiLogLine, LogPage, RunStateEvent } from '../../api/types'
 import { runIds } from '../../test/fixtures'
-import { eventSources, failNext, mockState, requests } from '../../test/server'
+import { delayNext, eventSources, failNext, mockState, requests } from '../../test/server'
 import { useRunLive } from './useRunLive'
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -269,6 +269,24 @@ describe('useRunLive on an active run', () => {
     await waitFor(() => expect(result.current.run?.wait_reason).toBe('Changed meanwhile'))
     expect(requests.filter((request) => request.path === `/api/v1/runs/${runIds.running}`).length).toBe(before + 1)
     expect(result.current.lines.map((l) => l.text)).toEqual(['kept'])
+  })
+
+  it('does not let a reload that was asked before a state event overwrite that event', async () => {
+    const { result } = await watchActiveRun(runIds.running)
+    const stored = mockState().runs.find((candidate) => candidate.id === runIds.running)!
+    // The reload is read from the server's old state and answers late.
+    delayNext('GET', `/api/v1/runs/${runIds.running}`, 300)
+    act(() => result.current.reload())
+    await waitFor(() => expect(requests.filter((request) => request.path === `/api/v1/runs/${runIds.running}`)).toHaveLength(2))
+    act(() => eventSources.last()!.emit('state', stateEventOf(runIds.running, { wait_reason: 'Newer than the reload' })))
+    expect(result.current.run?.wait_reason).toBe('Newer than the reload')
+    await waitFor(() => expect(requests.filter((request) => request.path === `/api/v1/runs/${runIds.running}` && request.status === 200)).toHaveLength(2))
+    // The old answer has arrived (the stored run still says the old reason); the event's state stays.
+    expect(stored.wait_reason).not.toBe('Newer than the reload')
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(result.current.run?.wait_reason).toBe('Newer than the reload')
   })
 
   it('closes the stream and reports finished on the end event', async () => {

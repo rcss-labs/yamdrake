@@ -187,10 +187,14 @@ export function useRunLive(runId: number, opts: { logs: boolean }): RunLive {
     const fetchRun = () => api<RunDetail>('GET', `/api/v1/runs/${runId}`)
 
     // Gets the detail-only fields (approval, selection, ...) that a state event does not carry.
+    // Bumped by every state event applied. An answer that was asked before a newer event must not replace what that
+    // event said, so it is then taken as detail only (a counter, because event times can be equal).
+    let eventsApplied = 0
     const refreshDetail = async (detailOnly: boolean) => {
+      const askedAt = eventsApplied
       try {
         const run = await fetchRun()
-        if (!cancelled) dispatch({ type: 'detail', run, detailOnly })
+        if (!cancelled) dispatch({ type: 'detail', run, detailOnly: detailOnly || eventsApplied !== askedAt })
       } catch (caught) {
         const error = asApiError(caught)
         if (cancelled) return
@@ -203,6 +207,7 @@ export function useRunLive(runId: number, opts: { logs: boolean }): RunLive {
     reloadRef.current = () => void refreshDetail(false)
 
     const applyState = (body: RunStateEvent) => {
+      eventsApplied += 1
       dispatch({ type: 'state', event: body })
       if (body.state !== knownState || body.cancel_requested !== knownCancel) {
         knownState = body.state

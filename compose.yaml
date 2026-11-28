@@ -65,6 +65,10 @@ services:
       YUMDRAKE_VALKEY_ADDR: valkey:6379
       # Development only: a fixed, public key. Real deployments must set their own secret.
       YUMDRAKE_LOCAL_SECRET_KEY: ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=
+      # Fake steps change nothing real. Both default to off; only scripts/smoke.sh
+      # turns them on (dev environment, fake steps) for its own project.
+      YUMDRAKE_ENV: ${YUMDRAKE_RUNNER_ENV:-prod}
+      YUMDRAKE_FAKE_STEPS: ${YUMDRAKE_RUNNER_FAKE_STEPS:-false}
     depends_on:
       postgres:
         condition: service_healthy

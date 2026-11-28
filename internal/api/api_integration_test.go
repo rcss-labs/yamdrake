@@ -30,6 +30,8 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/cache"
 	"github.com/rcss-labs/yamdrake/internal/db"
+	runengine "github.com/rcss-labs/yamdrake/internal/engine"
+	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -262,6 +264,8 @@ func newHarness(t *testing.T) *harness {
 		Pool: pool, Engine: engine, Cipher: cipher, Log: log,
 		Sessions: sessions, Valkey: client, KeyPrefix: prefix, PublicURL: publicURL,
 		LockoutWindow: testLockoutWindow,
+		Runs:          runengine.New(runengine.Deps{DB: pool, Log: log}),
+		Logs:          logs.NewReader(pool, nil),
 	}
 	h := &harness{t: t, dbURL: url, pool: pool, cipher: cipher, src: src, handler: New(deps),
 		deps: deps, valkey: client, sessions: sessions}

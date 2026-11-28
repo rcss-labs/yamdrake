@@ -3,33 +3,23 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/app"
-	"github.com/rcss-labs/yamdrake/internal/artifacts"
-	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/awsx/deploy"
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner"
-	"github.com/rcss-labs/yamdrake/internal/secrets"
-	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yamdrake/internal/runnerapp"
 	"github.com/rcss-labs/yamdrake/internal/steps/fake"
-	"github.com/rcss-labs/yamdrake/internal/steps/resolve"
-	"github.com/rcss-labs/yamdrake/internal/steps/revalidate"
-	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/version"
 	"github.com/rcss-labs/yamdrake/internal/wake"
 )
@@ -87,18 +77,14 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 		Addr:   cfg.HealthAddr,
 		Fields: []any{"runner_id", cfg.RunnerID, "env", cfg.Env, "fake_steps", cfg.FakeSteps},
 		Extend: func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (app.Extension, error) {
-			identity, err := newRunnerIdentity(ctx, log, cfg, pool)
-			if err != nil {
-				return app.Extension{}, err
-			}
 			bus := wake.New(client, log, wake.WithKeyPrefix(cfg.ValkeyKeyPrefix))
 			sink := logs.NewWriter(pool, logFlushEvery, logMaxBatch, time.Now, func(runID int64) {
 				bus.Publish(context.Background(), wake.TopicLogs, runID)
 			}, log)
 			r := newRunner(cfg, pool, sink, bus, log)
-			deps := resolveDeps(cfg, pool, identity, log)
-			r.Register("resolve", resolve.New(deps))
-			r.Register("revalidate", revalidate.New(deps))
+			if err := runnerapp.RegisterExecutors(ctx, log, cfg, pool, r); err != nil {
+				return app.Extension{}, err
+			}
 			return app.Extension{Background: []func(context.Context){
 				func(ctx context.Context) {
 					if err := r.Run(ctx, legWakeups(ctx, bus)); err != nil {
@@ -118,71 +104,6 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 			return db.WaitSchema(ctx, pool, cfg.StartupTimeout)
 		},
 	}, stdout)
-}
-
-// runnerIdentity is what the runner's real executors are built from: the
-// runner's own AWS identity, the secret cipher and the provider of deployment
-// credentials.
-type runnerIdentity struct {
-	awsConfig   aws.Config
-	cipher      secrets.Cipher
-	credentials *deploy.Provider
-}
-
-// newRunnerIdentity builds the provider of deployment credentials from the
-// runner's own AWS identity. Only the runner binary imports internal/awsx/deploy
-// (internal/awsx/boundary_test.go). Nothing is resolved here, so a runner
-// without AWS credentials still starts; a missing KMS region does fail it, as
-// it fails the orchestrator, because the secret cipher cannot work.
-func newRunnerIdentity(ctx context.Context, log *slog.Logger, cfg config.Runner, pool *pgxpool.Pool) (runnerIdentity, error) {
-	awsConfig, err := awsx.BaseConfig(ctx, cfg.AWS)
-	if err != nil {
-		if cfg.SecretsMode == "kms" {
-			return runnerIdentity{}, err
-		}
-		log.Warn("the default AWS configuration could not be loaded; deploying to AWS accounts will fail", "error", err.Error())
-	}
-	cipher, err := app.NewCipher(cfg.Common, awsConfig)
-	if err != nil {
-		return runnerIdentity{}, err
-	}
-	return runnerIdentity{
-		awsConfig:   awsConfig,
-		cipher:      cipher,
-		credentials: deploy.New(pool, cipher, awsConfig, cfg.AWS).WithLogger(log),
-	}, nil
-}
-
-// resolveDeps wires the resolve executor. It reads the run's own inventory
-// snapshot (not the active one), uses the deployment credentials of the run's
-// account for ECS, ECR and S3, GitHub through the stored connections, and
-// writes config copies to the artifact bucket with the runner's own identity.
-func resolveDeps(cfg config.Runner, pool *pgxpool.Pool, id runnerIdentity, log *slog.Logger) resolve.Deps {
-	artifactClient := s3.NewFromConfig(id.awsConfig, func(o *s3.Options) { o.UsePathStyle = cfg.AWS.UsePathStyleS3() })
-	githubClient := app.GitHubClients(pool, id.cipher, cfg.GitHubAPIURL, log)
-	return resolve.Deps{
-		AWS: id.credentials.For,
-		GitHub: func(ctx context.Context, owner string) (resolve.Source, error) {
-			client, err := githubClient(ctx, owner)
-			if err != nil {
-				return nil, err // a fixed message that names the owner and never a credential
-			}
-			return client, nil
-		},
-		Artifacts: artifacts.New(artifactClient, cfg.ArtifactBucket, cfg.ArtifactKMSKeyID),
-		Inventory: func(ctx context.Context, snapshotID int64) (spec.Inventory, error) {
-			snapshot, err := store.SnapshotByID(ctx, pool, snapshotID)
-			if err != nil {
-				return spec.Inventory{}, err
-			}
-			var inventory spec.Inventory
-			if err := json.Unmarshal(snapshot.Inventory, &inventory); err != nil {
-				return spec.Inventory{}, fmt.Errorf("inventory snapshot %d does not decode: %w", snapshotID, err)
-			}
-			return inventory, nil
-		},
-		Options: cfg.AWS,
-	}
 }
 
 // legWakeups turns "legs" wake-ups into the signal Runner.Run waits on. The

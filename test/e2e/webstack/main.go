@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -43,17 +44,15 @@ Needs YUMDRAKE_TEST_DATABASE_URL and YUMDRAKE_TEST_VALKEY_ADDR (see make dev-up)
 Exit codes: 0 stopped normally, 1 failure, 2 usage.
 `
 
-	// The same fixed public development key compose.yaml and the in-process e2e tests use.
-	localSecretKey = "ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=" //nolint:gosec // public development key, not a secret
-	githubToken    = "web-e2e-fake-github-token"                    //nolint:gosec // token of the fake GitHub only
-	adminEmail     = "admin@web-e2e.example.test"
-	adminName      = "Web E2E Admin"
-	repo           = "acme/platform"
-	branch         = "main"
-	commit         = "1111111111111111111111111111111111111111"
-	jobPath        = "jobs/deploy-backend.yaml"
-	sessionCookie  = "yumdrake_session"
-	waitLimit      = 90 * time.Second
+	githubToken   = "web-e2e-fake-github-token" //nolint:gosec // token of the fake GitHub only
+	adminEmail    = "admin@web-e2e.example.test"
+	adminName     = "Web E2E Admin"
+	repo          = "acme/platform"
+	branch        = "main"
+	commit        = "1111111111111111111111111111111111111111"
+	jobPath       = "jobs/deploy-backend.yaml"
+	sessionCookie = "yumdrake_session"
+	waitLimit     = 90 * time.Second
 )
 
 type ready struct {
@@ -87,13 +86,18 @@ func run() int {
 		return 2
 	}
 
-	// Stop on a signal or when the parent closes our standard input.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// A write to a parent that is gone must come back as an error, not kill us before the cleanup below.
+	signal.Ignore(syscall.SIGPIPE)
+	// One context for the whole life of the helper, set-up included: it ends on a signal or as soon as
+	// the parent closes our standard input, so a parent that dies half way through set-up still gets
+	// everything started so far cleaned up.
+	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	stdinClosed := make(chan struct{})
+	ctx, cancel := context.WithCancel(signalCtx)
+	defer cancel()
 	go func() {
 		_, _ = io.Copy(io.Discard, os.Stdin)
-		close(stdinClosed)
+		cancel()
 	}()
 
 	cleanup := &cleaner{}
@@ -105,15 +109,14 @@ func run() int {
 		return 1
 	}
 	line, _ := json.Marshal(out) //nolint:gosec // the password is generated per run and handed only to the parent over a pipe
-	_, _ = fmt.Fprintln(os.Stdout, string(line))
+	if _, err := fmt.Fprintln(os.Stdout, string(line)); err != nil {
+		logf("the parent is gone, stopping: %v", err)
+		return 1
+	}
 	logf("ready at %s", out.BaseURL)
 
-	select {
-	case <-ctx.Done():
-		logf("signal received, stopping")
-	case <-stdinClosed:
-		logf("standard input closed, stopping")
-	}
+	<-ctx.Done()
+	logf("signal received or standard input closed, stopping")
 	return 0
 }
 
@@ -127,6 +130,16 @@ func (c *cleaner) run() {
 		c.steps[i]()
 	}
 	c.steps = nil
+}
+
+func withoutYumdrakeVariables(environ []string) []string {
+	kept := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		if !strings.HasPrefix(entry, "YUMDRAKE_") {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
 }
 
 func randomHex(n int) (string, error) {
@@ -159,6 +172,12 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, fixture, adminURL, v
 	if err != nil {
 		return ready{}, err
 	}
+	// A new local secret key per run; it is never printed.
+	keyBytes := make([]byte, 32)
+	if _, err := rand.Read(keyBytes); err != nil {
+		return ready{}, err
+	}
+	localSecretKey := base64.StdEncoding.EncodeToString(keyBytes)
 
 	// A database of our own, dropped at the end.
 	dbName := "yumdrake_web_e2e_" + suffix
@@ -183,7 +202,8 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, fixture, adminURL, v
 		return ready{}, fmt.Errorf("find a free port: %w", err)
 	}
 	base := "http://" + httpAddr
-	env := append(os.Environ(),
+	// Only the values set here configure the stack: a developer's own YUMDRAKE_* variables are left out.
+	env := append(withoutYumdrakeVariables(os.Environ()),
 		"YUMDRAKE_DATABASE_URL="+databaseURL,
 		"YUMDRAKE_VALKEY_ADDR="+valkeyAddr,
 		"YUMDRAKE_HTTP_ADDR="+httpAddr,
@@ -212,7 +232,7 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, fixture, adminURL, v
 	}
 
 	// An operator's way in: the create-admin subcommand, password on standard input.
-	create := exec.Command(binary, "create-admin", "--email", adminEmail, "--name", adminName) //nolint:gosec // see above
+	create := exec.CommandContext(ctx, binary, "create-admin", "--email", adminEmail, "--name", adminName) //nolint:gosec // see above
 	create.Env = env
 	create.Stdin = strings.NewReader(password + "\n")
 	var stdout, stderr bytes.Buffer
@@ -221,7 +241,7 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, fixture, adminURL, v
 		return ready{}, fmt.Errorf("create-admin: %w\n%s", err, stderr.String())
 	}
 
-	api := &caller{base: base}
+	api := &caller{ctx: ctx, base: base}
 	var cookie string
 	if cookie, err = api.login(adminEmail, password); err != nil {
 		return ready{}, err
@@ -369,6 +389,7 @@ func waitReady(ctx context.Context, readyURL string, exited <-chan error) error 
 // Origin the API requires on writes. Failures report the status and error code
 // only, never a body: it may hold a credential.
 type caller struct {
+	ctx     context.Context //nolint:containedctx // a small helper object for one run
 	base    string
 	session string
 }
@@ -411,7 +432,7 @@ func (c *caller) do(method, path string, body any) (*http.Response, error) {
 		}
 		reader = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequest(method, c.base+path, reader)
+	req, err := http.NewRequestWithContext(c.ctx, method, c.base+path, reader)
 	if err != nil {
 		return nil, err
 	}

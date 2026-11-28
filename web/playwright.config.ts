@@ -9,6 +9,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
+  forbidOnly: !!process.env.CI,
   timeout: 90_000,
   expect: { timeout: 15_000 },
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
@@ -16,7 +17,9 @@ export default defineConfig({
   use: {
     ...devices['Desktop Chrome'],
     viewport: { width: 1360, height: 900 },
-    trace: 'retain-on-failure',
+    // Off on purpose: a trace records typed values and request bodies, which would put the sign-in
+    // password into the uploaded report. The test starts its own trace after signing in.
+    trace: 'off',
     screenshot: 'only-on-failure',
   },
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],

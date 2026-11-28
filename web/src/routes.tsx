@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router-dom'
 import { AdminPage } from './features/admin/AdminPage'
 import { ApprovalsPage } from './features/approvals/ApprovalsPage'
 import { InventoryPage } from './features/inventory/InventoryPage'
+import { OverviewPage } from './features/overview/OverviewPage'
 import { JobPage } from './features/jobs/JobPage'
 import { JobsPage } from './features/jobs/JobsPage'
 import { RunPage } from './features/runs/RunPage'
@@ -10,15 +11,6 @@ import { ConfirmDevicePage } from './features/tokens/ConfirmDevicePage'
 import { TokensPage } from './features/tokens/TokensPage'
 import { NotFound } from './shell/NotFound'
 import { Card, PageHeader } from './ui'
-
-function OverviewPage() {
-  return (
-    <>
-      <PageHeader title="Overview" />
-      <Card>The overview arrives with run data.</Card>
-    </>
-  )
-}
 
 function ComingPage({ title }: { title: string }) {
   return (

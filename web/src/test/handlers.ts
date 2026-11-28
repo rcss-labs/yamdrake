@@ -35,6 +35,7 @@ import type {
   JobSummary,
   JobVersions,
   Me,
+  Overview,
   Problem,
   RunDetail,
   JobGroup,
@@ -624,6 +625,48 @@ function versionsOfJob(job: StoredJob, environment: string): JobVersions {
 
 function isActiveFreeze(freeze: Freeze): boolean {
   return freeze.ended_at === null && Date.parse(freeze.expires_at) > Date.parse(now())
+}
+
+// ---- Overview fixture (Plan 9) ---------------------------------------------------------------
+
+/** A period of `days` days ending 2026-11-28 with a fixed shape; exported so tests can read the numbers. */
+export function overviewFixture(days: number, label = ''): Overview {
+  const end = Date.UTC(2026, 10, 28)
+  const list = Array.from({ length: days }, (_, index) => {
+    const date = new Date(end - (days - 1 - index) * 86_400_000).toISOString().slice(0, 10)
+    return { date, succeeded: index % 3 === 0 ? 0 : 2, failed: index % 5 === 0 ? 1 : 0, other: index === 1 ? 1 : 0 }
+  })
+  const total = list.reduce((sum, day) => sum + day.succeeded + day.failed + day.other, 0)
+  return {
+    from: list[0]?.date ?? '',
+    to: list[list.length - 1]?.date ?? '',
+    runs: total,
+    prev_runs: total - 3,
+    success_rate: 0.8,
+    prev_success_rate: 0.85,
+    median_duration_seconds: 134,
+    prev_median_duration_seconds: 150,
+    waiting_approval: 1,
+    oldest_waiting: '2026-11-28T10:00:00Z',
+    days: list,
+    top_failing: [{ service: 'billing-api', failures: 3, common_reason: 'Health check failed' }],
+    attention: [
+      {
+        run_id: 41,
+        state: 'failed',
+        job: 'deploy-billing',
+        environment: label === '' ? 'hetzner-01' : `${label}-01`,
+        label: label === '' ? 'dev' : label,
+        reason: 'billing-api did not become healthy',
+        by: 'Ada',
+        at: '2026-11-28T09:00:00Z',
+      },
+    ],
+    environments: [
+      { environment: 'hetzner-01', label: 'dev', run_id: 41, state: 'failed', job: 'deploy-billing', at: '2026-11-28T09:00:00Z' },
+      { environment: 'preprod-01', label: 'preprod', run_id: null, state: 'failed', job: '', at: null },
+    ],
+  }
 }
 
 // ---- The handlers --------------------------------------------------------------------------
@@ -1623,5 +1666,11 @@ export const handlers: HttpHandler[] = [
       return json({ ok: false, code: 'not_configured' })
     }
     return json(channel.includes('missing') ? { ok: false, code: 'channel_not_found' } : { ok: true, code: '' })
+  }),
+
+  // ---- Overview (Plan 9) ----
+  route('GET', '/api/v1/analytics/overview', view, ({ url }) => {
+    const days = Number(url.searchParams.get('days') ?? '14')
+    return json(overviewFixture(days, url.searchParams.get('label') ?? ''))
   }),
 ]

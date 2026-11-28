@@ -17,7 +17,8 @@ account Yumdrake itself runs in).
   services, read named ECR repositories, read and write the named config
   buckets, and `iam:PassRole` for the named task and execution roles only, and
   only to ECS tasks. It trusts only the runner task role, and only with the
-  deployment external id.
+  deployment external id. It may use the KMS keys in `config_bucket_kms_key_arns`
+  through S3 only, and that permission exists only when that variable is set.
 
 ## What it assumes already exists
 
@@ -32,7 +33,8 @@ every placeholder. Pass the two external ids through the environment, not a file
 `TF_VAR_discovery_external_id` and `TF_VAR_deployment_external_id`, each a long
 random value read from your secret store. Use the same values when you connect
 the account in Yumdrake. Narrow the lists (clusters, repositories, buckets,
-families, roles) to exactly what Yumdrake needs. Compare the ECS and S3 actions
+families, roles) to exactly what Yumdrake needs. Set `config_bucket_kms_key_arns`
+only when the config buckets use SSE-KMS; with S3-managed keys leave it empty. Compare the ECS and S3 actions
 with what the version of Yumdrake you run calls.
 
 ## Order of use

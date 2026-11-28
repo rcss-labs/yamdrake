@@ -44,7 +44,7 @@ func TestPlanEndpointServesRedactedManifest(t *testing.T) {
 					{
 						Kind: "env", Name: "app", Source: "acme/cfg/app.env", Destination: "s3://cfg/s1.env",
 						Branch: "dev", Commit: "c0ffee", Fallback: true, SHA256: "cafe0001",
-						ArtifactKey: "manifests/1/s1/env/secret-artifact-key/" + planFixtureValue, PreviousArtifactKey: "manifests/1/s1/env/previous/secret-previous-key",
+						ArtifactKey: "manifests/1/s1/env/secret-artifact-key/" + planFixtureValue, PreviousArtifactKey: "manifests/1/s1/previous/env/secret-previous-key",
 						PreviousExists: true, PreviousSHA256: "cafe0002", Change: "changed",
 						Keys: &manifest.KeyDiff{Added: []string{"NEW_KEY"}, Removed: []string{"OLD_KEY"}, Changed: []string{"CHANGED_KEY"}},
 					},

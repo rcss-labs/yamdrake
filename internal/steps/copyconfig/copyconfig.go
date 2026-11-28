@@ -184,7 +184,11 @@ func (r *leg) item(i int, item manifest.ConfigItem, reconcile bool) *queue.Outco
 		cfg, err := r.x.d.AWS(ctx, r.task.Run.AWSAccount, r.region, fmt.Sprintf("yumdrake-runner-run-%d", r.task.Run.ID))
 		if err != nil {
 			env.Log("error", fmt.Sprintf("Could not get credentials for account %s.", r.task.Run.AWSAccount))
-			return r.stopped(i, "failed", "could not get credentials for account "+r.task.Run.AWSAccount, resolve.ErrorDetail("sign-in", err))
+			state := "failed"
+			if r.hasIntendedOp() {
+				state = "unknown" // an earlier write is still unresolved: nothing says it did not happen
+			}
+			return r.stopped(i, state, "could not get credentials for account "+r.task.Run.AWSAccount, resolve.ErrorDetail("sign-in", err))
 		}
 		r.client = r.x.d.S3(cfg)
 	}
@@ -217,6 +221,9 @@ func (r *leg) item(i int, item manifest.ConfigItem, reconcile bool) *queue.Outco
 	data, err := r.storedCopy(item)
 	if err != nil {
 		env.Log("error", fmt.Sprintf("%s: the stored copy is not usable.", item.Name))
+		if r.intendedFor(item.Destination) {
+			return r.stopped(i, "unknown", "could not check an interrupted write of "+item.Name, resolve.ErrorDetail("reading the stored copy of "+item.Name, err))
+		}
 		return r.stopped(i, "failed", fmt.Sprintf("stored copy of %s is not usable", item.Name), resolve.ErrorDetail("reading the stored copy of "+item.Name, err))
 	}
 	return r.write(i, item, data)
@@ -255,6 +262,10 @@ func (r *leg) write(i int, item manifest.ConfigItem, data []byte) *queue.Outcome
 			return nil
 		}
 		a = r.put(item, data, fmt.Sprintf("%s:retry-%d", base, r.task.Leg.Attempt))
+	} else if a.err == nil && !a.fnRan {
+		// An op recorded as done, yet the destination was just read and
+		// differs: someone changed it after our write. Write it again.
+		a = r.put(item, data, fmt.Sprintf("%s:retry-%d", base, r.task.Leg.Attempt))
 	}
 
 	switch {
@@ -263,6 +274,9 @@ func (r *leg) write(i int, item manifest.ConfigItem, data []byte) *queue.Outcome
 		r.env.Log("ok", fmt.Sprintf("%s: written to %s (%d bytes, sha256 %s)", item.Name, item.Destination, len(data), shortSum(item.SHA256)))
 		return nil
 	case errors.Is(a.err, runner.ErrPreviouslyFailed):
+		// By design (ruling R21) a refused write is not retried here: this only
+		// happens when a runner died after recording the refusal. Finishing the
+		// copy is a re-run of the failed run (new legs, no ops).
 		current, missing, err := r.read(item.Destination)
 		if err != nil {
 			r.env.Log("error", fmt.Sprintf("%s: an earlier refused write could not be checked.", item.Name))
@@ -370,6 +384,9 @@ func (r *leg) readFailed(i int, item manifest.ConfigItem, err error, reconcile b
 	}
 	detail := resolve.ErrorDetail("s3:GetObject", err)
 	r.env.Log("error", fmt.Sprintf("%s: %s could not be read (%s).", item.Name, item.Destination, code))
+	if r.intendedFor(item.Destination) {
+		return r.stopped(i, "unknown", "could not check an interrupted write of "+item.Name, detail)
+	}
 	if reconcile || r.ctx.Err() != nil {
 		return r.stopped(i, "unknown", "could not check "+item.Name, detail)
 	}

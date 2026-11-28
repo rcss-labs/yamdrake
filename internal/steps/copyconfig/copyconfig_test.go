@@ -497,7 +497,6 @@ func TestRefusalIsFailedButUncertainWriteIsUnknown(t *testing.T) {
 		{"a lost reply after the write", func(s *fakeS3) { s.putThenErr = func(int, string) error { return errors.New("EOF") } }, "unknown", "could not confirm the write of web.env"},
 		{"a read-back that differs", func(s *fakeS3) { s.mangle = true }, "unknown", "could not confirm the write of web.env"},
 		{"a read-back that fails", func(s *fakeS3) {
-			s.getErr = func(string) error { return nil }
 			n := 0
 			s.getErr = func(string) error {
 				n++
@@ -593,5 +592,68 @@ func TestLogNeverContainsFileContents(t *testing.T) {
 	check("result", string(out.Result))
 	for _, op := range f.env.OpsSnapshot() {
 		check("operation intent", string(op.Intent))
+	}
+}
+
+func inheritedIntent(f *fixture) {
+	f.env.PresetOps = []store.Op{{ID: 1, Name: "put-config", Key: "put-config:" + f.items[0].Destination, State: "intended"}}
+}
+
+func TestCredentialsFailureWithInheritedIntentIsUnknown(t *testing.T) {
+	f := newFixture(t, file{"web.env", "web.env", "A=1\n"})
+	inheritedIntent(f)
+	f.awsErr = errors.New("sts said no")
+	out := f.run()
+	if out.State != "unknown" || out.FailureShort != "could not get credentials for account 123456789012" {
+		t.Fatalf("outcome = %q %q", out.State, out.FailureShort)
+	}
+}
+
+func TestReadErrorWithInheritedIntentIsUnknown(t *testing.T) {
+	f := newFixture(t, file{"web.env", "web.env", "A=1\n"})
+	inheritedIntent(f)
+	f.s3.getErr = func(string) error { return refusal(503, "SlowDown", "x") }
+	out := f.run()
+	if out.State != "unknown" || out.FailureShort != "could not check an interrupted write of web.env" {
+		t.Fatalf("outcome = %q %q", out.State, out.FailureShort)
+	}
+	if len(f.s3.puts) != 0 {
+		t.Errorf("wrote: %v", f.s3.puts)
+	}
+}
+
+func TestReadErrorWithoutIntentIsFailed(t *testing.T) {
+	f := newFixture(t, file{"web.env", "web.env", "A=1\n"})
+	f.s3.getErr = func(string) error { return refusal(403, "AccessDenied", "x") }
+	out := f.run()
+	if out.State != "failed" || out.FailureShort != "AccessDenied on s3:GetObject" {
+		t.Fatalf("outcome = %q %q", out.State, out.FailureShort)
+	}
+}
+
+func TestUnusableStoredCopyWithInheritedIntentIsUnknown(t *testing.T) {
+	f := newFixture(t, file{"web.env", "web.env", "A=1\n"})
+	inheritedIntent(f)
+	f.art.objects["art/web.env"] = []byte("TAMPERED\n")
+	out := f.run()
+	if out.State != "unknown" || out.FailureShort != "could not check an interrupted write of web.env" {
+		t.Fatalf("outcome = %q %q", out.State, out.FailureShort)
+	}
+}
+
+func TestDoneOpButDestinationChangedIsWrittenAgain(t *testing.T) {
+	f := newFixture(t, file{"web.env", "web.env", "A=1\n"})
+	f.env.PresetOps = []store.Op{{ID: 1, Name: "put-config", Key: "put-config:" + f.items[0].Destination, State: "done"}}
+	f.s3.objects[f.dest("web.env")] = []byte("OVERWRITTEN=1\n")
+	out := f.run()
+	if out.State != "succeeded" {
+		t.Fatalf("outcome = %q %q: %s", out.State, out.FailureShort, out.FailureDetail)
+	}
+	want(t, "written", result(t, out).Written, uri(f, "web.env")...)
+	if string(f.s3.objects[f.dest("web.env")]) != "A=1\n" || len(f.s3.puts) != 1 {
+		t.Errorf("destination = %q, puts %v; the changed file must be written again", f.s3.objects[f.dest("web.env")], f.s3.puts)
+	}
+	if keys := f.env.DoKeys(); len(keys) != 2 || keys[1] != "put-config:"+f.items[0].Destination+":retry-2" {
+		t.Errorf("Do keys = %v", keys)
 	}
 }

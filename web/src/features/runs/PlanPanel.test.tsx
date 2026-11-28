@@ -58,6 +58,16 @@ describe('PlanPanel', () => {
     expect(within(row).queryByText('Added')).not.toBeInTheDocument()
   })
 
+  it('shows a config file whose change could not be told as Unknown and does not count it as a change', async () => {
+    const plan = mockState().plans[runIds.planned]!
+    for (const service of plan.services) for (const item of service.config) item.change = 'unchanged'
+    plan.services[1]!.config[0]!.change = 'unknown'
+    await renderPlan(runIds.planned)
+    const row = rowOf('billing')
+    expect(within(row).getByText('Unknown')).toBeInTheDocument()
+    expect(screen.getByText(/no config files change/)).toBeInTheDocument()
+  })
+
   it('shows a failed check as an error note with the service, detail and "This run cannot start"', async () => {
     // Task 4's RunActions hides Start for a failed check; this test covers the note only.
     await renderPlan(runIds.plannedFailedCheck)

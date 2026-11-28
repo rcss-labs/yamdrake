@@ -114,6 +114,30 @@ func TestResolveResultWithWrongIdentityFailsTheRun(t *testing.T) {
 	}
 }
 
+func TestResolveResultForAnotherRunOrAccountFailsTheRun(t *testing.T) {
+	for name, change := range map[string]func(m *manifest.Manifest, runID int64){
+		"another run":     func(m *manifest.Manifest, runID int64) { m.RunID = runID + 1000 },
+		"another account": func(m *manifest.Manifest, _ int64) { m.AWSAccount = "999999999999" },
+		"no services":     func(m *manifest.Manifest, _ int64) { m.Services = []manifest.Service{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, harnessOptions{})
+			run := h.create(h.starter, false, "s1")
+			h.advance(run.ID)
+			m := sampleManifest(run.ID)
+			change(&m, run.ID)
+			m.ID = manifest.Identity(m) // a consistent manifest, but not this run's
+			h.settleResolve(run.ID, "succeeded", m)
+			h.advance(run.ID)
+
+			failed := h.expectState(run.ID, "failed")
+			if failed.EndReason != "the resolve step's plan is not for this run; nothing was changed" || failed.ManifestID != "" {
+				t.Errorf("end reason %q, manifest id %q", failed.EndReason, failed.ManifestID)
+			}
+		})
+	}
+}
+
 func TestResolveSucceededWithoutAResultFailsTheRun(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	run := h.create(h.starter, false, "s1")

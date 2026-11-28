@@ -151,7 +151,7 @@ func TestFreezeCreatedWhileRunWaitsForLocksStillBlocksIt(t *testing.T) {
 	}
 
 	f := h.freeze(testLabel, "", "freeze while waiting", time.Hour)
-	h.setLeg(h.legByKind(a.ID, "revalidate").ID, "failed")
+	h.failRevalidateWithDrift(h.legByKind(a.ID, "revalidate").ID)
 	h.advance(a.ID)
 	h.expectState(a.ID, "invalidated")
 	if len(h.locks(a.ID)) != 0 {

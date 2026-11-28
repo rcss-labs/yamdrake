@@ -152,13 +152,37 @@ func TestRunningWaitsForRevalidation(t *testing.T) {
 }
 
 func TestRevalidateFailedInvalidatesAndReleases(t *testing.T) {
+	drifted := leg(2, "revalidate", "failed")
+	drifted.FailureShort = RevalidateDriftReason
 	d := Decide(View{Run: run("running"), LocksHeld: true, Legs: []store.Leg{
-		leg(1, "resolve", "succeeded"), leg(2, "revalidate", "failed"), stepLeg(3, 10, "a", "pending")}})
+		leg(1, "resolve", "succeeded"), drifted, stepLeg(3, 10, "a", "pending")}})
 	if d.NewState != "invalidated" || !d.ReleaseLocks {
 		t.Fatalf("got %+v", d)
 	}
 	wantIDs(t, "CancelLegs", d.CancelLegs, 3)
 	wantIDs(t, "QueueLegs", d.QueueLegs)
+}
+
+func TestRevalidateThatCannotReachAWSFailsTheRunInsteadOfInvalidatingIt(t *testing.T) {
+	unreachable := leg(2, "revalidate", "failed")
+	unreachable.FailureShort = RevalidateCouldNotCheckReason + ": api: ecs:DescribeServices failed: ThrottlingException"
+	d := Decide(View{Run: run("running"), LocksHeld: true, Legs: []store.Leg{
+		leg(1, "resolve", "succeeded"), unreachable, stepLeg(3, 10, "a", "pending")}})
+	if d.NewState != "failed" || !d.ReleaseLocks {
+		t.Fatalf("got %+v, want failed with the locks released", d)
+	}
+	if d.Reason != unreachable.FailureShort {
+		t.Errorf("reason %q, want the leg's short reason %q", d.Reason, unreachable.FailureShort)
+	}
+	wantIDs(t, "CancelLegs", d.CancelLegs, 3)
+
+	// A leg that failed for another reason is also not drift.
+	other := leg(2, "revalidate", "failed")
+	other.FailureShort = "the run has no manifest"
+	d = Decide(View{Run: run("running"), LocksHeld: true, Legs: []store.Leg{leg(1, "resolve", "succeeded"), other}})
+	if d.NewState != "failed" || d.Reason != "could not re-check the targets: the run has no manifest" {
+		t.Errorf("got %+v", d)
+	}
 }
 
 func TestRevalidateUnknownNeedsReconciliationKeepsLocks(t *testing.T) {

@@ -129,7 +129,7 @@ func (s *serviceRun) checkTargetTaskDefinition(ctx context.Context, target strin
 		return
 	}
 	var out *ecs.DescribeTaskDefinitionOutput
-	err = s.call("ecs:DescribeTaskDefinition", target, func() (callErr error) {
+	err = s.call(ctx, "ecs:DescribeTaskDefinition", target, func(ctx context.Context) (callErr error) {
 		out, callErr = clients.ECS.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String(target)})
 		return callErr
 	})
@@ -220,7 +220,7 @@ func (s *serviceRun) previousCopy(ctx context.Context, source manifest.ConfigIte
 		return fileFact{}, copyFailed
 	}
 	var data []byte
-	err := s.call("artifacts:Get", source.Name+" previous copy", func() (callErr error) {
+	err := s.call(ctx, "artifacts:Get", source.Name+" previous copy", func(ctx context.Context) (callErr error) {
 		data, callErr = reader.Get(ctx, source.PreviousArtifactKey, source.PreviousSHA256)
 		return callErr
 	})

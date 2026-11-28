@@ -23,6 +23,7 @@ import (
 	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
 	"github.com/rcss-labs/yamdrake/internal/artifacts"
@@ -88,6 +89,10 @@ type stubAWS struct {
 	images   map[string][]ecrtypes.ImageDetail // by "repo:tag"
 	objects  map[string]stubObject             // by "bucket/key"
 	calls    []string
+	// callerAccount is what GetCallerIdentity answers; "" means the run's account.
+	callerAccount string
+	// hangECS makes DescribeServices wait for its context, like a stalled connection.
+	hangECS bool
 }
 
 type stubObject struct {
@@ -101,8 +106,20 @@ func (s *stubAWS) record(call string) {
 	s.mu.Unlock()
 }
 
-func (s *stubAWS) DescribeServices(_ context.Context, in *ecs.DescribeServicesInput, _ ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error) {
+func (s *stubAWS) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error) {
+	s.record("sts:GetCallerIdentity")
+	if s.callerAccount != "" {
+		return &sts.GetCallerIdentityOutput{Account: aws.String(s.callerAccount)}, nil
+	}
+	return &sts.GetCallerIdentityOutput{Account: aws.String(account)}, nil
+}
+
+func (s *stubAWS) DescribeServices(ctx context.Context, in *ecs.DescribeServicesInput, _ ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error) {
 	s.record("ecs:DescribeServices")
+	if s.hangECS {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	out := &ecs.DescribeServicesOutput{}
 	for _, name := range in.Services {
 		if svc, ok := s.services[name]; ok {
@@ -363,7 +380,9 @@ func newHarness() *harness {
 			h.sessions = append(h.sessions, session)
 			return aws.Config{Region: region}, nil
 		},
-		Clients:   func(aws.Config) resolve.Clients { return resolve.Clients{ECS: h.aws, ECR: h.aws, S3: h.aws} },
+		Clients: func(aws.Config) resolve.Clients {
+			return resolve.Clients{ECS: h.aws, ECR: h.aws, S3: h.aws, STS: h.aws}
+		},
 		GitHub:    func(context.Context, string) (resolve.Source, error) { return h.gh, nil },
 		Artifacts: h.artifacts,
 		Inventory: func(_ context.Context, id int64) (spec.Inventory, error) {
@@ -617,6 +636,12 @@ func TestMissingFileInChosenBranchFails(t *testing.T) {
 	if c.Status != "failed" || !strings.Contains(c.Detail, envPath) || !strings.Contains(c.Detail, "v1.4.2") {
 		t.Errorf("check = %+v, want a failure naming the path and branch", c)
 	}
+	// What the new file would change is not known, and the plan says so.
+	for _, item := range serviceOf(t, m, "web").Config {
+		if item.Name == "web.env" && item.Change != "unknown" {
+			t.Errorf("change of the item whose source failed = %q, want \"unknown\"", item.Change)
+		}
+	}
 }
 
 func TestMissingTomlSourceAndUnreadableServiceFail(t *testing.T) {
@@ -644,6 +669,72 @@ func TestServiceThatIsNotActiveIsFailedCheck(t *testing.T) {
 	c, _ := check(m, "web", "service exists")
 	if out.State != "failed" || c.Status != "failed" || !strings.Contains(c.Detail, "DRAINING") {
 		t.Errorf("outcome %q, check %+v", out.State, c)
+	}
+}
+
+func TestResolveRefusesAServiceInAnotherAccount(t *testing.T) {
+	h := newHarness()
+	svc := h.aws.services["web"]
+	svc.ServiceArn = aws.String("arn:aws:ecs:eu-west-1:999999999999:service/main/web")
+	h.aws.services["web"] = svc
+	out, m := h.run(t, claimed(t, "prod", defaultSelection()))
+	c, _ := check(m, "web", "service exists")
+	if out.State != "failed" || c.Status != "failed" || !strings.Contains(c.Detail, "999999999999") || !strings.Contains(c.Detail, account) {
+		t.Errorf("outcome %q, check %+v; want a failed check naming both accounts", out.State, c)
+	}
+	if got := serviceOf(t, m, "web").PreviousTaskDefinition; got != "" {
+		t.Errorf("previous task definition %q was pinned from another account", got)
+	}
+}
+
+func TestResolveFailsWhenTheDeployCredentialSignsInToAnotherAccount(t *testing.T) {
+	h := newHarness()
+	h.aws.callerAccount = "999999999999"
+	out, m := h.run(t, claimed(t, "prod", defaultSelection()))
+	c, _ := check(m, "web", "service exists")
+	if out.State != "failed" || c.Status != "failed" || !strings.Contains(c.Detail, "999999999999") || !strings.Contains(c.Detail, account) {
+		t.Errorf("outcome %q, check %+v; want a failed check naming both accounts", out.State, c)
+	}
+	if h.aws.callCount("ecs:DescribeServices") != 0 {
+		t.Errorf("a service was read with a credential of another account")
+	}
+}
+
+func TestRepositoryInAnotherAccountIsAllowed(t *testing.T) {
+	h := newHarness()
+	inv := inventory()
+	svc := inv.Services["web"]
+	env := svc.Environments["prod-1"]
+	env.ECRRepository = "999999999999.dkr.ecr.eu-west-1.amazonaws.com/web"
+	svc.Environments["prod-1"] = env
+	inv.Services["web"] = svc
+	h.deps.Inventory = func(context.Context, int64) (spec.Inventory, error) { return inv, nil }
+	out, m := h.run(t, claimed(t, "prod", defaultSelection()))
+	if out.State != "succeeded" {
+		t.Fatalf("State = %q (%s: %s), want succeeded", out.State, out.FailureShort, out.FailureDetail)
+	}
+	if c, _ := check(m, "web", "image exists"); c.Status != "passed" {
+		t.Errorf("image check = %+v, want passed", c)
+	}
+}
+
+func TestAWSCallsStopAtTheirDeadline(t *testing.T) {
+	old := resolve.CallTimeout
+	resolve.CallTimeout = 50 * time.Millisecond
+	defer func() { resolve.CallTimeout = old }()
+	h := newHarness()
+	h.aws.hangECS = true
+	done := make(chan struct{})
+	var out queue.Outcome
+	var m manifest.Manifest
+	go func() { out, m = h.run(t, claimed(t, "prod", defaultSelection())); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("resolve is still waiting on a stalled AWS call")
+	}
+	if c, _ := check(m, "web", "service exists"); out.State != "failed" || c.Status != "failed" || !strings.Contains(c.Detail, "Timeout") {
+		t.Errorf("outcome %q, check %+v; want a failed check with the code Timeout", out.State, c)
 	}
 }
 
@@ -813,6 +904,11 @@ type awsFake struct {
 }
 
 func (f *awsFake) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasPrefix(r.URL.Hostname(), "sts.") { // the sign-in check passes; the other calls fail
+		xml := `<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><GetCallerIdentityResult><Arn>arn:aws:iam::` + account +
+			`:role/yumdrake</Arn><UserId>AROAEXAMPLE</UserId><Account>` + account + `</Account></GetCallerIdentityResult><ResponseMetadata><RequestId>REQ-STS</RequestId></ResponseMetadata></GetCallerIdentityResponse>`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/xml"}}, Body: io.NopCloser(strings.NewReader(xml)), Request: r}, nil
+	}
 	op := "s3"
 	if target := r.Header.Get("X-Amz-Target"); target != "" {
 		op = target[strings.LastIndex(target, ".")+1:]

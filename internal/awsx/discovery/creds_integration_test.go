@@ -145,23 +145,21 @@ func TestSecretOfTheOtherPurposeIsRejected(t *testing.T) {
 	}
 }
 
-// captureLogs routes the default logger into the returned buffer for the test.
-func captureLogs(t *testing.T) *bytes.Buffer {
-	t.Helper()
+// injectedLogger returns a logger writing to the returned buffer. The
+// provider must log through it (the app's structured logger), never through
+// the global default.
+func injectedLogger() (*slog.Logger, *bytes.Buffer) {
 	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	return &logs
+	return slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), &logs
 }
 
 // A failure is diagnosable from the error and the log: account, AWS code and
 // request id, and never the external id, a secret or a session token.
 func TestFailureCarriesRequestIDInErrorAndLog(t *testing.T) {
 	e := newEnv(t)
-	logs := captureLogs(t)
+	log, logs := injectedLogger()
 	stub := &awstest.STSStub{FailCode: "AccessDenied", RequestID: "req-7f3a-0001"}
-	p := New(e.pool, e.cipher, stubbedBase(stub), awsx.Options{})
+	p := New(e.pool, e.cipher, stubbedBase(stub), awsx.Options{}).WithLogger(log)
 	e.createAccount(t, "666666666666", roleCredential("666666666666", "ext-secret-value"), "", "")
 
 	_, err := p.For(context.Background(), "666666666666", "us-east-1", "yumdrake-test")
@@ -180,6 +178,9 @@ func TestFailureCarriesRequestIDInErrorAndLog(t *testing.T) {
 			}
 		}
 	}
+	if !strings.Contains(logs.String(), "aws_service="+serviceName) || strings.Contains(logs.String(), " service=") {
+		t.Errorf("log %q must carry aws_service=%s and no plain service key (the app's own)", logs.String(), serviceName)
+	}
 	if !strings.Contains(logs.String(), "level=WARN") {
 		t.Errorf("log %q is not a warning", logs.String())
 	}
@@ -189,8 +190,8 @@ func TestFailureCarriesRequestIDInErrorAndLog(t *testing.T) {
 // the cause text, the key id or the secret.
 func TestUnreadableSecretLogsItsCategory(t *testing.T) {
 	e := newEnv(t)
-	logs := captureLogs(t)
-	p := New(e.pool, e.cipher, stubbedBase(&awstest.STSStub{}), awsx.Options{})
+	log, logs := injectedLogger()
+	p := New(e.pool, e.cipher, stubbedBase(&awstest.STSStub{}), awsx.Options{}).WithLogger(log)
 	const secret = "category-secret-0123456789"
 	e.createAccount(t, "777777777777", store.AWSCredential{Method: "key", AccessKeyID: "AKIACATEGORY0000001"}, secret, otherPurpose)
 

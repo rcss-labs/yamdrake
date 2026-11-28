@@ -81,6 +81,7 @@ type Source struct {
 	service string
 	base    aws.Config
 	now     func() time.Time
+	logger  *slog.Logger // nil: slog.Default()
 
 	mu      sync.Mutex
 	entries map[key]*entry
@@ -110,6 +111,13 @@ func New(service string, base aws.Config, o awsx.Options, now func() time.Time) 
 		now = time.Now
 	}
 	return &Source{service: service, base: base, now: now, entries: map[key]*entry{}}
+}
+
+// WithLogger sets where failures are logged (the app's structured logger) and
+// returns s. Call it before the Source is shared.
+func (s *Source) WithLogger(log *slog.Logger) *Source {
+	s.logger = log
+	return s
 }
 
 // Config returns a configuration for req.Region that signs with the
@@ -289,8 +297,12 @@ func (s *Source) failureFrom(req Request, err error) *Error {
 }
 
 func (s *Source) log(e *Error, extra ...any) *Error {
-	attrs := append([]any{"service", e.Service, "account", e.AccountID, "code", e.Code, "request_id", e.RequestID}, extra...)
-	slog.Warn("AWS credentials could not be obtained", attrs...)
+	attrs := append([]any{"aws_service", e.Service, "account", e.AccountID, "code", e.Code, "request_id", e.RequestID}, extra...)
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("AWS credentials could not be obtained", attrs...)
 	return e
 }
 

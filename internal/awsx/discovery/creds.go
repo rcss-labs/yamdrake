@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -82,4 +83,11 @@ func (p *Provider) build(ctx context.Context, accountID, region, sessionName str
 	return config(ctx, credsource.Request{
 		AccountID: accountID, Region: region, SessionName: sessionName, Credential: account.Discovery,
 	}, secret)
+}
+
+// WithLogger sets the logger credential failures are written to, the app's
+// structured logger, and returns p. Without it the default logger is used.
+func (p *Provider) WithLogger(log *slog.Logger) *Provider {
+	p.src.WithLogger(log)
+	return p
 }

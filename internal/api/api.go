@@ -148,7 +148,7 @@ func New(deps Deps) http.Handler {
 		deps.DevicePollInterval = defaultDevicePollInterval
 	}
 	if deps.Discovery == nil {
-		deps.Discovery = discovery.New(deps.Pool, deps.Cipher, deps.AWSConfig, awsx.Options{})
+		deps.Discovery = discovery.New(deps.Pool, deps.Cipher, deps.AWSConfig, awsx.Options{}).WithLogger(deps.Log)
 	}
 	dummy, err := dummyPasswordHash()
 	if err != nil {

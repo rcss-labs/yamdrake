@@ -1,0 +1,75 @@
+.sso-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.sso-form h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.sso-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  width: fit-content;
+  cursor: pointer;
+}
+.sso-switch input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ink);
+}
+.sso-metadata {
+  height: auto;
+  padding: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  resize: vertical;
+}
+.sso-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+.sso-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sso-key {
+  color: var(--ink3);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.sso-copy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.sso-url {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.sso-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.sso-feedback {
+  color: var(--ink3);
+  font-size: 13px;
+}
+.sso-result {
+  font-size: 14px;
+  font-weight: 500;
+}
+.sso-result[data-ok='true'] {
+  color: var(--ok-t);
+}
+.sso-result[data-ok='false'] {
+  color: var(--bad-t);
+}

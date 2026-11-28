@@ -30,6 +30,19 @@ No full code, by the owner's rule.
 - Fake steps are for development and tests only: the runner registers them only when `YUMDRAKE_ENV=dev` and `YUMDRAKE_FAKE_STEPS=true`, and refuses to start with `YUMDRAKE_FAKE_STEPS=true` in any other environment.
 - Every state change a person causes (create, cancel, approve, reject, reconcile, release locks) checks permission on the server and writes an audit entry in the same transaction.
 
+## What Plans 1 to 3 actually produced
+
+Use these, not the names this plan's text predicted. The earlier plans' ledgers and manager reports under `.superpowers/sdd/` have the full list.
+
+- Migrations 00001 to 00004 exist, and **00005 is reserved** for a small change being made in parallel on the web branch (raw YAML source columns). **This plan's migration is 00006.** `db.LatestVersion()` becomes 6 once both are merged; until the web branch is merged into this one, tests that assert the latest version must not hard-code it.
+- API: middleware methods are on `*server`. Every new route must be added to `server.routes()`, to the expected map in `TestEveryRouteEnforcesItsAction`, and, for list GETs, to `TestNoRouteReturnsNullForAList`; otherwise the guard answers 404 for it. Every JSON list is `[]`, never `null`. Audited writes go through `auditedWrite`.
+- Valkey: every key must use `Deps.KeyPrefix` (`YUMDRAKE_VALKEY_KEY_PREFIX`), because concurrent test runs share one Valkey. This applies to the wake-up topics in Task 8.
+- `auth.Principal`, `auth.Target`, `Principal.Can` and `MayApproveRunStartedBy` exist as planned. `store.ErrInvalid`, `store.ErrNotFound`, `store.ErrDuplicate`, `store.ErrInvalidReference` exist. `AuditEntry.Detail` is `json.RawMessage`.
+- Wiring lives in `internal/app` (`app.NewOrchestratorService`, `OrchestratorExtension`, `Service.Extend`); add the engine loop and the runner's worker pool there.
+- Required variables now include `YUMDRAKE_PUBLIC_URL` and `YUMDRAKE_LOCAL_SECRET_KEY`. `YUMDRAKE_BOOTSTRAP_TOKEN` is gone: end-to-end tests create an admin and sign in (see `test/e2e/access_test.go`).
+- Test databases: `internal/testutil/testdb`. The store truncates times to microseconds.
+- Modules so far: `pgx/v5` v5.13.0, `goose/v3` v3.30.2, `valkey-go` v1.0.80, `go.yaml.in/yaml/v3` v3.0.6, `golang.org/x/crypto` v0.59.0, `crewjam/saml` v0.6.3.
+
 ## Review Focus
 
 1. A runner is killed after its external change succeeded but before it recorded the result: the next runner sees the recorded intent, does not blindly repeat the change, and the leg ends succeeded, failed or `unknown`, never silently lost. (Tasks 5, 6, 10)
@@ -42,7 +55,7 @@ No full code, by the owner's rule.
 
 | Path | Responsibility |
 |---|---|
-| `internal/db/migrations/00004_runs.sql` | Runs, steps, legs, operations, locks, log lines, log archives |
+| `internal/db/migrations/00006_runs.sql` | Runs, steps, legs, operations, locks, log lines, log archives |
 | `internal/store/runs.go`, `legs.go`, `locks.go`, `loglines.go` | SQL for those tables |
 | `internal/engine/plan.go` | Turn a job, an inventory and a selection into a run's steps, legs and lock resources |
 | `internal/engine/decide.go` | Pure decision: given a run's rows, what happens next |
@@ -61,7 +74,7 @@ No full code, by the owner's rule.
 ### Task 1: Tables and storage
 
 **Files:**
-- Create: `internal/db/migrations/00004_runs.sql`, `internal/store/runs.go`, `internal/store/legs.go`, `internal/store/locks.go`, `internal/store/loglines.go`
+- Create: `internal/db/migrations/00006_runs.sql`, `internal/store/runs.go`, `internal/store/legs.go`, `internal/store/locks.go`, `internal/store/loglines.go`
 - Test: `internal/store/runs_integration_test.go`
 
 **Interfaces:**
@@ -133,7 +146,7 @@ Behaviour:
 - [ ] **Step 1: Write the failing tests** (integration): `TestInsertRunCreatesStepsAndLegsAtomically` (a constraint violation in one leg leaves no run row); `TestLockRunBlocksSecondTransaction`; `TestAcquireLocksAllOrNothing` (run 1 holds `b`; run 2 asks for `a,b,c`: gets nothing, map names `b` held by 1; after release run 2 gets all three); `TestAcquireLocksIsIdempotentForSameRun`; `TestAcquireLocksConcurrentlyOneWinner` (two transactions, overlapping sets in opposite order, 50 rounds: exactly one holds everything each round and no deadlock error surfaces); `TestStateCheckConstraintsRejectUnknownValues`; `TestListRunsFiltersAndPages`; `TestExpiredLegsReturnsOnlyClaimedOrRunningPastLease`.
 - [ ] **Step 2: Run** `make test-integration`; confirm failure for missing functions.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `make lint test test-integration`. Expected: pass; `db.LatestVersion()` is 4.
+- [ ] **Step 4: Run** `make lint test test-integration`. Expected: pass; `db.LatestVersion()` is this migration's number.
 - [ ] **Step 5: Commit** `feat: store runs, legs, operations, locks and log lines`.
 
 ---

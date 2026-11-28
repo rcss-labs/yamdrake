@@ -1,0 +1,17 @@
+.ui-note {
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: var(--raised);
+  color: var(--ink2);
+  font-size: 13px;
+}
+.ui-note[data-tone='warning'] {
+  background: var(--wait-b);
+  color: var(--wait-t);
+  font-size: 14px;
+}
+.ui-note[data-tone='error'] {
+  background: var(--bad-b);
+  color: var(--bad-t);
+  font-size: 14px;
+}

@@ -1,0 +1,11 @@
+.ui-card {
+  background: Canvas;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  min-width: 0;
+}
+.ui-card-flush {
+  padding: 0;
+  overflow: hidden;
+}

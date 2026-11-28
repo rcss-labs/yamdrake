@@ -765,7 +765,11 @@ export const handlers: HttpHandler[] = [
   // Single sign-on settings
   route('GET', '/api/v1/admin/sso', manageAccess, () => json(state.sso)),
 
-  route('PUT', '/api/v1/admin/sso', manageAccess, ({ body }) => {
+  route('PUT', '/api/v1/admin/sso', manageAccess, ({ me, body }) => {
+    // Changing the single sign-on settings is admin power, not just manage_access.
+    if (!me?.admin) {
+      return errorResponse(403, 'forbidden', 'only an administrator may change administrator access')
+    }
     const request = fields(body)
     const metadata = text(request.idp_metadata_xml)
     if (request.enabled === true && !metadata.includes('<EntityDescriptor')) {

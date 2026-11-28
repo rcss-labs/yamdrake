@@ -9,6 +9,10 @@ import (
 // remove an administrator. It is an arbitrary constant, unique in this program.
 const accessLockKey int64 = 0x79756d_41444d // "yum" "ADM"
 
+// AdminLockKey is the advisory-lock key LockAdminChanges takes (tests read
+// pg_locks for it).
+func AdminLockKey() int64 { return accessLockKey }
+
 // LockAdminChanges takes a transaction-scoped advisory lock. Callers that may
 // reduce the set of administrators (disable a user, clear a group's admin
 // flag, remove a membership) take it first, then count with

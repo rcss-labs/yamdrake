@@ -28,7 +28,8 @@ func Resolve(ctx context.Context, db store.DBTX, userID int64, via string) (Prin
 	if err != nil {
 		return Principal{}, fmt.Errorf("resolve principal: %w", err)
 	}
-	p := Principal{UserID: user.ID, Email: user.Email, Name: user.Name, Grants: grants, Via: via}
+	p := Principal{UserID: user.ID, Email: user.Email, Name: user.Name, Grants: grants, Via: via,
+		Source: user.Source, LastSignInAt: user.LastLoginAt}
 	for _, g := range groups {
 		if g.Admin {
 			p.Admin = true

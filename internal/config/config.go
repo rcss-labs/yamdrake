@@ -53,6 +53,10 @@ type Orchestrator struct {
 	SweepInterval time.Duration
 	// LimitPerEnvironment and LimitPerAccount cap the legs running at once.
 	LimitPerEnvironment, LimitPerAccount int
+	// TokenSSOMaxAge is how old the last SSO sign-in of a SAML user may be for
+	// their CLI tokens to keep working (YUMDRAKE_TOKEN_SSO_MAX_AGE, default 168h,
+	// at least 1h).
+	TokenSSOMaxAge time.Duration
 
 	SyncSettings
 }
@@ -78,6 +82,8 @@ type Runner struct {
 }
 
 const redactedPassword = "REDACTED"
+
+const minTokenSSOMaxAge = time.Hour
 
 var keyPrefixPattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{0,64}$`)
 
@@ -146,6 +152,10 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	cfg.SweepInterval = l.duration("YUMDRAKE_SWEEP_INTERVAL", "2s")
 	cfg.LimitPerEnvironment = l.positiveInt("YUMDRAKE_LIMIT_PER_ENVIRONMENT", "10")
 	cfg.LimitPerAccount = l.positiveInt("YUMDRAKE_LIMIT_PER_ACCOUNT", "20")
+	cfg.TokenSSOMaxAge = l.duration("YUMDRAKE_TOKEN_SSO_MAX_AGE", "168h")
+	if cfg.TokenSSOMaxAge > 0 && cfg.TokenSSOMaxAge < minTokenSSOMaxAge {
+		l.fail("YUMDRAKE_TOKEN_SSO_MAX_AGE", "must be at least 1h")
+	}
 	cfg.SyncSettings = l.loadSyncSettings()
 
 	if err := l.err(); err != nil {

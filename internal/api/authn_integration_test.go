@@ -310,6 +310,19 @@ func TestTokenCheckDatabaseFailureIs503Not401(t *testing.T) {
 // Every registered route: without credentials 401; without the grant 403 (or
 // allowed, for view); with the grant never 403. A route added without a
 // decision, or wired to the wrong action, shows up here.
+// adminOnlyRoutes need Admin on top of their action.
+var adminOnlyRoutes = map[string]bool{
+	"PUT /api/v1/admin/sso":                true,
+	"POST /api/v1/admin/users/{id}/tokens": true,
+}
+
+// sessionOnlyRoutes answer 403 to any request made with a token.
+var sessionOnlyRoutes = map[string]bool{
+	"POST /api/v1/cli/login/confirm": true,
+	"POST /api/v1/tokens":            true,
+	"DELETE /api/v1/tokens/{id}":     true,
+}
+
 func TestEveryRouteEnforcesItsAction(t *testing.T) {
 	h := newHarness(t)
 	h.withSyncer(stubSyncer{})
@@ -338,6 +351,7 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		"POST /api/v1/jobs/{id}/sync":                  auth.ManageJobs,
 		"GET /api/v1/admin/users":                      auth.ManageAccess,
 		"POST /api/v1/admin/users":                     auth.ManageAccess,
+		"POST /api/v1/admin/users/{id}/tokens":         auth.ManageAccess,
 		"PATCH /api/v1/admin/users/{id}":               auth.ManageAccess,
 		"GET /api/v1/admin/groups":                     auth.ManageAccess,
 		"POST /api/v1/admin/groups":                    auth.ManageAccess,
@@ -388,10 +402,16 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 		if rec := h.send(sent{method: method, path: path}); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s without credentials: %s, want 401", name, failure(rec))
 		}
-		rec := h.send(sent{method: method, path: path, bearer: plainToken})
+		bearer := plainToken
+		if route.pattern == "POST /api/v1/auth/logout" {
+			// Logging out with a token revokes it: use a throwaway one.
+			bearer, _ = h.newToken(plain.ID)
+		}
+		rec := h.send(sent{method: method, path: path, bearer: bearer})
 		if route.action == auth.View {
-			// Confirming a device sign-in needs a session: a token gets 403 by design.
-			if rec.Code == http.StatusForbidden && route.pattern != "POST /api/v1/cli/login/confirm" {
+			// Confirming a device sign-in and minting or revoking a token need a
+			// browser session: a token gets 403 by design.
+			if rec.Code == http.StatusForbidden && !sessionOnlyRoutes[route.pattern] {
 				t.Errorf("%s needs only view but a plain user got 403", name)
 			}
 			continue
@@ -406,7 +426,8 @@ func TestEveryRouteEnforcesItsAction(t *testing.T) {
 			token, _ = h.newToken(u.ID)
 			granted[route.action] = token
 		}
-		if rec := h.send(sent{method: method, path: path, bearer: token}); rec.Code == http.StatusForbidden {
+		// Changing the SSO settings needs Admin on top of manage_access.
+		if rec := h.send(sent{method: method, path: path, bearer: token}); rec.Code == http.StatusForbidden && !adminOnlyRoutes[route.pattern] {
 			t.Errorf("%s with %s granted still got 403", name, route.action)
 		}
 	}

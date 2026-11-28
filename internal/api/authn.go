@@ -20,9 +20,12 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 }
 
 const (
-	messageSignInUnavailable = "Sign-in is temporarily unavailable"
-	viaSession               = "session"
-	viaToken                 = "token"
+	messageSignInUnavailable  = "Sign-in is temporarily unavailable"
+	messageSSOExpired         = "Sign in again with SSO: yumdrake login"
+	messageTokenRevokesItself = "A token can only revoke itself"
+	messageTokensNeedSession  = "Sign in with your browser to manage tokens"
+	viaSession                = "session"
+	viaToken                  = "token"
 )
 
 func unauthorized(w http.ResponseWriter) {
@@ -69,7 +72,7 @@ func (s *server) authenticate(next http.Handler) http.Handler {
 }
 
 func (s *server) authenticateToken(w http.ResponseWriter, r *http.Request, token string) (auth.Principal, bool) {
-	userID, err := auth.VerifyToken(r.Context(), s.Pool, token, s.Now())
+	tok, err := auth.VerifyTokenRecord(r.Context(), s.Pool, token, s.Now())
 	switch {
 	case errors.Is(err, auth.ErrBadToken):
 		unauthorized(w)
@@ -80,13 +83,21 @@ func (s *server) authenticateToken(w http.ResponseWriter, r *http.Request, token
 		writeError(w, http.StatusServiceUnavailable, codeUnavailable, "authentication is temporarily unavailable")
 		return auth.Principal{}, false
 	}
-	principal, err := auth.Resolve(r.Context(), s.Pool, userID, viaToken)
+	principal, err := auth.Resolve(r.Context(), s.Pool, tok.UserID, viaToken)
 	switch {
 	case errors.Is(err, auth.ErrDisabled), errors.Is(err, store.ErrNotFound):
 		unauthorized(w)
 		return auth.Principal{}, false
 	case err != nil:
 		s.internalError(w, r, err)
+		return auth.Principal{}, false
+	}
+	principal.TokenID = tok.ID
+	// Memberships from the identity provider are refreshed only at SSO sign-in,
+	// so a SAML user's token works only for a while after the last one.
+	if principal.Source == "saml" && (principal.LastSignInAt == nil || s.Now().Sub(*principal.LastSignInAt) > s.TokenSSOMaxAge) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="yumdrake"`)
+		writeError(w, http.StatusUnauthorized, codeUnauthorized, messageSSOExpired)
 		return auth.Principal{}, false
 	}
 	return principal, true

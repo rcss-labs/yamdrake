@@ -10,7 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/audit"
@@ -60,9 +62,14 @@ func (s *server) me(w http.ResponseWriter, r *http.Request) {
 
 // lockoutKey names the failure counter of an email. The email is hashed so the
 // address itself never sits in Valkey.
-func (s *server) lockoutKey(email string) string {
+func (s *server) lockoutKey(email string) string { return LoginFailureKey(s.KeyPrefix, email) }
+
+// LoginFailureKey is the Valkey key of an email's failed sign-in counter under
+// the given key prefix. The orchestrator's unlock command deletes it, so the
+// way the email is normalised lives here, once.
+func LoginFailureKey(prefix, email string) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
-	return s.KeyPrefix + "login-failures:" + hex.EncodeToString(sum[:])
+	return prefix + "login-failures:" + hex.EncodeToString(sum[:])
 }
 
 // reserveScript counts one sign-in attempt for the key atomically, before the
@@ -134,7 +141,7 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if !decodeBody(w, r, &req) {
+	if !decodeBodyUnchecked(w, r, &req) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
@@ -167,17 +174,13 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		signInUnavailable(w)
 		return
 	}
-	user, ok, reason, err := s.checkPasswordHoldingSlot(r.Context(), release, email, req.Password)
+	user, ok, reason, exists, err := s.checkPasswordHoldingSlot(r.Context(), release, email, req.Password)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
 	if !ok {
-		detail := map[string]any{"email": truncate(email, maxEmailLength), "reason": reason}
-		if err := audit.Record(context.WithoutCancel(r.Context()), s.Pool, nil, s.Now(), audit.Event{
-			Action: "auth.login_failed", TargetType: "user", TargetID: "", Detail: detail}); err != nil {
-			s.Log.Error("audit failed sign-in", "error", err.Error())
-		}
+		s.recordFailedLogin(r, email, reason, exists)
 		writeError(w, http.StatusUnauthorized, codeUnauthorized, "invalid email or password")
 		return
 	}
@@ -202,6 +205,25 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, principalView(principal))
+}
+
+// recordFailedLogin audits a failed sign-in of an account that exists. Anyone
+// can make unlimited failures with made-up addresses and the audit log cannot
+// be pruned, so those are only logged. The answer and its timing are the same
+// either way: the unknown case makes one database round trip too, and both are
+// dwarfed by the password check.
+func (s *server) recordFailedLogin(r *http.Request, email, reason string, accountExists bool) {
+	ctx := context.WithoutCancel(r.Context())
+	if !accountExists {
+		s.Log.Warn("failed sign-in for an unknown email", "reason", reason)
+		_, _ = s.Pool.Exec(ctx, "SELECT 1")
+		return
+	}
+	detail := map[string]any{"email": truncate(email, maxEmailLength), "reason": reason}
+	if err := audit.Record(ctx, s.Pool, nil, s.Now(), audit.Event{
+		Action: "auth.login_failed", TargetType: "user", TargetID: "", Detail: detail}); err != nil {
+		s.Log.Error("audit failed sign-in", "error", err.Error())
+	}
 }
 
 // startSession signs the user in whichever way they proved who they are: the
@@ -242,10 +264,17 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, userID int
 // signs in with a password. Every path, including an unknown email, a user
 // without a password and a SAML user, verifies one argon2id hash (the dummy one
 // when there is nothing real to check), so the cost does not reveal which case
-// it was. reason is for the audit log only.
-func (s *server) checkPassword(ctx context.Context, email, password string) (user store.User, ok bool, reason string, err error) {
+// it was. reason is for the audit log only; accountExists tells whether the
+// email belongs to a user at all (of any source), which decides if a failure is audited.
+func (s *server) checkPassword(ctx context.Context, email, password string) (user store.User, ok bool, reason string, accountExists bool, err error) {
 	hash, known := s.dummyHash, false
-	user, err = store.UserByEmail(ctx, s.Pool, email)
+	if hasControlText(email, false) {
+		// Such an address cannot exist (and PostgreSQL refuses to look for it):
+		// it is an unknown email, verified against the dummy hash like one.
+		err = store.ErrNotFound
+	} else {
+		user, err = store.UserByEmail(ctx, s.Pool, email)
+	}
 	switch {
 	case err == nil:
 		stored, hashErr := store.PasswordHash(ctx, s.Pool, user.ID)
@@ -253,11 +282,12 @@ func (s *server) checkPassword(ctx context.Context, email, password string) (use
 		case hashErr == nil:
 			hash, known = stored, true
 		case !errors.Is(hashErr, store.ErrNotFound):
-			return store.User{}, false, "", hashErr
+			return store.User{}, false, "", false, hashErr
 		}
 	case !errors.Is(err, store.ErrNotFound):
-		return store.User{}, false, "", err
+		return store.User{}, false, "", false, err
 	}
+	accountExists = err == nil
 	matches, verifyErr := auth.VerifyPassword(hash, password)
 	if verifyErr != nil {
 		// A stored hash that cannot be read: refuse, and say so in the log (the
@@ -267,16 +297,16 @@ func (s *server) checkPassword(ctx context.Context, email, password string) (use
 	}
 	switch {
 	case !known || !matches:
-		return store.User{}, false, "bad_credentials", nil
+		return store.User{}, false, "bad_credentials", accountExists, nil
 	case user.Disabled:
-		return store.User{}, false, "disabled", nil
+		return store.User{}, false, "disabled", accountExists, nil
 	}
-	return user, true, "", nil
+	return user, true, "", true, nil
 }
 
 // checkPasswordHoldingSlot runs checkPassword and always gives the slot back,
 // even if the check panics.
-func (s *server) checkPasswordHoldingSlot(ctx context.Context, release func(), email, password string) (store.User, bool, string, error) {
+func (s *server) checkPasswordHoldingSlot(ctx context.Context, release func(), email, password string) (store.User, bool, string, bool, error) {
 	defer release()
 	return s.checkPassword(ctx, email, password)
 }
@@ -294,15 +324,34 @@ func (s *server) acquireVerifySlot(ctx context.Context) (release func(), ok bool
 	return nil, false
 }
 
+// truncate cuts s to at most n bytes without splitting a character (a split
+// one is invalid UTF-8, which PostgreSQL refuses).
 func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	if len(s) <= n {
+		return s
 	}
-	return s
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	principal, _ := PrincipalFrom(r.Context())
+	if principal.Via == viaToken {
+		// A token logs out by revoking itself, and only itself.
+		err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+			err := store.RevokeToken(ctx, tx, principal.TokenID, principal.UserID, s.Now())
+			return audit.Event{Action: "token.revoke", TargetType: "token", TargetID: idString(principal.TokenID),
+				Detail: map[string]any{"via": "logout"}}, err
+		})
+		if err != nil {
+			s.writeAccessError(w, r, err, "token")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if principal.Via == viaSession {
 		if id, ok := session.IDFromRequest(r); ok {
 			ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)

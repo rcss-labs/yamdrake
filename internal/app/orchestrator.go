@@ -91,6 +91,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Runs:                runEngine,
 			Logs:                logs.NewReader(pool, archive),
 			Wake:                bus,
+			TokenSSOMaxAge:      cfg.TokenSSOMaxAge,
 		})
 		// The queue is used only for Sweep, which compares against the database
 		// clock (nil) and does not need a lease length.

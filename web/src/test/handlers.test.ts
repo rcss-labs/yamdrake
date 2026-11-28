@@ -67,7 +67,7 @@ const routes: Route[] = [
   { method: 'DELETE', path: '/api/v1/admin/grants/1', allowed: accessManagerMe, success: 204 },
   { method: 'GET', path: '/api/v1/admin/audit?limit=2', allowed: auditorMe, success: 200 },
   { method: 'GET', path: '/api/v1/admin/sso', allowed: accessManagerMe, success: 200 },
-  { method: 'PUT', path: '/api/v1/admin/sso', body: { enabled: false, idp_metadata_xml: '', entity_id: '', groups_attribute: 'groups', email_attribute: '', name_attribute: 'displayName' }, allowed: accessManagerMe, success: 200 },
+  { method: 'PUT', path: '/api/v1/admin/sso', body: { enabled: false, idp_metadata_xml: '', entity_id: '', groups_attribute: 'groups', email_attribute: '', name_attribute: 'displayName' }, allowed: adminMe, success: 200 },
   { method: 'POST', path: '/api/v1/admin/sso/test', allowed: accessManagerMe, success: 200 },
   { method: 'GET', path: '/api/v1/tokens', allowed: 'anyone', success: 200 },
   { method: 'POST', path: '/api/v1/tokens', body: { name: 'ci' }, allowed: 'anyone', success: 201 },
@@ -110,6 +110,12 @@ describe('the mock API', () => {
       expect(await statusOf(route)).toBe(route.success)
     },
   )
+
+  it('refuses PUT /api/v1/admin/sso to a manage_access holder who is not an admin, as the server does', async () => {
+    signInAs(accessManagerMe)
+    expect(await statusOf({ method: 'GET', path: '/api/v1/admin/sso', allowed: accessManagerMe, success: 200 })).toBe(200)
+    expect(await statusOf({ method: 'PUT', path: '/api/v1/admin/sso', body: { enabled: false }, allowed: adminMe, success: 200 })).toBe(403)
+  })
 
   it('walks a CLI sign-in the way the server answers it', async () => {
     const start = await api<{ device_code: string; user_code: string; expires_in: number; interval: number }>('POST', '/api/v1/cli/login')

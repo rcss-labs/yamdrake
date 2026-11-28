@@ -3,10 +3,10 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../../App'
 import { renderApp } from '../../test/render'
-import { accessManagerMe, delayNext, failNext, mockState, requests, viewerMe } from '../../test/server'
+import { adminMe, delayNext, failNext, mockState, requests, viewerMe } from '../../test/server'
 
 async function openSso() {
-  const rendered = renderApp(<App />, { route: '/admin/sso', me: accessManagerMe })
+  const rendered = renderApp(<App />, { route: '/admin/sso', me: adminMe })
   await screen.findByRole('switch', { name: 'Single sign-on enabled' })
   return rendered
 }
@@ -122,7 +122,7 @@ describe('the single sign-on section', () => {
 
   it('shows a loading state while the settings load', async () => {
     delayNext('GET', '/api/v1/admin/sso', 50)
-    renderApp(<App />, { route: '/admin/sso', me: accessManagerMe })
+    renderApp(<App />, { route: '/admin/sso', me: adminMe })
     expect(await screen.findByText('Loading')).toBeInTheDocument()
     expect(await screen.findByRole('switch', { name: 'Single sign-on enabled' })).toBeInTheDocument()
   })
@@ -130,7 +130,7 @@ describe('the single sign-on section', () => {
   it('shows a readable error with retry when the settings cannot be read', async () => {
     const user = userEvent.setup()
     failNext('GET', '/api/v1/admin/sso', 500, 'internal', 'Settings could not be read')
-    renderApp(<App />, { route: '/admin/sso', me: accessManagerMe })
+    renderApp(<App />, { route: '/admin/sso', me: adminMe })
     expect(await screen.findByRole('alert')).toHaveTextContent('Settings could not be read')
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('switch', { name: 'Single sign-on enabled' })).toBeInTheDocument()

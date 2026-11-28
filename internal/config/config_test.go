@@ -56,6 +56,28 @@ func TestLoadOrchestratorDefaults(t *testing.T) {
 	if cfg.MigrateTimeout != 10*time.Minute {
 		t.Errorf("MigrateTimeout = %v, want 10m", cfg.MigrateTimeout)
 	}
+	if cfg.TokenSSOMaxAge != 168*time.Hour {
+		t.Errorf("TokenSSOMaxAge = %v, want 168h", cfg.TokenSSOMaxAge)
+	}
+}
+
+func TestTokenSSOMaxAge(t *testing.T) {
+	for value, want := range map[string]time.Duration{"1h": time.Hour, "72h": 72 * time.Hour, "720h": 720 * time.Hour} {
+		env := requiredEnv()
+		env["YUMDRAKE_TOKEN_SSO_MAX_AGE"] = value
+		cfg, err := LoadOrchestrator(envFrom(env))
+		if err != nil || cfg.TokenSSOMaxAge != want {
+			t.Errorf("YUMDRAKE_TOKEN_SSO_MAX_AGE=%s: %v, %v; want %v", value, cfg.TokenSSOMaxAge, err, want)
+		}
+	}
+	for _, value := range []string{"59m", "30s", "0", "-5h", "soon"} {
+		env := requiredEnv()
+		env["YUMDRAKE_TOKEN_SSO_MAX_AGE"] = value
+		_, err := LoadOrchestrator(envFrom(env))
+		if err == nil || !strings.Contains(err.Error(), "YUMDRAKE_TOKEN_SSO_MAX_AGE") {
+			t.Errorf("YUMDRAKE_TOKEN_SSO_MAX_AGE=%s: error %v, want one naming the variable", value, err)
+		}
+	}
 }
 
 func TestLoadOrchestratorMigrateTimeoutOverride(t *testing.T) {

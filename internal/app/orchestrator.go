@@ -15,6 +15,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/api"
 	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yamdrake/internal/awsx/discovery"
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
@@ -60,10 +61,10 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			if cfg.SecretsMode == "kms" {
 				return Extension{}, err
 			}
-			// Without KMS the AWS configuration is only for the connection test.
+			// Without KMS the AWS configuration is only for discovery (the connection test).
 			log.Warn("the default AWS configuration could not be loaded; testing AWS accounts will fail", "error", err.Error())
 		}
-		cipher, err := newCipher(cfg.Common, awsConfig)
+		cipher, err := NewCipher(cfg.Common, awsConfig)
 		if err != nil {
 			return Extension{}, err
 		}
@@ -81,6 +82,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			PublicURL:           cfg.PublicURL,
 			TokenSSOMaxAge:      cfg.TokenSSOMaxAge,
 			AWSConfig:           awsConfig,
+			Discovery:           discovery.New(pool, cipher, awsConfig, cfg.AWS),
 		})
 		return Extension{
 			Handlers: map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},
@@ -93,10 +95,10 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 	}
 }
 
-// newCipher builds the secret cipher of the configured mode. KMS needs a
+// NewCipher builds the secret cipher of the configured mode. KMS needs a
 // region (from the default AWS chain, for example AWS_REGION) and, when it is
 // used, credentials; the error never carries key material.
-func newCipher(cfg config.Common, awsConfig aws.Config) (secrets.Cipher, error) {
+func NewCipher(cfg config.Common, awsConfig aws.Config) (secrets.Cipher, error) {
 	if cfg.SecretsMode == "kms" {
 		if awsConfig.Region == "" {
 			return nil, errors.New("secret cipher: kms mode needs an AWS region (set AWS_REGION)")

@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestAWSAccountRoundTripStoresOnlyCiphertext(t *testing.T) {
@@ -33,8 +35,8 @@ func TestAWSAccountRoundTripStoresOnlyCiphertext(t *testing.T) {
 	if err != nil || !bytes.Equal(gotDiscovery, discoveryCipher) {
 		t.Fatalf("DiscoverySecret = %v, %v; want the ciphertext", gotDiscovery, err)
 	}
-	if gotDeploy, err := DeploySecret(ctx, pool, "123456789012"); err != nil || gotDeploy != nil {
-		t.Fatalf("DeploySecret of a role account = %v, %v; want nil", gotDeploy, err)
+	if got := deployCiphertext(t, pool, "123456789012"); got != nil {
+		t.Fatalf("deploy ciphertext of a role account = %v; want nil", got)
 	}
 
 	// The same ciphertext columns are separate: a deploy key secret is not the discovery one.
@@ -45,8 +47,8 @@ func TestAWSAccountRoundTripStoresOnlyCiphertext(t *testing.T) {
 	}, nil, deployCipher); err != nil {
 		t.Fatalf("CreateAWSAccount dev: %v", err)
 	}
-	if got, err := DeploySecret(ctx, pool, "210987654321"); err != nil || !bytes.Equal(got, deployCipher) {
-		t.Fatalf("DeploySecret = %v, %v", got, err)
+	if got := deployCiphertext(t, pool, "210987654321"); !bytes.Equal(got, deployCipher) {
+		t.Fatalf("deploy ciphertext = %v, want the one stored", got)
 	}
 	if got, err := DiscoverySecret(ctx, pool, "210987654321"); err != nil || got != nil {
 		t.Fatalf("DiscoverySecret of a role account = %v, %v; want nil", got, err)
@@ -103,4 +105,15 @@ func TestDuplicateAccountIDIsErrDuplicate(t *testing.T) {
 	if err := same("three", "not-twelve"); !errors.Is(err, ErrInvalid) {
 		t.Errorf("malformed account id error = %v, want ErrInvalid", err)
 	}
+}
+
+// deployCiphertext reads the deploy column directly: the store has no reader
+// for it on purpose (only internal/awsx/deploy reads it).
+func deployCiphertext(t *testing.T, pool *pgxpool.Pool, accountID string) []byte {
+	t.Helper()
+	var ciphertext []byte
+	if err := pool.QueryRow(context.Background(), "SELECT deploy_secret_ciphertext FROM aws_accounts WHERE account_id = $1", accountID).Scan(&ciphertext); err != nil {
+		t.Fatalf("read the deploy ciphertext: %v", err)
+	}
+	return ciphertext
 }

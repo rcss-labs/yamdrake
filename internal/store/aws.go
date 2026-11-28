@@ -98,21 +98,13 @@ func AWSAccountByAccountID(ctx context.Context, db DBTX, accountID string) (AWSA
 
 // DiscoverySecret returns the ciphertext of the discovery secret access key of
 // the account (nil for the role method), or ErrNotFound.
+//
+// There is deliberately no counterpart for the deployment secret: it is read
+// only inside internal/awsx/deploy, so that code which runs in the
+// orchestrator cannot call it. See internal/awsx/boundary_test.go.
 func DiscoverySecret(ctx context.Context, db DBTX, accountID string) ([]byte, error) {
-	return awsSecret(ctx, db, "discovery_secret_ciphertext", accountID)
-}
-
-// DeploySecret returns the ciphertext of the deployment secret access key of
-// the account (nil for the role method), or ErrNotFound.
-func DeploySecret(ctx context.Context, db DBTX, accountID string) ([]byte, error) {
-	return awsSecret(ctx, db, "deploy_secret_ciphertext", accountID)
-}
-
-// awsSecret reads one of the two fixed ciphertext columns; column is never
-// caller input.
-func awsSecret(ctx context.Context, db DBTX, column, accountID string) ([]byte, error) {
 	var secret []byte
-	if err := db.QueryRow(ctx, "SELECT "+column+" FROM aws_accounts WHERE account_id = $1", accountID).Scan(&secret); err != nil {
+	if err := db.QueryRow(ctx, "SELECT discovery_secret_ciphertext FROM aws_accounts WHERE account_id = $1", accountID).Scan(&secret); err != nil {
 		return nil, fmt.Errorf("get aws secret: %w", mapError(err))
 	}
 	return secret, nil

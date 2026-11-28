@@ -97,5 +97,5 @@ func newDeployCredentials(ctx context.Context, log *slog.Logger, cfg config.Runn
 	if err != nil {
 		return nil, err
 	}
-	return deploy.New(pool, cipher, awsConfig, cfg.AWS), nil
+	return deploy.New(pool, cipher, awsConfig, cfg.AWS).WithLogger(log), nil
 }

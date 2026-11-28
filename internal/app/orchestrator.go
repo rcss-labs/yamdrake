@@ -82,7 +82,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			PublicURL:           cfg.PublicURL,
 			TokenSSOMaxAge:      cfg.TokenSSOMaxAge,
 			AWSConfig:           awsConfig,
-			Discovery:           discovery.New(pool, cipher, awsConfig, cfg.AWS),
+			Discovery:           discovery.New(pool, cipher, awsConfig, cfg.AWS).WithLogger(log),
 		})
 		return Extension{
 			Handlers: map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},

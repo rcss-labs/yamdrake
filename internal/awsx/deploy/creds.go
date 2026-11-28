@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/jackc/pgx/v5"
@@ -99,4 +100,11 @@ func readDeploySecret(ctx context.Context, pool *pgxpool.Pool, accountID string)
 		return nil, fmt.Errorf("read deploy secret: %w", err)
 	}
 	return ciphertext, nil
+}
+
+// WithLogger sets the logger credential failures are written to, the app's
+// structured logger, and returns p. Without it the default logger is used.
+func (p *Provider) WithLogger(log *slog.Logger) *Provider {
+	p.src.WithLogger(log)
+	return p
 }

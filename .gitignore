@@ -6,3 +6,10 @@
 # Built web application, embedded by internal/webui (make web-build)
 /internal/webui/dist/*
 !/internal/webui/dist/.gitkeep
+
+# Terraform: never commit state, plugins or real variable values
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.auto.tfvars

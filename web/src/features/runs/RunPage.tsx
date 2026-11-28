@@ -68,7 +68,7 @@ function stateSentence(run: RunDetail): ReactNode {
     case 'queued':
       return run.wait_reason ? <WaitReason text={run.wait_reason} /> : 'Waiting for its turn'
     case 'running':
-      return `${updated} of ${total} services updated so far`
+      return `${updated} of ${plural(total, 'service')} updated so far`
     case 'cancelling':
       return 'Cancelling: waiting for services already rolling to finish'
     case 'needs_reconciliation': {
@@ -79,7 +79,7 @@ function stateSentence(run: RunDetail): ReactNode {
       return `All ${plural(total, 'service')} updated`
     case 'partially_succeeded':
     case 'failed':
-      return `${updated} of ${total} services updated`
+      return `${updated} of ${plural(total, 'service')} updated`
     case 'cancelled': {
       // The API does not send who cancelled yet; cancelled_by_name is read when it does.
       const who = run.cancelled_by_name

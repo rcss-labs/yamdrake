@@ -12,14 +12,28 @@ const password = process.env.YUMDRAKE_E2E_PASSWORD ?? ''
 const jobTitle = 'Backend and microservices'
 
 /** Screenshots are written only when YUMDRAKE_SHOTS_DIR is set, at two widths. */
-async function shots(page: Page, name: string) {
+async function shots(page: Page, name: string, options: { freshAtPhoneWidth?: boolean } = {}) {
   const dir = process.env.YUMDRAKE_SHOTS_DIR
   if (!dir) return
   mkdirSync(dir, { recursive: true })
-  for (const width of [1360, 380]) {
-    await page.setViewportSize({ width, height: 900 })
-    await page.screenshot({ path: resolve(dir, `${name}-${width}.png`), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: resolve(dir, `${name}-1360.png`), fullPage: true, animations: 'disabled' })
+  if (options.freshAtPhoneWidth) {
+    // The console skips painting rows that are off screen (content-visibility: auto), and a full-page capture
+    // is taller than the screen, so those rows come out blank in the picture although a person sees them.
+    // The shot is taken from a page loaded at phone width, as a phone would, with the skipping switched off
+    // for the capture only.
+    const phone = await page.context().newPage()
+    await phone.setViewportSize({ width: 380, height: 900 })
+    await phone.goto(page.url())
+    await expect(phone.getByRole('region', { name: 'Console' })).toBeVisible()
+    await expect(phone.locator('.con-ln').first()).toBeVisible()
+    await phone.evaluate(() => document.querySelectorAll<HTMLElement>('.con-ln, .con-gap').forEach((row) => row.style.setProperty('content-visibility', 'visible')))
+    await phone.screenshot({ path: resolve(dir, `${name}-380.png`), fullPage: true, animations: 'disabled' })
+    await phone.close()
+    return
   }
+  await page.setViewportSize({ width: 380, height: 900 })
+  await page.screenshot({ path: resolve(dir, `${name}-380.png`), fullPage: true, animations: 'disabled' })
   await page.setViewportSize({ width: 1360, height: 900 })
 }
 
@@ -96,13 +110,13 @@ test('a run with a failing service is planned, started, watched and read, and a 
   await expect(logLines).not.toContainText('No log lines yet')
   const tree = page.getByRole('navigation', { name: 'Steps and services' })
   await expect(tree.getByRole('button', { name: /backend-api/ }).first()).toBeVisible()
-  await shots(page, 'run-running')
+  await shots(page, 'run-running', { freshAtPhoneWidth: true })
 
   await expect(page.getByRole('heading', { name: /^Run #\d+/ }).getByText('Partly succeeded')).toBeVisible({ timeout: 90_000 })
   const failed = page.getByRole('region', { name: 'What failed' })
   await expect(failed).toContainText('backend-api')
   await expect(failed).toContainText('the new tasks did not become healthy')
-  await shots(page, 'run-failed')
+  await shots(page, 'run-failed', { freshAtPhoneWidth: true })
   expect(await page.evaluate(() => (window as unknown as { __noReload?: boolean }).__noReload), 'the page was reloaded').toBe(true)
   await failed.getByRole('button', { name: 'Show its log' }).click()
   await expect(page).toHaveURL(/service=backend-api/)

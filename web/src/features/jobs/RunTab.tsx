@@ -148,10 +148,10 @@ function RunForm({ job, groups, environment, environments, onEnvironment }: RunF
               <div className="run-group-head">
                 <Checkbox
                   label={
-                    <>
+                    <span className="run-group-label">
                       <span className="run-group-name">{group.label}</span>
                       <span className="job-sub">{`${selected.length} of ${members.length} selected`}</span>
-                    </>
+                    </span>
                   }
                   checked={available.length > 0 && selected.length === available.length}
                   disabled={!allowed || available.length === 0}

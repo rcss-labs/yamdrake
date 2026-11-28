@@ -29,6 +29,12 @@
   justify-content: space-between;
   gap: 12px;
 }
+.run-group-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+}
 .run-group-name {
   font-weight: 500;
   font-size: 15px;

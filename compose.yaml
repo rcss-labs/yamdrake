@@ -30,6 +30,9 @@ services:
   # not published (another Floci may own it). ECS tasks and the ECR registry run
   # as sibling containers through the Docker socket.
   floci:
+    # Its own profile keeps the smoke stack (--profile app) from starting a second
+    # emulator on the same host port; naming the service starts it anyway.
+    profiles: [floci]
     image: floci/floci:2.5.0
     ports:
       - "127.0.0.1:4577:4566"

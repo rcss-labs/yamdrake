@@ -19,6 +19,8 @@ const (
 	exitOK      = 0
 	exitProblem = 1
 	exitUsage   = 2
+	// exitInterrupted is the usual 128+SIGINT.
+	exitInterrupted = 130
 )
 
 const usageText = `usage: yumdrake <command>
@@ -28,8 +30,18 @@ Commands:
       Check environments.yaml, services/*.yaml and any job files.
       Prints problems as file:line: message on stderr and a summary on stdout.
       Exit 0 when valid, 1 when problems are found, 2 on a usage error.
+  login [--server URL] [--no-browser] [--with-token]
+      Sign in through the browser and save the token (mode 0600).
+  logout
+      Revoke the token on the server and remove it from the config file.
+  whoami [-o json]
+      Show who you are signed in as and what you may do.
   version
       Print the version.
+
+Environment: YUMDRAKE_SERVER, YUMDRAKE_TOKEN, NO_COLOR.
+Exit codes: 0 ok, 1 failed, 2 usage or configuration error, 6 not signed in
+or not permitted, 7 server unreachable or failing.
 
 Use -h to show this text.
 `
@@ -40,6 +52,11 @@ func main() {
 
 // run executes the command in args (without the program name) and returns the exit code.
 func run(args []string, stdout, stderr io.Writer) int {
+	return runEnv(args, stdout, stderr, defaultEnv(stdout))
+}
+
+// runEnv is run with the machine-dependent parts supplied, so tests can replace them.
+func runEnv(args []string, stdout, stderr io.Writer, e env) int {
 	if len(args) == 0 {
 		_, _ = fmt.Fprint(stderr, usageText)
 		return exitUsage
@@ -53,6 +70,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	case "validate":
 		return validate(args[1:], stdout, stderr)
+	case "login":
+		return login(args[1:], stdout, stderr, e)
+	case "logout":
+		return logout(args[1:], stdout, stderr, e)
+	case "whoami":
+		return whoami(args[1:], stdout, stderr, e)
 	default:
 		_, _ = fmt.Fprintf(stderr, "yumdrake: unknown command %q\n\n%s", args[0], usageText)
 		return exitUsage

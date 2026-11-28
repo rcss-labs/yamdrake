@@ -23,9 +23,10 @@ PostgreSQL listens on `localhost:5432` (database, user and password `yumdrake`).
 
 ## Running the services locally
 
-Build both binaries into `bin/`:
+Build both binaries into `bin/`. `make build` also builds the web application and embeds it, so it needs Node 24 and a one-time `make web-install` first:
 
 ```sh
+make web-install   # once per clone
 make build
 ```
 
@@ -169,7 +170,7 @@ The web application lives in `web/` (React, TypeScript and Vite). It needs Node 
 make web-install   # install dependencies from the lockfile
 make web-lint      # ESLint and the TypeScript check
 make web-test      # unit tests, run once
-make web-build     # production build into web/dist
+make web-build     # production build, copied into internal/webui/dist for embedding
 ```
 
 For development, run the orchestrator on port 8080 and start the dev server with `npm --prefix web run dev`. The dev server proxies `/api` and `/saml` to the orchestrator on `localhost:8080`.
@@ -233,7 +234,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 
 ## Validating YAML
 
-`make build` produces `bin/yumdrake`, the CLI that checks an inventory before it is synced:
+`make build` (after `make web-install`, see above) produces `bin/yumdrake`, the CLI that checks an inventory before it is synced:
 
 ```sh
 bin/yumdrake validate <inventory-dir> [--job <file>]...
@@ -247,6 +248,7 @@ The inventory directory holds `environments.yaml` and one `services/*.yaml` file
 Exit codes: `0` valid, `1` problems found or the directory is missing, `2` usage error (no directory, an unknown command, or bad flags).
 
 ```sh
+make web-install   # once, if not done yet
 make build
 bin/yumdrake validate internal/spec/testdata/valid --job internal/spec/testdata/valid/jobs/deploy-backend.yaml
 ```

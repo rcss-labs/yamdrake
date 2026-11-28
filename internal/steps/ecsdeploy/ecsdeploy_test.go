@@ -731,6 +731,49 @@ func TestRolledBackByECSFails(t *testing.T) {
 	}
 }
 
+func TestSuccessNeedsTheStableWindow(t *testing.T) {
+	f := newFixture(t)
+	f.ecs.completeAfter = 1 // the first poll already looks complete
+	f.want(f.run(), "succeeded")
+	// Polls are 5s apart on the virtual clock: success at the first poll, then
+	// the 15s window must pass, so the fourth poll is the first that may end it.
+	if f.ecs.polls != 4 {
+		t.Errorf("ended after %d polls, want 4", f.ecs.polls)
+	}
+	if n := f.countLogged("rollout looks complete; confirming it stays stable for 15s"); n != 1 {
+		t.Errorf("window announced %d times\n%s", n, f.logText())
+	}
+}
+
+func TestBriefStabilityThenCrashFails(t *testing.T) {
+	f := newFixture(t)
+	f.ecs.completeAfter = 1
+	f.ecs.onPoll = func(n int, e *fakeECS) error {
+		switch n {
+		case 2: // one task of ours stops inside the window: the window restarts
+			e.stopped = append(e.stopped, crashedTask("a", t0.Add(time.Second), 3))
+		case 3: // two more: three in all
+			e.stopped = append(e.stopped, crashedTask("b", t0.Add(2*time.Second), 3), crashedTask("c", t0.Add(3*time.Second), 3))
+		}
+		return nil
+	}
+	out := f.run()
+	f.want(out, "failed")
+	if out.FailureShort != "tasks keep stopping" {
+		t.Errorf("short = %q", out.FailureShort)
+	}
+}
+
+func TestDesiredZeroNeedsNoStableWindow(t *testing.T) {
+	f := newFixture(t)
+	f.ecs.svc.DesiredCount = 0
+	f.ecs.completeAfter = 100
+	f.want(f.run(), "succeeded")
+	if f.ecs.polls != 1 {
+		t.Errorf("ended after %d polls, want 1", f.ecs.polls)
+	}
+}
+
 func TestCredentialsFailureWithInheritedIntentIsUnknown(t *testing.T) {
 	for _, name := range []string{"register-task-definition", "update-service"} {
 		f := newFixture(t)

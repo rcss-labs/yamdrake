@@ -91,7 +91,10 @@ type Deps struct {
 	Options        awsx.Options
 	PollEvery      time.Duration // default 5s
 	DefaultTimeout time.Duration // default 15m
-	Clock          Clock         // nil means real time
+	// StableFor is how long a succeeded verdict must hold, with no new
+	// stopped task of ours, before the leg reports success. Default 15s.
+	StableFor time.Duration
+	Clock     Clock // nil means real time
 }
 
 // Result is the leg's result whenever the revision is known.
@@ -119,6 +122,9 @@ func New(d Deps) runner.Executor {
 	}
 	if d.PollEvery <= 0 {
 		d.PollEvery = 5 * time.Second
+	}
+	if d.StableFor <= 0 {
+		d.StableFor = 15 * time.Second
 	}
 	if d.DefaultTimeout <= 0 {
 		d.DefaultTimeout = 15 * time.Minute
@@ -557,6 +563,8 @@ func (r *leg) wait() queue.Outcome {
 	var failingSince time.Time
 	failing := false
 	seen := map[string]bool{}
+	var stableSince time.Time // when Judge first said succeeded in the current run of polls
+	stableCrashes, stableLogged := 0, false
 
 	for {
 		if r.ctx.Err() != nil {
@@ -591,7 +599,25 @@ func (r *leg) wait() queue.Outcome {
 			}
 			r.logEvents(svc, deployment != nil, since, seen)
 			obs.StoppedTasks = r.stoppedTasks(ours, since)
-			if v := Judge(obs, ours, r.timeout); v.State != "waiting" {
+			v := Judge(obs, ours, r.timeout)
+			if v.State == "succeeded" && svc.DesiredCount > 0 {
+				// A revision can look steady for a moment between crashes: the
+				// verdict must hold for StableFor with no new stopped task of ours.
+				now, crashes := clock.Now(), len(unreplacedStops(obs.StoppedTasks, ours))
+				if stableSince.IsZero() || crashes > stableCrashes {
+					stableSince, stableCrashes = now, crashes
+					if !stableLogged {
+						stableLogged = true
+						r.env.Log("info", "rollout looks complete; confirming it stays stable for "+r.x.d.StableFor.String())
+					}
+				}
+				if now.Sub(stableSince) < r.x.d.StableFor {
+					v = Verdict{State: "waiting"}
+				}
+			} else if v.State == "waiting" {
+				stableSince = time.Time{}
+			}
+			if v.State != "waiting" {
 				return r.finish(v, svc, obs.StoppedTasks)
 			}
 		}

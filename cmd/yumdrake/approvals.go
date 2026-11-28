@@ -144,7 +144,11 @@ func approvalsApprove(args []string, stdout, stderr io.Writer, e env) int {
 		if !e.StdinIsTerminal {
 			return fail(stderr, usageError("there is no terminal to ask on: review the plan above, then pass --yes to approve it"))
 		}
-		if !s.confirm("Approve this plan?") {
+		ok, err := s.confirm("Approve this plan?")
+		if err != nil {
+			return s.interrupted()
+		}
+		if !ok {
 			s.progressf("Not approved.\n")
 			return cli.ExitFailed
 		}

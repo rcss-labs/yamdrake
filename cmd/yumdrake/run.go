@@ -333,6 +333,15 @@ func planResult(run any, planRaw json.RawMessage) map[string]any {
 	return out
 }
 
+// notStarted is the JSON of a run that was planned and then left alone (no
+// terminal, or the question was declined): the plan document and
+// "started": false, so a script can tell it from a started run.
+func notStarted(p *planned) map[string]any {
+	out := planResult(p.run, p.planRaw)
+	out["started"] = false
+	return out
+}
+
 // planExitCode is the exit code for a plan: 1 for a failed check.
 func planExitCode(p *planned, failedChecks int) int {
 	switch {
@@ -377,14 +386,32 @@ func planCmd(args []string, stdout, stderr io.Writer, e env) int {
 
 // confirm asks a yes or no question on standard error and reads the answer
 // from standard input. The default is no.
-func (s *session) confirm(question string) bool {
+func (s *session) confirm(question string) (bool, error) {
 	_, _ = fmt.Fprintf(s.stderr, "%s [y/N] ", question)
-	line, _ := bufio.NewReader(io.LimitReader(s.e.Stdin, 1024)).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
+	// The read cannot be interrupted, so it runs on its own goroutine and the
+	// wait ends with the context. An abandoned read ends with the process.
+	answer := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(io.LimitReader(s.e.Stdin, 1024)).ReadString('\n')
+		answer <- line
+	}()
+	select {
+	case <-s.ctx.Done():
+		return false, s.ctx.Err()
+	case line := <-answer:
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+			return true, nil
+		}
+		return false, nil
 	}
-	return false
+}
+
+// interrupted ends a command whose prompt was cut short by Ctrl-C: the cursor
+// moves to a fresh line and the exit code is the usual 130.
+func (s *session) interrupted() int {
+	_, _ = fmt.Fprintln(s.stderr)
+	return exitInterrupted
 }
 
 func runCmd(args []string, stdout, stderr io.Writer, e env) int {
@@ -431,12 +458,19 @@ func (s *session) confirmAndStart(p *planned, yes bool, watch watchFlags) int {
 		if !s.e.StdinIsTerminal {
 			s.progressf("Run %d is planned and was not started, because there is no terminal to ask and --yes was not given.\nStart it with: yumdrake runs start %d\n%s\n", id, id, s.runLink(id))
 			if s.json() {
-				_ = cli.WriteJSON(s.stdout, planResult(p.run, p.planRaw))
+				_ = cli.WriteJSON(s.stdout, notStarted(p))
 			}
 			return cli.ExitNeedsPerson
 		}
-		if !s.confirm("Start this run?") {
+		ok, err := s.confirm("Start this run?")
+		if err != nil {
+			return s.interrupted()
+		}
+		if !ok {
 			s.progressf("Not started. Run %d stays planned for an hour: yumdrake runs start %d\n", id, id)
+			if s.json() {
+				_ = cli.WriteJSON(s.stdout, notStarted(p))
+			}
 			return cli.ExitNeedsPerson
 		}
 	}
@@ -562,7 +596,11 @@ func runsCancel(args []string, stdout, stderr io.Writer, e env) int {
 		if !e.StdinIsTerminal {
 			return fail(stderr, usageError("there is no terminal to ask on: pass --yes to cancel run %d", id))
 		}
-		if !s.confirm(fmt.Sprintf("Cancel run %d?", id)) {
+		ok, err := s.confirm(fmt.Sprintf("Cancel run %d?", id))
+		if err != nil {
+			return s.interrupted()
+		}
+		if !ok {
 			s.progressf("Not cancelled.\n")
 			return cli.ExitFailed
 		}

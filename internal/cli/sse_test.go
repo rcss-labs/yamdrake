@@ -243,3 +243,45 @@ func TestClientShowsTheProblemsOf422(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// idleKeepAliveTest sends only keep-alive frames, one every 40ms for 400ms
+// (far longer than the 150ms idle timer), then one real event and the end.
+func idleKeepAliveTest(t *testing.T, keepAlive string) {
+	t.Helper()
+	h := newFollowHarness(t, func(_ *followHarness, _ int, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for range 10 {
+			_, _ = fmt.Fprint(w, keepAlive)
+			w.(http.Flusher).Flush()
+			select {
+			case <-time.After(40 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		_, _ = fmt.Fprint(w, frameText("log", "c1", "real"))
+		_, _ = fmt.Fprint(w, frameText("end", "", "{}"))
+	})
+	client, _ := NewClient(Config{Server: h.srv.URL, Token: secretToken})
+	opts := h.options()
+	opts.Idle = 150 * time.Millisecond
+	var names []string
+	err := client.Follow(context.Background(), opts, func(e Event) error {
+		names = append(names, e.Name)
+		if e.Name == "end" {
+			return ErrStopFollowing
+		}
+		return nil
+	})
+	if err != nil || strings.Join(names, ",") != "log,end" || h.conns != 1 {
+		t.Errorf("err %v names %v connections %d, want log,end on one connection", err, names, h.conns)
+	}
+}
+
+func TestSSEPingResetsIdleTimer(t *testing.T) {
+	idleKeepAliveTest(t, frameText("ping", "", "{}"))
+}
+
+func TestSSECommentResetsIdleTimer(t *testing.T) {
+	idleKeepAliveTest(t, ": keep-alive\n")
+}

@@ -240,3 +240,40 @@ func TestReadingCommandsNeedSignIn(t *testing.T) {
 		}
 	}
 }
+
+func ambiguousJobs(api *fakeAPI) {
+	api.reply("GET /api/v1/jobs", 200, map[string]any{"jobs": []map[string]any{
+		{"id": 3, "job_id": "roll", "path": "backend/roll.yaml", "folder": "Platform", "runnable": true, "approval_labels": []string{}},
+		{"id": 4, "job_id": "roll", "path": "web/roll.yaml", "folder": "Web", "runnable": true, "approval_labels": []string{}},
+		{"id": 5, "job_id": "cleanup", "path": "ops/roll.yaml", "folder": "Platform", "runnable": true, "approval_labels": []string{}},
+	}})
+}
+
+func TestJobLookupAmbiguousListsMatches(t *testing.T) {
+	h, api := apiHarness(t)
+	ambiguousJobs(api)
+	code, _, stderr := h.run("jobs", "show", "roll")
+	if code != 2 {
+		t.Errorf("exit = %d, want 2", code)
+	}
+	contains(t, "stderr", stderr, "more than one job", "backend/roll.yaml", "web/roll.yaml")
+	if got := api.requests("GET /api/v1/jobs/3"); len(got) != 0 {
+		t.Errorf("a job was picked: %v", got)
+	}
+	if got := api.requests("GET /api/v1/jobs/4"); len(got) != 0 {
+		t.Errorf("a job was picked: %v", got)
+	}
+}
+
+func TestJobLookupExactPathWins(t *testing.T) {
+	h, api := apiHarness(t)
+	ambiguousJobs(api)
+	api.reply("GET /api/v1/jobs/{id}", 200, jobDetailFixture())
+	code, _, stderr := h.run("jobs", "show", "web/roll.yaml")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	if got := api.requests("GET /api/v1/jobs/4"); len(got) != 1 {
+		t.Errorf("job 4 was fetched %d times, want 1", len(got))
+	}
+}

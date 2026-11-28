@@ -180,6 +180,57 @@ describe('useRunLive on an active run', () => {
     expect(eventSources.last()!.url).toBe(`/api/v1/runs/${runIds.running}/events?after=c1`)
   })
 
+  it('stops reopening and shows the error when the run is refused after the browser gave up', async () => {
+    const { result } = await watchActiveRun(runIds.running)
+    const first = eventSources.last()!
+    act(() => first.open())
+    failNext('GET', `/api/v1/runs/${runIds.running}`, 403, 'forbidden')
+    act(() => first.fail())
+    await waitFor(() => expect(result.current.error?.status).toBe(403), { timeout: 5000 })
+    expect(eventSources.all).toHaveLength(1)
+  })
+
+  it('drops a cursor the server refused at once and reads the log again before reopening', async () => {
+    mockState().logs[runIds.running] = [line(0, 1, 'held'), line(10401, 1, 'also held')]
+    const { result } = await watchActiveRun(runIds.running)
+    const first = eventSources.last()!
+    act(() => first.emit('log', page([line(0, 1, 'held')]), 'c1'))
+    const reopened = await (async () => {
+      // A new stream that is refused before it says anything (a 422 for a bad cursor) closes at once.
+      act(() => first.fail())
+      await waitFor(() => expect(eventSources.all).toHaveLength(2), { timeout: 5000 })
+      return eventSources.last()!
+    })()
+    expect(reopened.url).toBe(`/api/v1/runs/${runIds.running}/events?after=c1`)
+    act(() => reopened.fail())
+    await waitFor(() => expect(eventSources.all).toHaveLength(3), { timeout: 8000 })
+    expect(eventSources.last()!.url).toBe(`/api/v1/runs/${runIds.running}/events`)
+    expect(logRequests(runIds.running).length).toBeGreaterThan(0)
+    expect(result.current.lines.map((l) => l.text)).toEqual(['held', 'also held'])
+  }, 15_000)
+
+  it('refreshes the approval when the state event says another person decided', async () => {
+    const { result } = await watchActiveRun(runIds.waitingApproval)
+    expect(result.current.run?.approval?.decision).toBe('pending')
+    const stored = mockState().runs.find((candidate) => candidate.id === runIds.waitingApproval)!
+    stored.state = 'queued'
+    stored.approval = { ...stored.approval!, decision: 'approved', decided_by_name: 'Gal Grantee', decided_at: '2026-11-27T12:00:00Z' }
+    act(() => eventSources.last()!.emit('state', stateEventOf(runIds.waitingApproval)))
+    await waitFor(() => expect(result.current.run?.approval?.decision).toBe('approved'))
+    expect(result.current.run?.state).toBe('queued')
+  })
+
+  it('reload fetches the run again and replaces it, keeping the lines', async () => {
+    const { result } = await watchActiveRun(runIds.running)
+    act(() => eventSources.last()!.emit('log', page([line(0, 1, 'kept')]), 'c1'))
+    mockState().runs.find((candidate) => candidate.id === runIds.running)!.wait_reason = 'Changed meanwhile'
+    const before = requests.filter((request) => request.path === `/api/v1/runs/${runIds.running}`).length
+    act(() => result.current.reload())
+    await waitFor(() => expect(result.current.run?.wait_reason).toBe('Changed meanwhile'))
+    expect(requests.filter((request) => request.path === `/api/v1/runs/${runIds.running}`).length).toBe(before + 1)
+    expect(result.current.lines.map((l) => l.text)).toEqual(['kept'])
+  })
+
   it('closes the stream and reports finished on the end event', async () => {
     const { result } = await watchActiveRun(runIds.running)
     const source = eventSources.last()!

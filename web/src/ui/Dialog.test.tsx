@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ConfirmDialog } from './Dialog'
@@ -68,6 +68,36 @@ describe('ConfirmDialog', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Go back' }))
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(onConfirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('confirms once even when the button is pressed twice', async () => {
+    const { onConfirm } = renderDialog()
+    await userEvent.dblClick(screen.getByRole('button', { name: 'Cancel run' }))
+    expect(onConfirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels once when Escape is followed by the native cancel event', () => {
+    const { onCancel } = renderDialog()
+    const dialog = screen.getByRole('dialog')
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    fireEvent(dialog, new Event('cancel', { cancelable: true }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels from the native cancel event alone (Escape pressed outside our handler)', () => {
+    const { onCancel } = renderDialog()
+    fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels on a click outside the dialog box but not on one inside its padding', () => {
+    const { onCancel } = renderDialog()
+    const dialog = screen.getByRole('dialog')
+    dialog.getBoundingClientRect = () => ({ left: 100, right: 500, top: 100, bottom: 300, width: 400, height: 200, x: 100, y: 100, toJSON: () => ({}) })
+    fireEvent.click(dialog, { clientX: 110, clientY: 110 })
+    expect(onCancel).not.toHaveBeenCalled()
+    fireEvent.click(dialog, { clientX: 20, clientY: 20 })
+    expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
   it('returns focus to the control that was focused before it opened', async () => {

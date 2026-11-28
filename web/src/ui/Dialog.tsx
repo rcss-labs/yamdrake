@@ -28,10 +28,15 @@ export function ConfirmDialog({ open, title, body, confirmLabel, danger = false,
   const cancelRef = useRef<HTMLButtonElement>(null)
   const titleId = useId()
   const bodyId = useId()
+  // Confirm acts once per opening, so a double click cannot run the action twice.
+  const confirmed = useRef(false)
+  // Escape arrives as a key press and then as the native cancel event; only the first one counts.
+  const escapeSeen = useRef(false)
 
   useEffect(() => {
     const dialog = dialogRef.current
     if (!open || !dialog) return undefined
+    confirmed.current = false
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null
     dialog.showModal()
     cancelRef.current?.focus()
@@ -46,6 +51,10 @@ export function ConfirmDialog({ open, title, body, confirmLabel, danger = false,
   const keepFocusInside = (event: KeyboardEvent<HTMLDialogElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault()
+      escapeSeen.current = true
+      setTimeout(() => {
+        escapeSeen.current = false
+      }, 0)
       onCancel()
       return
     }
@@ -73,11 +82,16 @@ export function ConfirmDialog({ open, title, body, confirmLabel, danger = false,
       aria-describedby={bodyId}
       onKeyDown={keepFocusInside}
       onCancel={(event) => {
+        // Keep the native close from happening: React decides by `open`.
         event.preventDefault()
-        onCancel()
+        if (!escapeSeen.current) onCancel()
       }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) onCancel()
+        if (event.target !== event.currentTarget) return
+        // The dialog's own padding is part of the dialog; only a click outside its box is the backdrop.
+        const box = event.currentTarget.getBoundingClientRect()
+        const outside = event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom
+        if (outside) onCancel()
       }}
     >
       <h2 id={titleId} className="ui-dialog-title">
@@ -90,7 +104,14 @@ export function ConfirmDialog({ open, title, body, confirmLabel, danger = false,
         <button ref={cancelRef} type="button" className="ui-btn" onClick={onCancel}>
           <span className="ui-btn-label">Go back</span>
         </button>
-        <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>
+        <Button
+          variant={danger ? 'danger' : 'primary'}
+          onClick={() => {
+            if (confirmed.current) return
+            confirmed.current = true
+            onConfirm()
+          }}
+        >
           {confirmLabel}
         </Button>
       </div>

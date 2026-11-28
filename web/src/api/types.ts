@@ -797,6 +797,8 @@ export interface RunLive {
   /** True when more than 20,000 lines arrived and the oldest were dropped. */
   truncated: boolean
   error: ApiError | undefined
+  /** Fetches the run again and replaces it (lines are kept). Call it after a 409 to show what changed. */
+  reload(): void
 }
 
 /** POST /api/v1/jobs/{id}/runs. */

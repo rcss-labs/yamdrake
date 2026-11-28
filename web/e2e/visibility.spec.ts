@@ -100,6 +100,24 @@ test('the overview, versions, service, queue and health screens tell the truth a
   await expect(matrix.getByRole('link', { name: 'orders' })).toBeVisible()
   await expect(page.getByText('3 of 3 services')).toBeVisible()
   await shots(page, 'versions')
+
+  // ---- Versions on a narrow screen: the matrix scrolls inside its card and the service column stays put ----
+  const viewport = page.viewportSize()
+  expect(viewport, 'the viewport the test uses').not.toBeNull()
+  await page.setViewportSize({ width: 380, height: 800 })
+  const pageWidth = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth }))
+  expect(pageWidth.scroll, 'the page does not scroll sideways').toBeLessThanOrEqual(pageWidth.inner)
+  const wrapper = page.locator('.versions-scroll')
+  expect(await wrapper.evaluate((element) => element.scrollWidth > element.clientWidth), 'the matrix overflows its card').toBe(true)
+  const serviceCell = matrix.locator('tbody tr').first().locator('td.versions-service-col')
+  expect(await serviceCell.evaluate((element) => getComputedStyle(element).position), 'the service column is sticky').toBe('sticky')
+  const offset = await wrapper.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth
+    const cell = element.querySelector('tbody tr td.versions-service-col') as HTMLElement
+    return cell.getBoundingClientRect().left - element.getBoundingClientRect().left
+  })
+  expect(Math.abs(offset), 'the service column stays at the left edge after scrolling').toBeLessThanOrEqual(1)
+  await page.setViewportSize(viewport!)
   await page.getByRole('searchbox', { name: 'Find a service' }).fill('ord')
   await expect(matrix.getByRole('link', { name: 'orders' })).toBeVisible()
   await expect(matrix.getByRole('link', { name: service })).toHaveCount(0)

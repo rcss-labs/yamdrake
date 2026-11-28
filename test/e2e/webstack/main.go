@@ -267,8 +267,8 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary string, mode stackMod
 		// No request may reach real AWS: the running versions and connection checks the screens trigger go
 		// to a local port nothing listens on (the discard port) and fail at once.
 		"YUMDRAKE_AWS_ENDPOINT_URL=http://127.0.0.1:9",
-		// The visibility spec stops the runner and expects System health to say so within seconds.
-		"YUMDRAKE_RUNNER_GONE_AFTER=5s",
+		// The visibility spec stops the runner and expects System health to say so; 20s is the smallest the setting allows.
+		"YUMDRAKE_RUNNER_GONE_AFTER=20s",
 	)
 	if world != nil {
 		// Real AWS calls go to Floci, with the platform account as the process's own identity (the runner writes

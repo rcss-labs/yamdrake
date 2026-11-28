@@ -80,20 +80,26 @@ func startGovernance(t *testing.T) *governanceStack {
 // messages and approvals show them.
 func (g *governanceStack) addPerson(name, group string, grants ...[2]string) caller {
 	g.t.Helper()
+	return addPerson(g.t, g.admin, name, group, grants...)
+}
+
+// addPerson is the same with any admin caller; the Floci governance tests use it too.
+func addPerson(t *testing.T, admin caller, name, group string, grants ...[2]string) caller {
+	t.Helper()
 	var groupOut, userOut struct {
 		ID int64 `json:"id"`
 	}
-	g.admin.expect(http.StatusCreated, "", http.MethodPost, "/api/v1/admin/groups", map[string]any{"name": group}).decode(g.t, "group", &groupOut)
+	admin.expect(http.StatusCreated, "", http.MethodPost, "/api/v1/admin/groups", map[string]any{"name": group}).decode(t, "group", &groupOut)
 	for _, grant := range grants {
-		g.admin.expect(http.StatusCreated, "", http.MethodPost, "/api/v1/admin/grants",
+		admin.expect(http.StatusCreated, "", http.MethodPost, "/api/v1/admin/grants",
 			map[string]any{"group_id": groupOut.ID, "action": grant[0], "label": grant[1]})
 	}
 	email := name + "@governance.example.test"
-	g.admin.expect(http.StatusCreated, "", http.MethodPost, "/api/v1/admin/users",
-		map[string]any{"email": email, "name": name, "source": "local", "password": governancePass}).decode(g.t, "user", &userOut)
-	g.admin.expect(http.StatusOK, "", http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%d", userOut.ID),
+	admin.expect(http.StatusCreated, "", http.MethodPost, "/api/v1/admin/users",
+		map[string]any{"email": email, "name": name, "source": "local", "password": governancePass}).decode(t, "user", &userOut)
+	admin.expect(http.StatusOK, "", http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%d", userOut.ID),
 		map[string]any{"group_ids": []int64{groupOut.ID}})
-	return signInAs(g.t, g.api.base, email, governancePass)
+	return signInAs(t, admin.base, email, governancePass)
 }
 
 // startRun has who create and start a run in env of two services (b1, m1).
@@ -138,12 +144,16 @@ func (g *governanceStack) nothingRan() {
 // messagesOf is the texts posted for one run, in arrival order. The link at
 // the end of each message names the run.
 func (g *governanceStack) messagesOf(runID int64) []string {
+	return slackMessagesOf(g.t, g.slack, runID)
+}
+
+func slackMessagesOf(t *testing.T, slack *fakeslack.Server, runID int64) []string {
 	var texts []string
 	suffix := fmt.Sprintf("/runs/%d", runID)
-	for _, m := range g.slack.Messages() {
+	for _, m := range slack.Messages() {
 		if strings.HasSuffix(m.Text, suffix) {
 			if m.Channel != "#deploys" {
-				g.t.Errorf("message posted to %q, want #deploys", m.Channel)
+				t.Errorf("message posted to %q, want #deploys", m.Channel)
 			}
 			texts = append(texts, m.Text)
 		}
@@ -157,17 +167,22 @@ func (g *governanceStack) messagesOf(runID int64) []string {
 // to arrive. It returns the texts.
 func (g *governanceStack) expectMessages(runID int64, prefixes ...string) []string {
 	g.t.Helper()
-	eventually(g.t, messageWait, fmt.Sprintf("%d Slack messages for run %d", len(prefixes), runID), func() bool {
-		return len(g.messagesOf(runID)) >= len(prefixes)
+	return expectSlackMessages(g.t, g.slack, runID, prefixes...)
+}
+
+func expectSlackMessages(t *testing.T, slack *fakeslack.Server, runID int64, prefixes ...string) []string {
+	t.Helper()
+	eventually(t, messageWait, fmt.Sprintf("%d Slack messages for run %d", len(prefixes), runID), func() bool {
+		return len(slackMessagesOf(t, slack, runID)) >= len(prefixes)
 	})
 	time.Sleep(settleAfterLast)
-	got := g.messagesOf(runID)
+	got := slackMessagesOf(t, slack, runID)
 	if len(got) != len(prefixes) {
-		g.t.Fatalf("run %d has %d Slack messages, want %d: %q", runID, len(got), len(prefixes), got)
+		t.Fatalf("run %d has %d Slack messages, want %d: %q", runID, len(got), len(prefixes), got)
 	}
 	for i, prefix := range prefixes {
 		if !strings.HasPrefix(got[i], prefix) {
-			g.t.Fatalf("run %d message %d = %q, want it to start with %q", runID, i+1, got[i], prefix)
+			t.Fatalf("run %d message %d = %q, want it to start with %q", runID, i+1, got[i], prefix)
 		}
 	}
 	return got

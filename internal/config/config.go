@@ -136,6 +136,11 @@ const redactedPassword = "REDACTED"
 
 const minTokenSSOMaxAge = time.Hour
 
+// minRunnerGoneAfter is twice runner.RegistryInterval (10s, which this package
+// does not import): a runner reports once per interval, so one lost or slow
+// report must not flip a healthy runner to gone.
+const minRunnerGoneAfter = 20 * time.Second
+
 var (
 	bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 	kmsKeyIDPattern   = regexp.MustCompile(`^[A-Za-z0-9:/_+=,.@-]{1,1000}$`)
@@ -203,8 +208,8 @@ func (l *loader) loadCommon() Common {
 	c.ShutdownTimeout = l.duration("YUMDRAKE_SHUTDOWN_TIMEOUT", "20s")
 	c.StartupTimeout = l.duration("YUMDRAKE_STARTUP_TIMEOUT", "60s")
 	c.SecretSettings = l.loadSecretSettings()
-	if c.LocalSecretKey.Reveal() == mustDecodeDemoKey() && c.Env != "dev" {
-		l.fail("YUMDRAKE_LOCAL_SECRET_KEY", "is the public demo key; it is allowed only with YUMDRAKE_ENV=dev")
+	if isPublicSecretKey(c.LocalSecretKey.Reveal()) && c.Env != "dev" {
+		l.fail("YUMDRAKE_LOCAL_SECRET_KEY", "is a public key from the repository; it is allowed only with YUMDRAKE_ENV=dev")
 	}
 
 	c.AWS.EndpointURL = l.getenv("YUMDRAKE_AWS_ENDPOINT_URL")
@@ -259,6 +264,9 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	cfg.LogArchiveAfter = l.duration("YUMDRAKE_LOG_ARCHIVE_AFTER", "1h")
 	cfg.SweepInterval = l.duration("YUMDRAKE_SWEEP_INTERVAL", "2s")
 	cfg.RunnerGoneAfter = l.duration("YUMDRAKE_RUNNER_GONE_AFTER", "2m")
+	if cfg.RunnerGoneAfter > 0 && cfg.RunnerGoneAfter < minRunnerGoneAfter {
+		l.fail("YUMDRAKE_RUNNER_GONE_AFTER", "must be at least 20s, twice the 10s interval at which a runner reports")
+	}
 	cfg.SlackAPIURL = l.valueOr("YUMDRAKE_SLACK_API_URL", "https://slack.com/api")
 	if reason := validateHTTPURL(cfg.SlackAPIURL); reason != "" {
 		l.fail("YUMDRAKE_SLACK_API_URL", reason)

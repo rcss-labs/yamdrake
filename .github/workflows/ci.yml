@@ -85,8 +85,8 @@ jobs:
   floci:
     runs-on: ubuntu-24.04
     # make test-floci (up to 10 minutes) and then the end-to-end tests with real
-    # deployments (up to 30 minutes; they roll services in Floci containers).
-    timeout-minutes: 50
+    # deployments (up to 45 minutes; they roll services in Floci containers).
+    timeout-minutes: 60
     # Same services and image tags as the integration job (make test-floci also
     # runs the integration tests).
     services:

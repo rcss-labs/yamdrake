@@ -266,7 +266,7 @@ Then plan and start a run from the web application or `POST /api/v1/jobs/{id}/ru
 
 An environment whose name contains `stale` fails the revalidation just before the steps run, so the run ends `invalidated` without changing anything. Every run keeps its live log (`GET /api/v1/runs/{id}/events`) and its stored log (`GET /api/v1/runs/{id}/log`).
 
-The Compose "app" profile runs the runner this way only under `make smoke`, through `YUMDRAKE_RUNNER_ENV` and `YUMDRAKE_RUNNER_FAKE_STEPS` (default `prod` and `false`).
+The Compose "app" profile runs the runner this way only under `make smoke`, through `YUMDRAKE_RUNNER_ENV` and `YUMDRAKE_RUNNER_FAKE_STEPS` (default `dev` and `false`).
 
 ## Exit codes
 
@@ -307,7 +307,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_GITHUB_API_URL` | orchestrator, runner | `https://api.github.com` | An `http://` or `https://` URL. Overridden in tests. |
 | `YUMDRAKE_AWS_ENDPOINT_URL` | orchestrator, runner | empty (real AWS) | An `http://` or `https://` URL that all AWS calls go to, for a local emulator such as Floci. |
 | `YUMDRAKE_SWEEP_INTERVAL` | orchestrator | `2s` | Go duration greater than zero. How often the run engine's fallback timer gives expired leases to another runner, expires waiting runs and advances every active run. Wake-ups through Valkey make runs move sooner; the timer alone is enough when Valkey is down. |
-| `YUMDRAKE_RUNNER_GONE_AFTER` | orchestrator | `2m` | Go duration greater than zero. How long a runner may stay silent before the Queue and System health pages stop counting it; with no runner left, System health says so. |
+| `YUMDRAKE_RUNNER_GONE_AFTER` | orchestrator | `2m` | Go duration of at least `20s` (twice the 10 s interval at which a runner reports). How long a runner may stay silent before the Queue and System health pages stop counting it; with no runner left, System health says so. |
 | `YUMDRAKE_LIMIT_PER_ENVIRONMENT` | orchestrator | `10` | Positive integer. At most this many legs of other runs run at once in one environment. A soft limit: orchestrators advancing two runs at the same moment may overshoot it briefly. |
 | `YUMDRAKE_LIMIT_PER_ACCOUNT` | orchestrator | `20` | Positive integer. The same limit for one AWS account. |
 | `YUMDRAKE_LOG_ARCHIVE_DIR` | orchestrator | empty (no archiving) | Absolute path of a directory. When set, the logs of legs settled longer than `YUMDRAKE_LOG_ARCHIVE_AFTER` are moved there from PostgreSQL and are still served by the API. The archive files are encrypted with `YUMDRAKE_LOCAL_SECRET_KEY`. |

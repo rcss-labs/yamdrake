@@ -377,7 +377,7 @@ For each selected service:
 
 Because the image is pinned by digest, the version shown on the Versions page is read from the revision's tags.
 
-Recovery: a second attempt looks for a revision tagged with this run and leg. If one exists it is adopted instead of registering another. It then reads the service's deployments and resumes waiting. Updating a service to the revision it already uses is harmless.
+Recovery: a second attempt looks for a revision tagged with this run and leg. If one exists it is adopted instead of registering another. It then reads the service's deployments and resumes waiting. Updating a service to the revision it already uses is harmless. If an update was interrupted and the service is not on the revision, the leg updates again only when ECS never ran a task of it since the update was intended; a stopped task of the revision means ECS already rolled it back, and the leg fails instead. That evidence is the stopped tasks ECS keeps for about an hour, so a retry after that window may deploy a rolled-back revision again.
 
 ### 8.3 Restore
 

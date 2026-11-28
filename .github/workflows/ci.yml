@@ -80,7 +80,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make test-integration
-      - run: make test-e2e
+      # No Floci in this job: the Floci planning tests run in the floci job.
+      - run: make test-e2e YUMDRAKE_TEST_AWS_ENDPOINT=
 
   floci:
     runs-on: ubuntu-24.04
@@ -125,6 +126,10 @@ jobs:
       - name: Start Floci
         run: docker compose up -d --wait floci
       - run: make test-floci
+      # The end-to-end planning tests against Floci (the Makefile default is the same endpoint).
+      - run: make test-e2e
+        env:
+          YUMDRAKE_TEST_AWS_ENDPOINT: http://localhost:4577
       - name: Show Floci logs on failure
         if: failure()
         run: docker compose logs floci

@@ -232,7 +232,7 @@ func startEngine(t *testing.T, opts engineOpts) *engineStack {
 // startEngineOrchestrator runs one orchestrator through app.Run, as
 // cmd/orchestrator does. Orchestrators started against one database share a
 // Valkey key prefix (and so their sessions and wake-ups) like replicas would.
-func startEngineOrchestrator(t *testing.T, databaseURL, keyPrefix, valkeyAddr, githubURL string, migrate bool) (base string) {
+func startEngineOrchestrator(t *testing.T, databaseURL, keyPrefix, valkeyAddr, githubURL string, migrate bool, extraEnv ...map[string]string) (base string) {
 	t.Helper()
 	addr := freeAddr(t)
 	env := map[string]string{
@@ -249,6 +249,11 @@ func startEngineOrchestrator(t *testing.T, databaseURL, keyPrefix, valkeyAddr, g
 	}
 	if !migrate {
 		env["YUMDRAKE_MIGRATE_ON_START"] = "false"
+	}
+	for _, extra := range extraEnv {
+		for k, v := range extra {
+			env[k] = v
+		}
 	}
 	cfg, err := config.LoadOrchestrator(func(k string) string { return env[k] })
 	if err != nil {

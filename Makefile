@@ -67,8 +67,15 @@ test-floci: ## Run the integration and Floci tests (see dev-up; needs Docker for
 floci-clean: ## Remove the floci-aws-* containers that our Floci created (never another Floci's)
 	./scripts/floci-clean.sh
 
-test-e2e: ## Run the end-to-end tests (in-process orchestrator, fake GitHub) against the local services
+# With a Floci endpoint (the default above) the planning tests that seed Floci
+# run too and need Docker for ECS and ECR; set it empty (make test-e2e
+# YUMDRAKE_TEST_AWS_ENDPOINT=) to run the e2e tests without them.
+test-e2e: ## Run the end-to-end tests (in-process orchestrator, fake GitHub; with Floci when YUMDRAKE_TEST_AWS_ENDPOINT is set) against the local services
+ifeq ($(strip $(YUMDRAKE_TEST_AWS_ENDPOINT)),)
 	go test -race -tags e2e -timeout 3m ./test/e2e/...
+else
+	go test -race -tags "e2e floci" -timeout 10m ./test/e2e/...
+endif
 
 images: ## Build the yumdrake-orchestrator and yumdrake-runner images (tag :dev)
 	@for svc in orchestrator runner; do \

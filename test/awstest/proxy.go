@@ -23,7 +23,10 @@ type Request struct {
 	Operation string
 	// Account is the access key id of the caller (the Floci account).
 	Account string
-	Body    []byte
+	// Method and Path are the HTTP method and URL path as the caller sent
+	// them; for path-style S3 the path names the bucket and the key.
+	Method, Path string
+	Body         []byte
 }
 
 type rule struct {
@@ -131,7 +134,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	service, operation, account := classify(r, body)
 	p.mu.Lock()
-	p.requests = append(p.requests, Request{Service: service, Operation: operation, Account: account, Body: body})
+	p.requests = append(p.requests, Request{Service: service, Operation: operation, Account: account, Method: r.Method, Path: r.URL.Path, Body: body})
 	p.mu.Unlock()
 
 	if f := p.take(p.fails, service, operation); f != nil {

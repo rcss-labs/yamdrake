@@ -106,11 +106,11 @@ func login(args []string, stdout, stderr io.Writer, e env) int {
 	}
 	format, err := cli.ParseFormat(flags.output)
 	if err != nil {
-		return fail(stderr, err)
+		return failSignIn(stderr, err)
 	}
 	cfg, path, err := e.loadConfig(server, flags.insecure)
 	if err != nil {
-		return fail(stderr, err)
+		return failSignIn(stderr, err)
 	}
 	// A token from the environment or the file is replaced by the new one.
 	cfg.Token, cfg.TokenID, cfg.TokenFromEnv = "", 0, false
@@ -120,35 +120,35 @@ func login(args []string, stdout, stderr io.Writer, e env) int {
 	if withToken {
 		token, err := readToken(e.Stdin)
 		if err != nil {
-			return fail(stderr, err)
+			return failSignIn(stderr, err)
 		}
 		cfg.Token = token
 		me, err := fetchMe(ctx, cfg)
 		if err != nil {
-			return fail(stderr, err)
+			return failSignIn(stderr, err)
 		}
 		if err := cli.SaveConfig(path, cfg); err != nil {
-			return fail(stderr, err)
+			return failSignIn(stderr, err)
 		}
 		return printSignedIn(stdout, format, me)
 	}
 
 	client, err := cli.NewClient(cfg)
 	if err != nil {
-		return fail(stderr, err)
+		return failSignIn(stderr, err)
 	}
 	token, tokenID, err := deviceSignIn(ctx, client, stderr, e, noBrowser)
 	if err != nil {
-		return fail(stderr, err)
+		return failSignIn(stderr, err)
 	}
 	cfg.Token, cfg.TokenID = token, tokenID
 	// Save before anything else can fail: the server issued this token once.
 	if err := cli.SaveConfig(path, cfg); err != nil {
-		return fail(stderr, err)
+		return failSignIn(stderr, err)
 	}
 	me, err := fetchMe(ctx, cfg)
 	if err != nil {
-		return fail(stderr, err)
+		return failSignIn(stderr, err)
 	}
 	return printSignedIn(stdout, format, me)
 }
@@ -270,22 +270,21 @@ func logout(args []string, stdout, stderr io.Writer, e env) int {
 		_, _ = fmt.Fprintln(stderr, "The token comes from YUMDRAKE_TOKEN; unset it to sign out. Nothing was changed.")
 		return exitOK
 	}
-	if cfg.TokenID == 0 {
-		// A token pasted with --with-token has no id the CLI knows, and the
-		// API offers no way to ask which token a request used.
-		_, _ = fmt.Fprintln(stderr, "This token was not created by yumdrake login, so it was not revoked on the server. Revoke it in the web app.")
-	} else {
-		client, err := cli.NewClient(cfg)
-		if err != nil {
+	client, err := cli.NewClient(cfg)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	// A token revokes itself through the logout route, so this also works for
+	// a token pasted with --with-token, whose id the CLI does not know.
+	err = client.Do(e.context(), http.MethodPost, "/api/v1/auth/logout", nil, nil)
+	var apiErr *cli.ExitError
+	// 401 means the server no longer honours the token: nothing to revoke.
+	if err != nil && (!errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized) {
+		if errors.Is(err, context.Canceled) {
 			return fail(stderr, err)
 		}
-		err = client.Do(context.Background(), http.MethodDelete, fmt.Sprintf("/api/v1/tokens/%d", cfg.TokenID), nil, nil)
-		var apiErr *cli.ExitError
-		// 401 and 404 mean the server no longer honours the token: nothing to revoke.
-		if err != nil && (!errors.As(err, &apiErr) || (apiErr.Status != http.StatusUnauthorized && apiErr.Status != http.StatusNotFound)) {
-			_, _ = fmt.Fprintln(stderr, "yumdrake: could not revoke the token; it was kept in the config file so you can try again")
-			return fail(stderr, err)
-		}
+		_, _ = fmt.Fprintln(stderr, "yumdrake: could not revoke the token; it was kept in the config file so you can try again")
+		return fail(stderr, err)
 	}
 	cfg.Token, cfg.TokenID = "", 0
 	if err := cli.SaveConfig(path, cfg); err != nil {
@@ -313,7 +312,7 @@ func whoami(args []string, stdout, stderr io.Writer, e env) int {
 		return fail(stderr, err)
 	}
 	var me meResponse
-	if err := client.Do(context.Background(), http.MethodGet, "/api/v1/me", nil, &me); err != nil {
+	if err := client.Do(e.context(), http.MethodGet, "/api/v1/me", nil, &me); err != nil {
 		return fail(stderr, err)
 	}
 	if format == cli.FormatJSON {

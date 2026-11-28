@@ -20,6 +20,8 @@ type env struct {
 	Getenv           func(string) string
 	Stdin            io.Reader
 	StdoutIsTerminal bool
+	// StdinIsTerminal is true when a person can answer a question.
+	StdinIsTerminal bool
 	// ConfigPath is the config file; empty means the default location.
 	ConfigPath  string
 	OpenBrowser func(url string) error
@@ -35,6 +37,7 @@ func defaultEnv(stdout io.Writer) env {
 		Getenv:           os.Getenv,
 		Stdin:            os.Stdin,
 		StdoutIsTerminal: cli.IsTerminal(stdout),
+		StdinIsTerminal:  cli.IsTerminal(os.Stdin),
 		OpenBrowser:      openBrowser,
 		Wait:             sleepContext,
 		Now:              time.Now,
@@ -143,10 +146,20 @@ func (e env) context() context.Context {
 	return context.Background()
 }
 
-// fail prints err for a person and returns its exit code.
+// fail prints err for a person and returns its exit code. A cancelled command
+// says "Stopped".
 func fail(stderr io.Writer, err error) int {
+	return failWith(stderr, err, "Stopped")
+}
+
+// failSignIn is fail for the login command, whose cancel message is its own.
+func failSignIn(stderr io.Writer, err error) int {
+	return failWith(stderr, err, "Sign-in cancelled")
+}
+
+func failWith(stderr io.Writer, err error, cancelled string) int {
 	if errors.Is(err, context.Canceled) {
-		_, _ = fmt.Fprintln(stderr, "Sign-in cancelled")
+		_, _ = fmt.Fprintln(stderr, cancelled)
 		return exitInterrupted
 	}
 	_, _ = fmt.Fprintf(stderr, "yumdrake: %s\n", err)

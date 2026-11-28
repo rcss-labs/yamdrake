@@ -16,11 +16,17 @@ import (
 
 // Exit codes shared by every command.
 const (
-	ExitOK        = 0
-	ExitFailed    = 1
-	ExitUsage     = 2
-	ExitNotSignIn = 6
-	ExitServer    = 7
+	ExitOK     = 0
+	ExitFailed = 1
+	ExitUsage  = 2
+	// ExitPartial is a run that finished partially_succeeded.
+	ExitPartial = 3
+	// ExitStopped is a run that was cancelled, rejected, expired or invalidated.
+	ExitStopped = 4
+	// ExitNeedsPerson is a run that waits for a person.
+	ExitNeedsPerson = 5
+	ExitNotSignIn   = 6
+	ExitServer      = 7
 )
 
 // NotSignedInMessage is what every command says when the token is missing,
@@ -64,6 +70,9 @@ type Client struct {
 	server string
 	token  string
 	http   *http.Client
+	// stream has no overall timeout: an event stream stays open for as long as
+	// a run runs. Only the wait for the response headers is bounded.
+	stream *http.Client
 }
 
 // NewClient makes a client for c. The token may be empty for the calls that
@@ -83,7 +92,9 @@ func NewClient(c Config) (*Client, error) {
 	if u.Scheme == "http" && !c.InsecureHTTP && !isLoopbackHost(u.Hostname()) {
 		return nil, &ExitError{Code: ExitUsage, Message: "the server URL is plain http:// to a remote host, so your token would be sent unencrypted; use https:// or pass --insecure-http (or set YUMDRAKE_INSECURE_HTTP=1)"}
 	}
-	return &Client{server: server, token: c.Token, http: &http.Client{Timeout: 30 * time.Second}}, nil
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	return &Client{server: server, token: c.Token, http: &http.Client{Timeout: 30 * time.Second}, stream: &http.Client{Transport: transport}}, nil
 }
 
 const maxResponseBytes = 16 << 20
@@ -160,12 +171,28 @@ func (c *Client) scrub(s string) string {
 func (c *Client) statusError(status int, retryAfter string, data []byte) error {
 	var body struct {
 		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code     string `json:"code"`
+			Message  string `json:"message"`
+			Problems []struct {
+				File    string `json:"file"`
+				Line    int    `json:"line"`
+				Message string `json:"message"`
+			} `json:"problems"`
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(data, &body)
 	message := c.scrub(body.Error.Message)
+	// A 422 explains itself in a list of problems: show them with the message.
+	for _, p := range body.Error.Problems {
+		where := p.File
+		if p.Line > 0 {
+			where = fmt.Sprintf("%s:%d", p.File, p.Line)
+		}
+		if where != "" {
+			where += ": "
+		}
+		message += "\n  " + c.scrub(where+p.Message)
+	}
 	if message == "" {
 		message = fmt.Sprintf("the server answered %d", status)
 	}

@@ -31,7 +31,7 @@ type fakeServer struct {
 	pendingFor      int    // polls answered "pending" before "complete"
 	pollStatus      int    // when set, every poll answers this status
 	pollCode        string // error code for pollStatus
-	revokedID       string
+	revokeCalls     int
 	revokeAuth      string
 	revokeCode      int
 	meCode          int
@@ -101,9 +101,10 @@ func newFakeServer(t *testing.T) *fakeServer {
 				{"action": "approve", "label": "prod", "environment": "", "folder_id": 0},
 			}})
 	})
-	mux.HandleFunc("DELETE /api/v1/tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
-		f.revokedID, f.revokeAuth = r.PathValue("id"), r.Header.Get("Authorization")
+		f.revokeCalls++
+		f.revokeAuth = r.Header.Get("Authorization")
 		f.mu.Unlock()
 		if f.revokeCode != http.StatusNoContent {
 			writeTestJSON(w, f.revokeCode, errBody("unauthorized", "x"))
@@ -139,11 +140,13 @@ type harness struct {
 	openErr    error
 	waits      []time.Duration
 	terminal   bool
-	stdin      string
-	environ    map[string]string
-	ctx        context.Context
-	clock      time.Time // fake time, advanced by every wait
-	onWait     func(call int) error
+	// stdinTerminal makes the command believe a person is at the keyboard.
+	stdinTerminal bool
+	stdin         string
+	environ       map[string]string
+	ctx           context.Context
+	clock         time.Time // fake time, advanced by every wait
+	onWait        func(call int) error
 }
 
 func newHarness(t *testing.T) *harness {
@@ -157,6 +160,7 @@ func (h *harness) run(args ...string) (code int, stdout, stderr string) {
 		Getenv:           func(k string) string { return h.environ[k] },
 		Stdin:            strings.NewReader(h.stdin),
 		StdoutIsTerminal: h.terminal,
+		StdinIsTerminal:  h.stdinTerminal,
 		ConfigPath:       h.configPath,
 		OpenBrowser:      func(u string) error { h.opened = append(h.opened, u); return h.openErr },
 		Wait: func(_ context.Context, d time.Duration) error {
@@ -382,8 +386,8 @@ func TestLogoutRevokesTheTokenAndClearsConfig(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
-	if srv.revokedID != "41" || srv.revokeAuth != "Bearer "+testToken {
-		t.Errorf("revoked %q with %q", srv.revokedID, srv.revokeAuth)
+	if srv.revokeCalls != 1 || srv.revokeAuth != "Bearer "+testToken {
+		t.Errorf("revoke calls %d with %q", srv.revokeCalls, srv.revokeAuth)
 	}
 	cfg := h.saved(t)
 	if cfg.Token != "" || cfg.TokenID != 0 || cfg.Server != srv.URL {
@@ -420,15 +424,17 @@ func TestLogoutKeepsTokenWhenServerUnreachable(t *testing.T) {
 	assertNoToken(t, stderr)
 }
 
-func TestLogoutWithUnidentifiedTokenWarns(t *testing.T) {
+// A token pasted with --with-token has no id the CLI knows; the server lets a
+// token revoke itself, so logout works for it too.
+func TestLogoutRevokesATokenWithoutAKnownID(t *testing.T) {
 	srv := newFakeServer(t)
 	h := newHarness(t)
 	h.seed(t, cli.Config{Server: srv.URL, Token: testToken})
 	code, _, stderr := h.run("logout")
-	if code != 0 || srv.revokedID != "" {
-		t.Errorf("exit %d revoked %q", code, srv.revokedID)
+	if code != 0 || srv.revokeCalls != 1 || srv.revokeAuth != "Bearer "+testToken {
+		t.Errorf("exit %d revoke calls %d auth %q", code, srv.revokeCalls, srv.revokeAuth)
 	}
-	if !strings.Contains(stderr, "not revoked on the server") {
+	if strings.Contains(stderr, "not revoked") {
 		t.Errorf("stderr = %q", stderr)
 	}
 	if h.saved(t).Token != "" {
@@ -575,8 +581,8 @@ func TestLogoutWithEnvTokenChangesNothing(t *testing.T) {
 	if code != 0 || !strings.Contains(stderr, "YUMDRAKE_TOKEN") {
 		t.Errorf("exit %d stderr %q", code, stderr)
 	}
-	if srv.revokedID != "" {
-		t.Errorf("revoked %q", srv.revokedID)
+	if srv.revokeCalls != 0 {
+		t.Errorf("revoke calls %d", srv.revokeCalls)
 	}
 	if cfg := h.saved(t); cfg.Token != "file-token" || cfg.TokenID != 41 {
 		t.Errorf("config changed: %+v", cfg)
@@ -655,5 +661,18 @@ func TestLoginHelpSaysFileModeChecksSkipWindows(t *testing.T) {
 	_, stdout, _ := h.run("login", "-h")
 	if !strings.Contains(stdout, "Windows") {
 		t.Errorf("help = %q", stdout)
+	}
+}
+
+func TestCancelledCommandsSayStoppedNotSignInCancelled(t *testing.T) {
+	srv := newFakeServer(t)
+	h := newHarness(t)
+	h.seed(t, cli.Config{Server: srv.URL, Token: testToken})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.ctx = ctx
+	code, _, stderr := h.run("whoami")
+	if code != 130 || !strings.Contains(stderr, "Stopped") || strings.Contains(stderr, "Sign-in") {
+		t.Errorf("exit %d stderr %q", code, stderr)
 	}
 }

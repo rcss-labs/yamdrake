@@ -18,10 +18,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/awsx/internal/credsource"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/awsx/internal/credsource"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 // countingClient counts the HTTP requests made through it; the base

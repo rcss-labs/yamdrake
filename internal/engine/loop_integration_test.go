@@ -15,10 +15,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/rcss-labs/yamdrake/internal/cache"
-	"github.com/rcss-labs/yamdrake/internal/queue"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/wake"
+	"github.com/rcss-labs/yumdrake/internal/cache"
+	"github.com/rcss-labs/yumdrake/internal/queue"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/wake"
 )
 
 // startLoop runs h.eng.Loop and returns a function that stops it and checks

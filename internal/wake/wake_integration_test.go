@@ -18,7 +18,7 @@ import (
 
 	valkey "github.com/valkey-io/valkey-go"
 
-	"github.com/rcss-labs/yamdrake/internal/cache"
+	"github.com/rcss-labs/yumdrake/internal/cache"
 )
 
 func valkeyAddr(t *testing.T) string {

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 const (

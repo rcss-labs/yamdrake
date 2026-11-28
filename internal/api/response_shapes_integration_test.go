@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/running"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/versions"
+	"github.com/rcss-labs/yumdrake/internal/running"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/versions"
 )
 
 // nullSlices returns the JSON paths in raw where the Go type t declares a slice

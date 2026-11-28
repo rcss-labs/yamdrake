@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/rcss-labs/yamdrake/internal/audit"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/audit"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // GroupName is the admin group Create puts the new user in.

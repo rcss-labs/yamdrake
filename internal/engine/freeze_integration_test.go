@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // freeze stores a freeze that starts now and ends after lasts.

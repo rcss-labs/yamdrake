@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/engine"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/engine"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // personName is a person's display name: their name, else their email. A user

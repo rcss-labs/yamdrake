@@ -11,12 +11,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/manifest"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/wake"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/manifest"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/wake"
 )
 
 var (

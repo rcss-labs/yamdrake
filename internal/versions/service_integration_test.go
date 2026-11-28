@@ -13,9 +13,9 @@ import (
 	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	valkey "github.com/valkey-io/valkey-go"
 
-	"github.com/rcss-labs/yamdrake/internal/cache"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/versions"
+	"github.com/rcss-labs/yumdrake/internal/cache"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/versions"
 )
 
 func openTestValkey(t *testing.T) valkey.Client {

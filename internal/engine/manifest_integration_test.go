@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/manifest"
+	"github.com/rcss-labs/yumdrake/internal/manifest"
 )
 
 // sampleManifest is what a resolve leg would report for the run.

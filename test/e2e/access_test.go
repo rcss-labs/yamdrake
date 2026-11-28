@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/test/e2e/fakegithub"
+	"github.com/rcss-labs/yumdrake/test/e2e/fakegithub"
 )
 
 const (

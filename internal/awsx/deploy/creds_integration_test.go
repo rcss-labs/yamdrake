@@ -14,9 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/smithy-go"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 func roleCredential(accountID, externalID string) store.AWSCredential {

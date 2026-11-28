@@ -17,8 +17,8 @@ import (
 	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx/discovery"
-	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/awsx/discovery"
+	"github.com/rcss-labs/yumdrake/internal/spec"
 )
 
 const (

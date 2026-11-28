@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // Enqueue renders e and adds it to the outbox in tx, so the message exists

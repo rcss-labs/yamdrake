@@ -20,7 +20,7 @@ COPY . .
 # Embedded by internal/webui; replaces whatever the context held.
 COPY --from=web /web/dist/ ./internal/webui/dist/
 RUN CGO_ENABLED=0 go build -trimpath \
-    -ldflags "-X github.com/rcss-labs/yamdrake/internal/version.Version=${VERSION} -X github.com/rcss-labs/yamdrake/internal/version.Commit=${COMMIT}" \
+    -ldflags "-X github.com/rcss-labs/yumdrake/internal/version.Version=${VERSION} -X github.com/rcss-labs/yumdrake/internal/version.Commit=${COMMIT}" \
     -o /out/yumdrake-orchestrator ./cmd/orchestrator
 # The log archive directory is created here because the final image has no shell.
 RUN mkdir -p /out/log-archive

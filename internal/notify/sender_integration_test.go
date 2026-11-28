@@ -16,10 +16,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/rcss-labs/yamdrake/internal/db"
-	"github.com/rcss-labs/yamdrake/internal/secrets"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
+	"github.com/rcss-labs/yumdrake/internal/db"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/testutil/testdb"
 )
 
 const senderToken = "xoxb-sender-fake-token" //nolint:gosec // a fake token for tests

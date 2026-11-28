@@ -18,17 +18,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	valkey "github.com/valkey-io/valkey-go"
 
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/awsx/discovery"
-	"github.com/rcss-labs/yamdrake/internal/engine"
-	"github.com/rcss-labs/yamdrake/internal/logs"
-	"github.com/rcss-labs/yamdrake/internal/notify"
-	"github.com/rcss-labs/yamdrake/internal/running"
-	"github.com/rcss-labs/yamdrake/internal/secrets"
-	"github.com/rcss-labs/yamdrake/internal/session"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/versions"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/awsx/discovery"
+	"github.com/rcss-labs/yumdrake/internal/engine"
+	"github.com/rcss-labs/yumdrake/internal/logs"
+	"github.com/rcss-labs/yumdrake/internal/notify"
+	"github.com/rcss-labs/yumdrake/internal/running"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/session"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/versions"
 )
 
 // DefaultTokenSSOMaxAge is the default of Deps.TokenSSOMaxAge.

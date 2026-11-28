@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/rcss-labs/yamdrake/internal/runner"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/runner"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // Line is one logged line.

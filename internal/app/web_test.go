@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/config"
-	"github.com/rcss-labs/yamdrake/internal/webui"
+	"github.com/rcss-labs/yumdrake/internal/config"
+	"github.com/rcss-labs/yumdrake/internal/webui"
 )
 
 func serveRequest(h http.Handler, method, target string) *httptest.ResponseRecorder {

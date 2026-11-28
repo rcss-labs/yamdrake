@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // Resolve builds the Principal for a user from the database: admin if any of

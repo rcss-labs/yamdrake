@@ -15,7 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
 )
 
 // ECSAPI is the part of the ECS client the resolve and revalidate steps use.

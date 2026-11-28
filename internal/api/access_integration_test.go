@@ -17,8 +17,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/rcss-labs/yamdrake/internal/session"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/session"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // shortPassword is the shortest valid password: argon2 dominates test time.

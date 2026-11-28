@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/manifest"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/manifest"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // restoreService is a service of a finished run's manifest: it ran task

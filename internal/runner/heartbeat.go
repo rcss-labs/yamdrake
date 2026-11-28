@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/version"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/version"
 )
 
 // RegistryInterval is how often a runner reports itself to the registry.

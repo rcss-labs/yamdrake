@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // View is everything Decide may look at: no database, no clock.

@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/cli"
 )
 
 const loginHelp = `usage: yumdrake login [--server URL] [--no-browser] [--with-token]

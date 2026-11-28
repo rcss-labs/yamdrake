@@ -11,12 +11,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/db"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/testutil/awsseed"
-	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/db"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/testutil/awsseed"
+	"github.com/rcss-labs/yumdrake/internal/testutil/testdb"
 )
 
 const (

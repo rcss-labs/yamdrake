@@ -12,11 +12,11 @@ import (
 	"slices"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/adminuser"
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/db"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/internal/adminuser"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/db"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 // The demo people. The passwords are PUBLIC by design (they are printed in the README): the demo

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
 )
 
 func testCipher(t *testing.T) secrets.Cipher {

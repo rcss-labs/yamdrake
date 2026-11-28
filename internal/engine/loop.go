@@ -6,8 +6,8 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/queue"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/queue"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 const defaultSweepEvery = 2 * time.Second

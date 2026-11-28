@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/queue"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/queue"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // ErrAmbiguous is returned by Env.Do, with the stored operation, when an

@@ -19,13 +19,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/app"
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/config"
-	"github.com/rcss-labs/yamdrake/internal/db"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
-	"github.com/rcss-labs/yamdrake/test/e2e/fakegithub"
+	"github.com/rcss-labs/yumdrake/internal/app"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/config"
+	"github.com/rcss-labs/yumdrake/internal/db"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/testutil/testdb"
+	"github.com/rcss-labs/yumdrake/test/e2e/fakegithub"
 )
 
 const (

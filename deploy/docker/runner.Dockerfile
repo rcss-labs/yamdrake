@@ -10,7 +10,7 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath \
-    -ldflags "-X github.com/rcss-labs/yamdrake/internal/version.Version=${VERSION} -X github.com/rcss-labs/yamdrake/internal/version.Commit=${COMMIT}" \
+    -ldflags "-X github.com/rcss-labs/yumdrake/internal/version.Version=${VERSION} -X github.com/rcss-labs/yumdrake/internal/version.Commit=${COMMIT}" \
     -o /out/yumdrake-runner ./cmd/runner
 # The artifact directory is created here because the final image has no shell.
 RUN mkdir -p /out/artifacts

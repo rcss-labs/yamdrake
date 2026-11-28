@@ -17,10 +17,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/config"
-	"github.com/rcss-labs/yamdrake/internal/db"
-	"github.com/rcss-labs/yamdrake/internal/runner"
-	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
+	"github.com/rcss-labs/yumdrake/internal/config"
+	"github.com/rcss-labs/yumdrake/internal/db"
+	"github.com/rcss-labs/yumdrake/internal/runner"
+	"github.com/rcss-labs/yumdrake/internal/testutil/testdb"
 )
 
 type syncBuffer struct {

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/db"
-	"github.com/rcss-labs/yamdrake/internal/github"
-	"github.com/rcss-labs/yamdrake/internal/secrets"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
+	"github.com/rcss-labs/yumdrake/internal/db"
+	"github.com/rcss-labs/yumdrake/internal/github"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/testutil/testdb"
 )
 
 func newSources(t *testing.T) (*githubSources, secrets.Cipher, store.DBTX) {

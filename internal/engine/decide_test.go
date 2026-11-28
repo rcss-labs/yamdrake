@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 var cancelAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

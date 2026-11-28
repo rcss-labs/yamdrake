@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
 )
 
 func archiveTestCipher(t *testing.T, key string) secrets.Cipher {

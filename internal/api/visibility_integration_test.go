@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/manifest"
-	"github.com/rcss-labs/yamdrake/internal/notify"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/manifest"
+	"github.com/rcss-labs/yumdrake/internal/notify"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // seededLeg and seededRun let a test write exactly the rows a page reads,

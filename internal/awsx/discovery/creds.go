@@ -19,10 +19,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/awsx/internal/credsource"
-	"github.com/rcss-labs/yamdrake/internal/secrets"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/awsx/internal/credsource"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // ErrNotConnected means no connected AWS account has that account id.

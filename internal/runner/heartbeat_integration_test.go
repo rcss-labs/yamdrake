@@ -13,9 +13,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/rcss-labs/yamdrake/internal/queue"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	"github.com/rcss-labs/yamdrake/internal/version"
+	"github.com/rcss-labs/yumdrake/internal/queue"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/version"
 )
 
 // startRegisteredRunner is startRunner with the runner registry switched on.

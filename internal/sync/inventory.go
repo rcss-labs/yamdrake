@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/github"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/github"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 const environmentsFile = "environments.yaml"

@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/version"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/version"
 )
 
 // Exit codes: 0 valid, 1 problems found, 2 usage error.

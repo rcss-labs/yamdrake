@@ -9,9 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 // flociDiscovery hands out each account's own configuration, as the discovery

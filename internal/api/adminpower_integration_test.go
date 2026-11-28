@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // managerHarness has a non-admin who holds manage_access, the admin group, and

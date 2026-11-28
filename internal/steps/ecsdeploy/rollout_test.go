@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
 
-	"github.com/rcss-labs/yamdrake/internal/steps/ecsdeploy"
+	"github.com/rcss-labs/yumdrake/internal/steps/ecsdeploy"
 )
 
 const (

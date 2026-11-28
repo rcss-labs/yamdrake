@@ -341,6 +341,12 @@ variable "alarm_topic_arn" {
   type        = string
 }
 
+variable "aws_throttles_alarm_threshold" {
+  description = "Alarm when AWS throttles Yumdrake more than this many times in a minute (the alarm needs 3 of 5 such minutes)."
+  type        = number
+  default     = 10
+}
+
 variable "oldest_queued_leg_age_alarm_seconds" {
   description = "Alarm when the oldest queued leg has waited longer than this many seconds."
   type        = number

@@ -400,7 +400,7 @@ const maxMetricDimensions = 30
 // use one; a test in internal/metrics keeps this list in step with Collect.
 var MetricNames = []string{
 	"QueueDepth", "OldestQueuedLegAge", "ActiveRunners", "ExpiredLeases", "RunsFinished", "RunsFailed",
-	"RunDuration", "SyncAge", "LogPersistenceFailures", "NotificationFailures", "NotificationsPending",
+	"RunDuration", "SyncAge", "LogPersistenceFailures", "AWSThrottles", "NotificationFailures", "NotificationsPending",
 }
 
 var metricDimensionName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,255}$`)

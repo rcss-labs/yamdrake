@@ -149,6 +149,10 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			sender.Run(ctx, cfg.NotifyInterval)
 			log.Info("notification sender stopped")
 		}}
+		// AWS throttling this service saw (discovery, versions) feeds the AWSThrottles metric.
+		background = append(background, func(ctx context.Context) {
+			metrics.RunThrottleRecorder(ctx, pool, awsx.TakeThrottles, metrics.ThrottleRecordInterval, log)
+		})
 		if archiver != nil {
 			background = append(background, func(ctx context.Context) {
 				log.Info("log archive loop started", "interval", cfg.LogArchiveInterval.String(), "after", cfg.LogArchiveAfter.String())

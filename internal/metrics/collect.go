@@ -18,7 +18,8 @@ const window = 60 * time.Second
 //
 //   - QueueDepth, OldestQueuedLegAge (0 when nothing is queued)
 //   - ActiveRunners: runners seen within store.RunnerGoneAfter
-//   - ExpiredLeases, LogPersistenceFailures: system events in the window
+//   - ExpiredLeases, LogPersistenceFailures, AWSThrottles: system events in the
+//     window (AWSThrottles: throttling answers AWS gave this service or a runner)
 //   - RunsFinished, RunsFailed (failed or partially_succeeded), and one
 //     RunDuration sample per finished run that has a start time
 //   - NotificationFailures: notifications given up in the window;
@@ -91,6 +92,12 @@ func Collect(ctx context.Context, db store.DBTX, now time.Time) ([]Sample, error
 		return nil, fmt.Errorf("collect metrics: %w", err)
 	}
 	add("LogPersistenceFailures", float64(persist), "Count")
+
+	throttles, err := store.CountEvents(ctx, db, "aws_throttled", since)
+	if err != nil {
+		return nil, fmt.Errorf("collect metrics: %w", err)
+	}
+	add("AWSThrottles", float64(throttles), "Count")
 
 	var notificationFailures, pending int
 	err = db.QueryRow(ctx,

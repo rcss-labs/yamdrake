@@ -14,9 +14,11 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/app"
 	"github.com/rcss-labs/yamdrake/internal/artifacts"
+	"github.com/rcss-labs/yamdrake/internal/awsx"
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
 	"github.com/rcss-labs/yamdrake/internal/logs"
+	"github.com/rcss-labs/yamdrake/internal/metrics"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner"
 	"github.com/rcss-labs/yamdrake/internal/runnerapp"
@@ -100,6 +102,10 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 					if err := sink.Close(closeCtx); err != nil {
 						log.Error("could not store the last log lines", "error", err.Error())
 					}
+				},
+				// AWS throttling this runner saw feeds the orchestrator's AWSThrottles metric.
+				func(ctx context.Context) {
+					metrics.RunThrottleRecorder(ctx, pool, awsx.TakeThrottles, metrics.ThrottleRecordInterval, log)
 				},
 			}
 			if cfg.ArtifactDir != "" {

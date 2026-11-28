@@ -33,7 +33,7 @@ func Config(ctx context.Context, region string, creds aws.CredentialsProvider, o
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("awsx: load AWS configuration for %s: %w", region, err)
 	}
-	return cfg, nil
+	return ObserveThrottles(cfg), nil
 }
 
 // BaseConfig builds the configuration of the service's own AWS identity: the
@@ -49,5 +49,7 @@ func BaseConfig(ctx context.Context, o Options) (aws.Config, error) {
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("awsx: load the default AWS configuration: %w", err)
 	}
-	return cfg, nil
+	// Every configuration the services use derives from this one (the
+	// credential sources copy it), so throttling is counted for all of them.
+	return ObserveThrottles(cfg), nil
 }

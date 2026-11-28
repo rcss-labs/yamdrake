@@ -25,6 +25,13 @@ locals {
       threshold   = 0
       description = "Run logs could not be stored."
     }
+    aws-throttles = {
+      metric      = "AWSThrottles"
+      statistic   = "Sum"
+      operator    = "GreaterThanThreshold"
+      threshold   = var.aws_throttles_alarm_threshold
+      description = "AWS is throttling Yumdrake's calls (resolve, revalidate, config copies, deployments, versions): too many parallel runs or too small a quota."
+    }
     notification-failures = {
       metric      = "NotificationFailures"
       statistic   = "Sum"

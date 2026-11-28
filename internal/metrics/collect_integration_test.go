@@ -148,6 +148,7 @@ func TestCollect(t *testing.T) {
 		{"lease_expired", 60 * time.Second}, {"lease_expired", 59 * time.Second}, {"lease_expired", 0},
 		{"log_persist_failed", 30 * time.Second}, {"log_persist_failed", 5 * time.Minute},
 		{"sync_failed", 1 * time.Second},
+		{"aws_throttled", 60 * time.Second}, {"aws_throttled", 20 * time.Second}, {"aws_throttled", 20 * time.Second},
 	} {
 		if err := store.RecordEvent(ctx, pool, ev.kind, now.Add(-ev.ago)); err != nil {
 			t.Fatal(err)
@@ -196,6 +197,7 @@ func TestCollect(t *testing.T) {
 		"RunsFailed":             1, // the failed one at now; the partially_succeeded one is at now-60s
 		"SyncAge":                4000,
 		"LogPersistenceFailures": 1,
+		"AWSThrottles":           2, // the one at now-60s is outside the window
 		"NotificationFailures":   2,
 		"NotificationsPending":   2,
 	} {
@@ -225,7 +227,7 @@ func TestCollectOnAnEmptyDatabase(t *testing.T) {
 		t.Fatalf("Collect: %v", err)
 	}
 	for _, name := range []string{"QueueDepth", "OldestQueuedLegAge", "ActiveRunners", "ExpiredLeases", "RunsFinished", "RunsFailed",
-		"LogPersistenceFailures", "NotificationFailures", "NotificationsPending"} {
+		"LogPersistenceFailures", "AWSThrottles", "NotificationFailures", "NotificationsPending"} {
 		if got := one(t, samples, name); got != 0 {
 			t.Errorf("%s = %v, want 0 on an empty database", name, got)
 		}
@@ -346,4 +348,30 @@ func TestOnlyOneReplicaEmits(t *testing.T) {
 	// When the holder stops, the other takes over.
 	first.stop()
 	waitFor(t, "the other replica to take over", func() bool { return second.out.lines() >= 1 })
+}
+
+func TestRecordThrottlesStoresWhatWasCountedAndNothingWhenQuiet(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := newPool(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	counts := []int64{0, 3}
+	take := func() int64 { n := counts[0]; counts = counts[1:]; return n }
+
+	if err := RecordThrottles(ctx, pool, take, now); err != nil {
+		t.Fatalf("RecordThrottles (quiet): %v", err)
+	}
+	if n, err := store.CountEvents(ctx, pool, "aws_throttled", now.Add(-time.Minute)); err != nil || n != 0 {
+		t.Fatalf("events after a quiet round = %d, %v; want 0", n, err)
+	}
+	if err := RecordThrottles(ctx, pool, take, now); err != nil {
+		t.Fatalf("RecordThrottles: %v", err)
+	}
+	samples, err := Collect(ctx, pool, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := one(t, samples, "AWSThrottles"); got != 3 {
+		t.Errorf("AWSThrottles = %v, want 3", got)
+	}
 }

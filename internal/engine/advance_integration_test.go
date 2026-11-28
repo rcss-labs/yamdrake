@@ -407,7 +407,9 @@ func TestRejectAndExpire(t *testing.T) {
 	if err := h.eng.Reject(ctx, h.approver, rejected.ID); err != nil {
 		t.Fatalf("Reject: %v", err)
 	}
-	h.expectState(rejected.ID, "rejected")
+	if got := h.expectState(rejected.ID, "rejected"); got.EndReason == "" || got.WaitReason != "" {
+		t.Fatalf("rejected run: end reason %q, wait reason %q", got.EndReason, got.WaitReason)
+	}
 	if err := h.eng.Reject(ctx, h.approver, rejected.ID); !errors.Is(err, ErrWrongState) {
 		t.Fatalf("second Reject = %v, want ErrWrongState", err)
 	}
@@ -430,7 +432,9 @@ func TestRejectAndExpire(t *testing.T) {
 	if err := h.eng.Expire(ctx, expiring.ID); err != nil {
 		t.Fatal(err)
 	}
-	h.expectState(expiring.ID, "expired")
+	if got := h.expectState(expiring.ID, "expired"); got.EndReason == "" {
+		t.Fatalf("expired run has no end reason")
+	}
 }
 
 func TestSecondRunWaitsForFirstRunsLocks(t *testing.T) {
@@ -480,7 +484,9 @@ func TestSecondRunWaitsForFirstRunsLocks(t *testing.T) {
 	}
 	h.expectState(a.ID, "failed")
 	h.advance(b.ID)
-	h.expectState(b.ID, "running")
+	if got := h.expectState(b.ID, "running"); got.WaitReason != "" {
+		t.Fatalf("B still says %q while running", got.WaitReason)
+	}
 	if len(h.locks(b.ID)) != 4 {
 		t.Fatalf("B holds %v, want all four of its resources", h.locks(b.ID))
 	}
@@ -531,6 +537,9 @@ func TestRevalidateFailureInvalidatesAndReleasesLocks(t *testing.T) {
 	h.setLeg(h.legByKind(run.ID, "revalidate").ID, "failed")
 	h.advance(run.ID)
 	invalid := h.expectState(run.ID, "invalidated")
+	if invalid.EndReason == "" || invalid.WaitReason != "" {
+		t.Fatalf("invalidated run: end reason %q, wait reason %q", invalid.EndReason, invalid.WaitReason)
+	}
 	if invalid.FinishedAt == nil || len(h.locks(run.ID)) != 0 {
 		t.Fatalf("invalidated run: %+v, locks %v", invalid, h.locks(run.ID))
 	}
@@ -917,7 +926,7 @@ func TestCheckAgainRequeuesLeg(t *testing.T) {
 func TestReleaseLocksIsAdminOnlyAndAudited(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	ctx := context.Background()
-	run, _ := unknownRun(t, h)
+	run, unknown := unknownRun(t, h)
 
 	for _, p := range []auth.Principal{h.starter, h.approver, h.stranger} {
 		if err := h.eng.ReleaseLocks(ctx, p, run.ID); !errors.Is(err, ErrForbidden) {
@@ -929,11 +938,28 @@ func TestReleaseLocksIsAdminOnlyAndAudited(t *testing.T) {
 		t.Fatalf("a refused release freed the locks")
 	}
 
+	// A leg being checked again could still run: the locks must stay until it settles.
+	if err := h.eng.CheckAgain(ctx, h.starter, run.ID, unknown.ID); err != nil {
+		t.Fatalf("CheckAgain: %v", err)
+	}
+	if err := h.eng.ReleaseLocks(ctx, h.admin, run.ID); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("ReleaseLocks with a queued check = %v, want ErrWrongState", err)
+	}
+	h.setLeg(unknown.ID, "running")
+	if err := h.eng.ReleaseLocks(ctx, h.admin, run.ID); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("ReleaseLocks with a running check = %v, want ErrWrongState", err)
+	}
+	h.expectState(run.ID, "needs_reconciliation")
+	if len(h.locks(run.ID)) == 0 {
+		t.Fatalf("a refused release freed the locks")
+	}
+	h.setLeg(unknown.ID, "unknown")
+
 	if err := h.eng.ReleaseLocks(ctx, h.admin, run.ID); err != nil {
 		t.Fatalf("ReleaseLocks: %v", err)
 	}
 	failed := h.expectState(run.ID, "failed")
-	if failed.WaitReason != "locks released by admin without reconciliation" || failed.FinishedAt == nil {
+	if failed.EndReason != "locks released by admin without reconciliation" || failed.WaitReason != "" || failed.FinishedAt == nil {
 		t.Fatalf("failed run: %+v", failed)
 	}
 	if len(h.locks(run.ID)) != 0 {
@@ -1031,5 +1057,37 @@ func TestPerEnvironmentLimitCountsOtherRunsLegs(t *testing.T) {
 	}
 	if queued != 1 {
 		t.Fatalf("B queued %d step legs, want 1: the limit of 2 per environment minus A's 1", queued)
+	}
+}
+
+// TestCancelOfAClaimedLegFlagsItInsteadOfFailing covers the race where a runner
+// claims a queued leg between Advance reading it and cancelling it.
+func TestCancelOfAClaimedLegFlagsItInsteadOfFailing(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	ctx := context.Background()
+	run := h.running("s1")
+	revalidate := h.legByKind(run.ID, "revalidate")
+	h.setLeg(revalidate.ID, "claimed") // the runner won the race
+
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	locked, err := store.LockRun(ctx, tx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o outcome
+	// The decision was made while the leg was still queued.
+	if err := h.eng.apply(ctx, tx, locked, nil, Decision{CancelLegs: []int64{revalidate.ID}}, &o); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := h.legByKind(run.ID, "revalidate")
+	if got.State != "claimed" || !got.CancelRequested {
+		t.Fatalf("leg = %+v, want still claimed and flagged", got)
 	}
 }

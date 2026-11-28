@@ -29,6 +29,8 @@ CREATE TABLE runs (
          'needs_reconciliation', 'succeeded', 'partially_succeeded', 'failed', 'cancelled',
          'rejected', 'expired', 'invalidated')),
     wait_reason          text        NOT NULL DEFAULT '',
+    -- Why a run ended, in plain words; set when it enters a final state.
+    end_reason           text        NOT NULL DEFAULT '',
     requested_by         bigint      NOT NULL REFERENCES users (id),
     via                  text        NOT NULL CHECK (via IN ('web', 'cli')),
     parent_run_id        bigint      REFERENCES runs (id),

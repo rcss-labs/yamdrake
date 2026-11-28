@@ -34,6 +34,8 @@ type Run struct {
 	ApprovalRequired  bool
 	AutoStart         bool
 	State, WaitReason string
+	// EndReason says in plain words why the run ended; empty until it is final.
+	EndReason         string
 	RequestedBy       int64
 	Via               string // "web" | "cli"
 	ParentRunID       *int64
@@ -79,14 +81,14 @@ const finalRunStatesSQL = `('succeeded', 'partially_succeeded', 'failed', 'cance
 
 const runColumns = `id, kind, job_source_id, job_id, job_snapshot, inventory_commit, job_commit,
 	inventory_snapshot_id, environment, label, aws_account, folder_id, selection, lock_resources, manifest, manifest_id,
-	approval_required, auto_start, state, wait_reason, requested_by, via, parent_run_id,
+	approval_required, auto_start, state, wait_reason, end_reason, requested_by, via, parent_run_id,
 	cancel_requested_by, cancel_requested_at, created_at, state_changed_at, started_at, finished_at`
 
 func scanRun(r rowScanner) (Run, error) {
 	var x Run
 	err := r.Scan(&x.ID, &x.Kind, &x.JobSourceID, &x.JobID, &x.JobSnapshot, &x.InventoryCommit, &x.JobCommit,
 		&x.InventorySnapshotID, &x.Environment, &x.Label, &x.AWSAccount, &x.FolderID, &x.Selection, &x.LockResources, &x.Manifest, &x.ManifestID,
-		&x.ApprovalRequired, &x.AutoStart, &x.State, &x.WaitReason, &x.RequestedBy, &x.Via, &x.ParentRunID,
+		&x.ApprovalRequired, &x.AutoStart, &x.State, &x.WaitReason, &x.EndReason, &x.RequestedBy, &x.Via, &x.ParentRunID,
 		&x.CancelRequestedBy, &x.CancelRequestedAt, &x.CreatedAt, &x.StateChangedAt, &x.StartedAt, &x.FinishedAt)
 	return x, err
 }
@@ -171,11 +173,12 @@ func GetRun(ctx context.Context, db DBTX, id int64) (Run, error) {
 }
 
 // LockRun reads a run and locks its row until the transaction ends (SELECT ...
-// FOR UPDATE). Every state change of a run starts with this, so two
+// FOR NO KEY UPDATE, which unlike FOR UPDATE does not block inserts that only
+// reference the run, such as log lines). Every state change of a run starts with this, so two
 // orchestrators never advance one run at the same time. ErrNotFound for an
 // unknown id.
 func LockRun(ctx context.Context, tx DBTX, id int64) (Run, error) {
-	r, err := scanRun(tx.QueryRow(ctx, "SELECT "+runColumns+" FROM runs WHERE id = $1 FOR UPDATE", id))
+	r, err := scanRun(tx.QueryRow(ctx, "SELECT "+runColumns+" FROM runs WHERE id = $1 FOR NO KEY UPDATE", id))
 	if err != nil {
 		return Run{}, fmt.Errorf("lock run: %w", mapError(err))
 	}
@@ -294,6 +297,19 @@ func UpdateRunState(ctx context.Context, tx DBTX, id int64, state, waitReason st
 		return fmt.Errorf("update run state: %w", ErrNotFound)
 	}
 	return fmt.Errorf("update run state: %w", ErrRunFinal)
+}
+
+// SetEndReason records why a run ended. The caller holds the run lock and sets
+// it together with the move to a final state.
+func SetEndReason(ctx context.Context, tx DBTX, id int64, reason string) error {
+	tag, err := tx.Exec(ctx, "UPDATE runs SET end_reason = $2 WHERE id = $1", id, reason)
+	if err != nil {
+		return fmt.Errorf("set end reason: %w", mapError(err))
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("set end reason: %w", ErrNotFound)
+	}
+	return nil
 }
 
 // SetManifest stores the resolved plan and its id.

@@ -686,6 +686,48 @@ func TestEarlierFileFailureWithUncheckableLaterIntentIsUnknown(t *testing.T) {
 	}
 }
 
+// midLegCancelFixture writes a.env, then a cancel arrives; c.env's write was
+// left intended by an earlier attempt.
+func midLegCancelFixture(t *testing.T) *fixture {
+	f := newFixture(t, file{"a.env", "a.env", "A=1\n"}, file{"b.env", "b.env", "B=1\n"}, file{"c.env", "c.env", "C=1\n"})
+	f.env.PresetOps = []store.Op{{ID: 1, Name: "put-config", Key: "put-config:" + f.items[2].Destination, State: "intended"}}
+	f.env.AfterDo = func(e *runnertest.Env) { e.SetCancel(true) }
+	return f
+}
+
+func TestMidLegCancelSettlesInheritedIntentAndReconciles(t *testing.T) {
+	f := midLegCancelFixture(t)
+	f.s3.objects[f.dest("c.env")] = []byte("C=1\n")
+	out := f.run()
+	if out.State != "failed" || out.FailureShort != "cancelled; 1 files not written" {
+		t.Fatalf("outcome = %q %q: %s", out.State, out.FailureShort, out.FailureDetail)
+	}
+	r := result(t, out)
+	want(t, "written", r.Written, uri(f, "a.env", "c.env")...)
+	want(t, "not written", r.NotWritten, uri(f, "b.env")...)
+	if len(f.s3.puts) != 1 {
+		t.Errorf("puts = %v; nothing may be written after the cancel", f.s3.puts)
+	}
+}
+
+func TestMidLegCancelWithUncheckableInheritedIntentIsUnknown(t *testing.T) {
+	f := midLegCancelFixture(t)
+	cKey := f.dest("c.env")
+	f.s3.getErr = func(key string) error {
+		if key == cKey {
+			return refusal(503, "SlowDown", "x")
+		}
+		return nil
+	}
+	out := f.run()
+	if out.State != "unknown" || out.FailureShort != "could not check an interrupted write of c.env" {
+		t.Fatalf("outcome = %q %q: %s", out.State, out.FailureShort, out.FailureDetail)
+	}
+	if len(f.s3.puts) != 1 {
+		t.Errorf("puts = %v; nothing may be written after the cancel", f.s3.puts)
+	}
+}
+
 func TestDoneOpButDestinationChangedIsWrittenAgain(t *testing.T) {
 	f := newFixture(t, file{"web.env", "web.env", "A=1\n"})
 	f.env.PresetOps = []store.Op{{ID: 1, Name: "put-config", Key: "put-config:" + f.items[0].Destination, State: "done"}}

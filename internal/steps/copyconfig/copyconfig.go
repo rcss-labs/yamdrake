@@ -426,6 +426,17 @@ func (r *leg) intendedFor(destination string) bool {
 	return false
 }
 
+// openIntentFrom reports whether an item at index i or later has a write an
+// earlier attempt intended and never recorded.
+func (r *leg) openIntentFrom(i int) bool {
+	for _, item := range r.items[i:] {
+		if item.NotRestored == "" && r.intendedFor(item.Destination) {
+			return true
+		}
+	}
+	return false
+}
+
 // --- ending the leg -------------------------------------------------------------
 
 // stopped ends the leg at item i: it and every later item are put in a list.
@@ -441,12 +452,17 @@ func (r *leg) stopped(i int, state, short, detail string) *queue.Outcome {
 // earlier attempt intended, by reading the destination: the pinned bytes mean
 // Written, anything else NotWritten. Nothing new is written. If such a read
 // fails, the leg ends "unknown" instead.
+//
+// The same holds for a cancel noticed mid-leg: with such a write still open it
+// is settled first and the leg ends as in reconcile mode, "succeeded" when
+// every file is in place and otherwise "failed", never "cancelled".
 func (r *leg) stop(i int, state, short, detail string) queue.Outcome {
+	settleCancel := state == "cancelled" && r.openIntentFrom(i)
 	for _, item := range r.items[i:] {
 		switch {
 		case item.NotRestored != "":
 			r.res.NotRestored = append(r.res.NotRestored, item.Destination)
-		case state == "failed" && r.intendedFor(item.Destination):
+		case (state == "failed" || state == "cancelled" && settleCancel) && r.intendedFor(item.Destination):
 			if err := r.settle(item); err != nil {
 				r.env.Log("error", fmt.Sprintf("%s: an interrupted write could not be checked.", item.Name))
 				detail = joinLines(short, detail, resolve.ErrorDetail("s3:GetObject", err))
@@ -456,6 +472,13 @@ func (r *leg) stop(i int, state, short, detail string) queue.Outcome {
 		default:
 			r.res.NotWritten = append(r.res.NotWritten, item.Destination)
 		}
+	}
+	if settleCancel && state == "cancelled" {
+		n := len(r.res.NotWritten)
+		if n == 0 {
+			return r.end("succeeded", "", "")
+		}
+		state, short, detail = "failed", fmt.Sprintf("cancelled; %d files not written", n), ""
 	}
 	if list := r.listing(); list != "" {
 		if detail != "" {

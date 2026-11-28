@@ -57,6 +57,8 @@ type Deps struct {
 	Log    *slog.Logger
 	// Publisher is optional: nil means no wake-ups.
 	Publisher Publisher
+	// PublicURL is the address notifications link to (config.PublicURL).
+	PublicURL string
 }
 
 // Engine creates runs, advances them under a run row lock and carries out
@@ -67,11 +69,13 @@ type Engine struct {
 	now    func() time.Time
 	log    *slog.Logger
 	pub    Publisher
+	// publicURL is the base of the run links in notifications.
+	publicURL string
 }
 
 // New builds an Engine, filling defaults for the clock, logger and limits.
 func New(deps Deps) *Engine {
-	e := &Engine{db: deps.DB, limits: deps.Limits, now: deps.Now, log: deps.Log, pub: deps.Publisher}
+	e := &Engine{db: deps.DB, limits: deps.Limits, now: deps.Now, log: deps.Log, pub: deps.Publisher, publicURL: deps.PublicURL}
 	if e.limits == (Limits{}) {
 		e.limits = Limits{PerEnvironment: defaultLimitPerEnvironment, PerAccount: defaultLimitPerAccount}
 	}

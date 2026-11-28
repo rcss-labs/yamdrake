@@ -70,6 +70,7 @@ type harnessOptions struct {
 	approvalExpiry time.Duration
 	noInventory    bool
 	limits         Limits
+	slackChannel   string // job.notify.slack; empty means no notifications
 }
 
 // harness is a migrated database with a job, an inventory and some people.
@@ -162,6 +163,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 			{Name: "deploy", Use: "ecs-deploy", Group: "g", Needs: []spec.Need{{Step: "config", Scope: "service"}}},
 		},
 	}
+	h.job.SlackChannel = opts.slackChannel
 	if len(opts.approvalFor) > 0 {
 		h.job.Approval = &spec.Approval{Labels: opts.approvalFor, Expires: opts.approvalExpiry}
 	}
@@ -185,7 +187,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		h.snapshot = snapshot
 	}
 
-	h.eng = New(Deps{DB: pool, Limits: opts.limits, Now: h.clock.Now, Publisher: h.pub})
+	h.eng = New(Deps{DB: pool, Limits: opts.limits, Now: h.clock.Now, Publisher: h.pub, PublicURL: "https://yum.example"})
 	return h
 }
 

@@ -68,6 +68,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Limits:    engine.Limits{PerEnvironment: cfg.LimitPerEnvironment, PerAccount: cfg.LimitPerAccount},
 			Log:       log,
 			Publisher: bus,
+			PublicURL: cfg.PublicURL,
 		})
 		// Archived legs are read back from the same directory they were written to.
 		var archive logs.Archive

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/notify"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
@@ -27,17 +28,42 @@ var ErrManifestChanged = errors.New("the plan changed")
 func (e *Engine) onEnterState(ctx context.Context, tx pgx.Tx, run store.Run, newState string, now time.Time) error {
 	switch {
 	case newState == "waiting_approval":
-		return e.requestApproval(ctx, tx, run.ID, now)
+		if err := e.requestApproval(ctx, tx, run.ID, now); err != nil {
+			return err
+		}
+		return e.enqueueNotification(ctx, tx, run.ID, notify.KindApprovalRequested, "", now)
+	case newState == "running":
+		return e.enqueueNotification(ctx, tx, run.ID, notify.KindStarted, "", now)
 	case isFinalRunState(newState):
 		// Approve, reject and expiry close their own approval first; this is
 		// for a run that ends otherwise (cancelled, invalidated).
 		open, found, err := store.OpenApproval(ctx, tx, run.ID)
-		if err != nil || !found {
+		if err != nil {
 			return err
 		}
-		return store.DecideApproval(ctx, tx, open.ID, "withdrawn", nil, "", now)
+		if found {
+			if err := store.DecideApproval(ctx, tx, open.ID, "withdrawn", nil, "", now); err != nil {
+				return err
+			}
+		}
+		if announcesFinish(newState) {
+			return e.enqueueNotification(ctx, tx, run.ID, notify.KindFinished, "", now)
+		}
+	case newState == "needs_reconciliation":
+		return e.enqueueNotification(ctx, tx, run.ID, notify.KindFinished, "", now)
 	}
 	return nil
+}
+
+// announcesFinish reports whether a run ending in state is announced as
+// finished. A run that was never started (rejected, expired, invalidated)
+// has its own message or none.
+func announcesFinish(state string) bool {
+	switch state {
+	case "succeeded", "partially_succeeded", "failed", "cancelled":
+		return true
+	}
+	return false
 }
 
 // requestApproval opens the approval for the plan the run holds now. The run is
@@ -104,9 +130,14 @@ func (e *Engine) decide(ctx context.Context, p auth.Principal, runID int64, acti
 		if err := store.DecideApproval(ctx, tx, open.ID, decision, &p.UserID, comment, now); err != nil {
 			return fmt.Errorf("%s %d: %w", action, runID, err)
 		}
+		kind := notify.KindApproved
 		reason := ""
 		if next == "rejected" {
+			kind = notify.KindRejected
 			reason = "rejected by " + displayName(p)
+		}
+		if err := e.enqueueNotification(ctx, tx, runID, kind, displayName(p), now); err != nil {
+			return err
 		}
 		if err := e.moveTo(ctx, tx, run, next, reason, displayName(p), o); err != nil {
 			return err
@@ -122,7 +153,11 @@ func (e *Engine) expireApproval(ctx context.Context, tx pgx.Tx, runID int64) err
 	if err != nil || !found {
 		return err
 	}
-	return store.DecideApproval(ctx, tx, open.ID, "expired", nil, "", e.now())
+	now := e.now()
+	if err := store.DecideApproval(ctx, tx, open.ID, "expired", nil, "", now); err != nil {
+		return err
+	}
+	return e.enqueueNotification(ctx, tx, runID, notify.KindApprovalExpired, "", now)
 }
 
 // approvalDue reports whether a run waiting for approval has waited too long.

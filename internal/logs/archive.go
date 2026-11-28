@@ -161,7 +161,7 @@ func NewArchiver(pool *pgxpool.Pool, a Archive, olderThan time.Duration, now fun
 		now = time.Now
 	}
 	if log == nil {
-		log = slog.Default()
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Archiver{pool: pool, archive: a, olderThan: olderThan, now: now, log: log}
 }
@@ -183,6 +183,7 @@ SELECT l.run_id, l.id FROM legs l
 WHERE l.state IN `+settledStates+`
   AND coalesce(l.finished_at, l.started_at, l.queued_at) < $1
   AND EXISTS (SELECT 1 FROM log_lines x WHERE x.run_id = l.run_id AND x.leg_id = l.id)
+  AND NOT EXISTS (SELECT 1 FROM log_archives z WHERE z.run_id = l.run_id AND z.leg_id = l.id)
 ORDER BY l.id LIMIT $2`, cutoff, archiveBatchSize)
 	if err != nil {
 		return 0, fmt.Errorf("find legs to archive: %w", err)
@@ -202,6 +203,7 @@ ORDER BY l.id LIMIT $2`, cutoff, archiveBatchSize)
 		return 0, fmt.Errorf("find legs to archive: %w", err)
 	}
 
+	a.reportLeftoverRows(ctx)
 	archived := 0
 	var errs []error
 	for _, t := range targets {
@@ -216,6 +218,28 @@ ORDER BY l.id LIMIT $2`, cutoff, archiveBatchSize)
 		}
 	}
 	return archived, errors.Join(errs...)
+}
+
+// reportLeftoverRows logs, loudly, legs that are archived yet have rows in
+// PostgreSQL. They are never archived again; someone has to look at them.
+func (a *Archiver) reportLeftoverRows(ctx context.Context) {
+	rows, err := a.pool.Query(ctx, `
+SELECT x.run_id, x.leg_id, count(*) FROM log_lines x
+JOIN log_archives z ON z.run_id = x.run_id AND z.leg_id = x.leg_id
+GROUP BY x.run_id, x.leg_id LIMIT 20`)
+	if err != nil {
+		a.log.Error("checking for leftover log rows failed", "error", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var run, leg, n int64
+		if err := rows.Scan(&run, &leg, &n); err != nil {
+			a.log.Error("checking for leftover log rows failed", "error", err)
+			return
+		}
+		a.log.Error("archived leg has log rows in PostgreSQL; left alone, the archive is not rewritten", "run", run, "leg", leg, "rows", n)
+	}
 }
 
 // archiveLeg writes one leg to the archive, records it and deletes its rows
@@ -237,6 +261,16 @@ func (a *Archiver) archiveLeg(ctx context.Context, runID, legID int64) (bool, er
 	}
 	if err != nil {
 		return false, fmt.Errorf("lock leg: %w", err)
+	}
+
+	// Never replace an existing archive: rows that reappear for an archived leg
+	// would otherwise overwrite the real archive with just those rows.
+	var already bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM log_archives WHERE run_id = $1 AND leg_id = $2)`, runID, legID).Scan(&already); err != nil {
+		return false, fmt.Errorf("check archive: %w", err)
+	}
+	if already {
+		return false, errors.New("leg is already archived but has rows in PostgreSQL; refusing to overwrite the archive")
 	}
 
 	rows, err := tx.Query(ctx, `SELECT seq, at, level, text FROM log_lines WHERE run_id = $1 AND leg_id = $2 ORDER BY seq`, runID, legID)
@@ -289,8 +323,8 @@ type archiveRef struct {
 	Key                       string
 }
 
-func (r *Reader) archivedLegs(ctx context.Context, runID int64) (map[int64]archiveRef, error) {
-	rows, err := r.pool.Query(ctx, `SELECT leg_id, key, line_count, last_seq FROM log_archives WHERE run_id = $1`, runID)
+func (r *Reader) archivedLegs(ctx context.Context, q querier, runID int64) (map[int64]archiveRef, error) {
+	rows, err := q.Query(ctx, `SELECT leg_id, key, line_count, last_seq FROM log_archives WHERE run_id = $1`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("list log archives: %w", err)
 	}
@@ -309,7 +343,7 @@ func (r *Reader) archivedLegs(ctx context.Context, runID int64) (map[int64]archi
 // readArchived loads the archived legs that still have lines after the cursor
 // and returns their matching lines (ordered like PostgreSQL rows) plus every
 // gap after the cursor, per leg.
-func (r *Reader) readArchived(ctx context.Context, runID int64, f Filter, cursor map[int64]int64, archived map[int64]archiveRef) ([]candidate, map[int64][]Gap, error) {
+func (r *Reader) readArchived(ctx context.Context, q querier, runID int64, f Filter, cursor map[int64]int64, archived map[int64]archiveRef) ([]candidate, map[int64][]Gap, error) {
 	var wanted []int64
 	for leg, ref := range archived {
 		if ref.LastSeq > cursor[leg] {
@@ -327,7 +361,7 @@ func (r *Reader) readArchived(ctx context.Context, runID int64, f Filter, cursor
 		service string
 	}
 	meta := map[int64]legMeta{}
-	rows, err := r.pool.Query(ctx, `SELECT id, step_id, service FROM legs WHERE run_id = $1 AND id = ANY($2)`, runID, wanted)
+	rows, err := q.Query(ctx, `SELECT id, step_id, service FROM legs WHERE run_id = $1 AND id = ANY($2)`, runID, wanted)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read archived legs: %w", err)
 	}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -126,6 +127,11 @@ func decodeCursor(c Cursor) (map[int64]int64, error) {
 	return out, nil
 }
 
+// querier is what pgxpool.Pool and pgx.Tx share for reading.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // Reader reads a run's log from PostgreSQL and the archive.
 type Reader struct {
 	pool    *pgxpool.Pool
@@ -161,17 +167,25 @@ func (r *Reader) Read(ctx context.Context, runID int64, f Filter, after Cursor, 
 		limit = maxPageLimit
 	}
 
-	archived, err := r.archivedLegs(ctx, runID)
+	// One snapshot for every statement, so an archive that commits mid-read
+	// cannot make a leg appear twice or not at all.
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Page{}, fmt.Errorf("read log: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	archived, err := r.archivedLegs(ctx, tx, runID)
 	if err != nil {
 		return Page{}, err
 	}
-	cands, err := r.queryRows(ctx, runID, f, cursor, limit)
+	cands, err := r.queryRows(ctx, tx, runID, f, cursor, limit, archived)
 	if err != nil {
 		return Page{}, err
 	}
 	archiveGaps := map[int64][]Gap{} // per archived leg, every gap after the cursor
 	if len(archived) > 0 {
-		archCands, gaps, err := r.readArchived(ctx, runID, f, cursor, archived)
+		archCands, gaps, err := r.readArchived(ctx, tx, runID, f, cursor, archived)
 		if err != nil {
 			return Page{}, err
 		}
@@ -209,7 +223,7 @@ func (r *Reader) Read(ctx context.Context, runID int64, f Filter, after Cursor, 
 		return Page{}, err
 	}
 
-	if page.Gaps, err = r.gaps(ctx, runID, cursor, covered, archived, archiveGaps); err != nil {
+	if page.Gaps, err = r.gaps(ctx, tx, runID, cursor, covered, archived, archiveGaps); err != nil {
 		return Page{}, err
 	}
 	return page, nil
@@ -218,15 +232,19 @@ func (r *Reader) Read(ctx context.Context, runID int64, f Filter, after Cursor, 
 // queryRows returns the first limit matching rows that lie after the cursor.
 // The window runs before the filter so every source computes the same order
 // regardless of the filter.
-func (r *Reader) queryRows(ctx context.Context, runID int64, f Filter, cursor map[int64]int64, limit int) ([]candidate, error) {
+func (r *Reader) queryRows(ctx context.Context, q querier, runID int64, f Filter, cursor map[int64]int64, limit int, archived map[int64]archiveRef) ([]candidate, error) {
 	legIDs, seqs := cursorArrays(cursor)
-	rows, err := r.pool.Query(ctx, `
+	archivedIDs := make([]int64, 0, len(archived))
+	for leg := range archived {
+		archivedIDs = append(archivedIDs, leg)
+	}
+	rows, err := q.Query(ctx, `
 WITH after AS (
     SELECT l.leg_id, l.seq, l.at, l.level, l.text,
            max(l.at) OVER (PARTITION BY l.leg_id ORDER BY l.seq) AS ord
     FROM log_lines l
     LEFT JOIN unnest($2::bigint[], $3::bigint[]) AS c(leg_id, seq) ON c.leg_id = l.leg_id
-    WHERE l.run_id = $1 AND l.seq > coalesce(c.seq, 0)
+    WHERE l.run_id = $1 AND l.seq > coalesce(c.seq, 0) AND l.leg_id <> ALL($9::bigint[])
 )
 SELECT a.leg_id, a.seq, a.at, a.level, a.text, a.ord
 FROM after a
@@ -237,7 +255,7 @@ WHERE ($4::bigint IS NULL OR g.step_id = $4)
   AND ($7 = '' OR strpos(lower(a.text), lower($7)) > 0)
 ORDER BY a.ord, a.leg_id, a.seq
 LIMIT $8`,
-		runID, legIDs, seqs, f.StepID, f.Service, f.Level, f.Query, limit)
+		runID, legIDs, seqs, f.StepID, f.Service, f.Level, f.Query, limit, archivedIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read log lines: %w", err)
 	}
@@ -260,7 +278,7 @@ LIMIT $8`,
 // gaps reports the missing sequence ranges, per leg, between the cursor and
 // the last line returned. Gaps are computed on all rows of the leg, ignoring
 // the filter, so a filter neither hides nor invents one.
-func (r *Reader) gaps(ctx context.Context, runID int64, cursor, covered map[int64]int64, archived map[int64]archiveRef, archiveGaps map[int64][]Gap) ([]Gap, error) {
+func (r *Reader) gaps(ctx context.Context, q querier, runID int64, cursor, covered map[int64]int64, archived map[int64]archiveRef, archiveGaps map[int64][]Gap) ([]Gap, error) {
 	var legIDs, lows, highs []int64
 	var out []Gap
 	for leg, high := range covered {
@@ -275,7 +293,7 @@ func (r *Reader) gaps(ctx context.Context, runID int64, cursor, covered map[int6
 		legIDs, lows, highs = append(legIDs, leg), append(lows, cursor[leg]), append(highs, high)
 	}
 	if len(legIDs) > 0 {
-		rows, err := r.pool.Query(ctx, `
+		rows, err := q.Query(ctx, `
 SELECT leg_id, prev + 1, seq - 1 FROM (
     SELECT l.leg_id, l.seq, lag(l.seq, 1, c.lo) OVER (PARTITION BY l.leg_id ORDER BY l.seq) AS prev
     FROM log_lines l

@@ -10,12 +10,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -61,6 +63,7 @@ type Writer struct {
 	maxBatch   int
 	now        func() time.Time
 	notify     func(runID int64)
+	log        *slog.Logger
 
 	// Test hooks: beforeInsert fails an attempt before it reaches PostgreSQL,
 	// afterCommit fails it after the commit (a lost acknowledgement).
@@ -78,8 +81,12 @@ type Writer struct {
 
 // NewWriter starts a writer that flushes every flushEvery and whenever a leg
 // has maxBatch lines waiting. notify, when not nil, is called with the run id
-// after each committed batch.
-func NewWriter(pool *pgxpool.Pool, flushEvery time.Duration, maxBatch int, now func() time.Time, notify func(runID int64)) *Writer {
+// after each committed batch. log receives warnings and flush errors; nil
+// discards them.
+func NewWriter(pool *pgxpool.Pool, flushEvery time.Duration, maxBatch int, now func() time.Time, notify func(runID int64), log *slog.Logger) *Writer {
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	if maxBatch < 1 {
 		maxBatch = 1
 	}
@@ -90,7 +97,7 @@ func NewWriter(pool *pgxpool.Pool, flushEvery time.Duration, maxBatch int, now f
 		now = time.Now
 	}
 	w := &Writer{
-		pool: pool, flushEvery: flushEvery, maxBatch: maxBatch, now: now, notify: notify,
+		pool: pool, flushEvery: flushEvery, maxBatch: maxBatch, now: now, notify: notify, log: log,
 		legs: make(map[int64]*legBuffer),
 		kick: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 	}
@@ -106,7 +113,7 @@ func (w *Writer) Write(runID, legID, generation int64, level, text string) {
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
-		slog.Warn("log line written after the writer was closed; dropped", "run", runID, "leg", legID)
+		w.log.Warn("log line written after the writer was closed; dropped", "run", runID, "leg", legID)
 		return
 	}
 	lb := w.legs[legID]
@@ -165,7 +172,7 @@ func (w *Writer) loop() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
 		if err := w.flushAll(ctx); err != nil {
-			slog.Error("flushing log lines failed; will retry", "error", err)
+			w.log.Error("flushing log lines failed; will retry", "error", err)
 		}
 		cancel()
 	}
@@ -252,25 +259,49 @@ func (w *Writer) prepareBatch(ctx context.Context, legID int64, lb *legBuffer) (
 	return true, nil
 }
 
-// insertBatchSQL stores a batch only while the leg is still at the sender's
-// generation and has not been archived. FOR SHARE keeps the leg row from being
-// re-claimed (or archived) between the check and the commit. The conflict
-// clause drops a batch that was already stored.
-const insertBatchSQL = `
-WITH ok AS (
-    SELECT 1 FROM legs
-    WHERE id = $1 AND run_id = $2 AND generation = $3
-      AND NOT EXISTS (SELECT 1 FROM log_archives WHERE run_id = $2 AND leg_id = $1)
-    FOR SHARE
-), ins AS (
-    INSERT INTO log_lines (run_id, leg_id, seq, at, level, text)
-    SELECT $2, $1, s.seq, s.at, s.level, s.text
-    FROM unnest($4::bigint[], $5::timestamptz[], $6::text[], $7::text[]) AS s(seq, at, level, text)
-    WHERE EXISTS (SELECT 1 FROM ok)
-    ON CONFLICT (run_id, leg_id, seq) DO NOTHING
-    RETURNING 1
-)
-SELECT (SELECT count(*) FROM ok), (SELECT count(*) FROM ins)`
+// storeBatch inserts the batch in a short transaction and reports whether the
+// leg accepted it (false: the runner no longer owns the leg, or it is
+// archived). The steps are separate statements on purpose: the first locks the
+// leg row FOR SHARE (waiting for an uncommitted re-claim or archive, and
+// re-checking the generation on the row's final version), and the second reads
+// log_archives with a fresh snapshot taken after that wait, so an archive that
+// committed while we waited is seen. A single statement would use the snapshot
+// from before the wait.
+func (w *Writer) storeBatch(ctx context.Context, legID int64, lb *legBuffer) (bool, error) {
+	batch := lb.inflight
+	runID := batch[0].RunID
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var locked int64
+	err = tx.QueryRow(ctx, `SELECT id FROM legs WHERE id = $1 AND run_id = $2 AND generation = $3 FOR SHARE`,
+		legID, runID, lb.inflightGn).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var archived bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM log_archives WHERE run_id = $1 AND leg_id = $2)`, runID, legID).Scan(&archived); err != nil {
+		return false, err
+	}
+	if archived {
+		return false, nil
+	}
+	// The conflict clause drops lines that an earlier, unacknowledged attempt of
+	// this very batch already stored.
+	if err := store.InsertLogLines(ctx, tx, batch); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
 
 func (w *Writer) sendBatch(ctx context.Context, legID int64, lb *legBuffer) error {
 	if w.beforeInsert != nil {
@@ -279,15 +310,7 @@ func (w *Writer) sendBatch(ctx context.Context, legID int64, lb *legBuffer) erro
 		}
 	}
 	batch := lb.inflight
-	seqs := make([]int64, len(batch))
-	ats := make([]time.Time, len(batch))
-	levels := make([]string, len(batch))
-	texts := make([]string, len(batch))
-	for i, l := range batch {
-		seqs[i], ats[i], levels[i], texts[i] = l.Seq, l.At, l.Level, l.Text
-	}
-	var accepted, inserted int64
-	err := w.pool.QueryRow(ctx, insertBatchSQL, legID, batch[0].RunID, lb.inflightGn, seqs, ats, levels, texts).Scan(&accepted, &inserted)
+	accepted, err := w.storeBatch(ctx, legID, lb)
 	if err != nil {
 		return fmt.Errorf("store log batch: %w", err)
 	}
@@ -296,10 +319,9 @@ func (w *Writer) sendBatch(ctx context.Context, legID int64, lb *legBuffer) erro
 			return err
 		}
 	}
-	if accepted == 0 {
-		// The runner no longer owns the leg (or it is archived). Retrying
-		// cannot help; drop the batch.
-		slog.Warn("log batch refused: the leg moved on; dropped",
+	if !accepted {
+		// Retrying cannot help; drop the batch.
+		w.log.Warn("log batch refused: the leg moved on; dropped",
 			"run", batch[0].RunID, "leg", legID, "generation", lb.inflightGn, "lines", len(batch))
 		return nil
 	}

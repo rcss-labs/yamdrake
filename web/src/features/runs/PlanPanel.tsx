@@ -21,6 +21,29 @@ function joinNames(names: string[]) {
   return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? '')
 }
 
+interface FallbackGroup {
+  branch: string | undefined
+  version: string
+  services: string[]
+}
+
+// One group per (fallback branch, version) so each sentence names the right branch and version.
+function groupFallbacks(found: ReturnType<typeof fallbackItems>): FallbackGroup[] {
+  const groups = new Map<string, FallbackGroup>()
+  for (const { service, item } of found) {
+    const key = `${item.branch ?? ''}\u0000${service.version}`
+    const group = groups.get(key) ?? { branch: item.branch, version: service.version, services: [] }
+    if (!group.services.includes(service.name)) group.services.push(service.name)
+    groups.set(key, group)
+  }
+  return [...groups.values()]
+}
+
+function fallbackSentence(group: FallbackGroup) {
+  const from = group.branch ? `branch ${group.branch}` : 'another branch'
+  return `Env files for ${joinNames(group.services)} come from ${from} because branch v${group.version} does not exist`
+}
+
 function CheckList({ checks }: { checks: Check[] }) {
   return (
     <ul className="plan-checks">
@@ -134,10 +157,10 @@ export function PlanPanel({ run }: { run: RunDetail }) {
     )
   }
 
-  const restore = run.kind === 'restore' || plan.restore_of !== undefined
+  const restore = run.kind === 'restore' || plan.restore_of != null
   const failed = failedChecks(plan)
   const fallbacks = fallbackItems(plan)
-  const fallbackServices = [...new Set(fallbacks.map(({ service }) => service.name))]
+  const fallbackGroups = groupFallbacks(fallbacks)
   const unverified = plan.checks.filter((check) => check.status === 'not_verified')
 
   return (
@@ -156,10 +179,11 @@ export function PlanPanel({ run }: { run: RunDetail }) {
               <CheckList checks={failed} />
             </Note>
           )}
-          {fallbacks.length > 0 && (
+          {fallbackGroups.length > 0 && (
             <Note tone="warning">
-              Env files for {joinNames(fallbackServices)} come from branch {fallbacks[0]!.item.branch ?? 'dev'} because branch v
-              {fallbacks[0]!.service.version} does not exist
+              {fallbackGroups.map((group) => (
+                <p key={`${group.branch}/${group.version}`}>{fallbackSentence(group)}</p>
+              ))}
             </Note>
           )}
           {unverified.length > 0 && (

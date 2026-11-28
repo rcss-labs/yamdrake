@@ -29,8 +29,8 @@ describe('PlanPanel', () => {
     const changed = rowOf('backend-api')
     expect(within(changed).getByText('1.9.3')).toHaveClass('plan-old')
     expect(within(changed).getByText('1.9.4')).toBeInTheDocument()
-    const same = within(rowOf('billing')).getAllByText('unchanged')[0]!
-    expect(same).toHaveClass('plan-old')
+    const versionCell = within(rowOf('billing')).getAllByRole('cell')[1]!
+    expect(within(versionCell).getByText('unchanged')).toHaveClass('plan-old')
     expect(within(rowOf('billing')).queryByText('1.9.3')).not.toBeInTheDocument()
     expect(within(changed).getByText(plan.services[0]!.previous_task_definition)).toBeInTheDocument()
   })
@@ -79,6 +79,29 @@ describe('PlanPanel', () => {
     expect(
       screen.getByText('Env files for backend-api come from branch dev because branch v1.9.4 does not exist'),
     ).toBeInTheDocument()
+  })
+
+  it('writes one fallback sentence per branch and version, never mixing them', async () => {
+    const plan = mockState().plans[runIds.planned]!
+    const billing = plan.services[1]!
+    billing.version = '2.4.0'
+    billing.config[0]!.fallback = true
+    billing.config[0]!.branch = 'main'
+    await renderPlan(runIds.planned)
+    expect(
+      screen.getByText('Env files for backend-api come from branch dev because branch v1.9.4 does not exist'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('Env files for billing come from branch main because branch v2.4.0 does not exist'),
+    ).toBeInTheDocument()
+  })
+
+  it('does not invent a branch name when the plan has none', async () => {
+    const plan = mockState().plans[runIds.planned]!
+    delete plan.services[0]!.config[0]!.branch
+    await renderPlan(runIds.planned)
+    expect(screen.getByText(/Env files for backend-api come from another branch because branch v1\.9\.4/)).toBeInTheDocument()
+    expect(screen.queryByText(/branch dev/)).not.toBeInTheDocument()
   })
 
   it('shows a line for checks that could not be verified', async () => {

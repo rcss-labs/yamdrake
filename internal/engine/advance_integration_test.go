@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/internal/testutil/awsseed"
 	"github.com/rcss-labs/yamdrake/internal/wake"
 )
 
@@ -1089,5 +1091,73 @@ func TestCancelOfAClaimedLegFlagsItInsteadOfFailing(t *testing.T) {
 	got := h.legByKind(run.ID, "revalidate")
 	if got.State != "claimed" || !got.CancelRequested {
 		t.Fatalf("leg = %+v, want still claimed and flagged", got)
+	}
+}
+
+func TestCreateRunRefusedWhenAccountNotConnected(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, harnessOptions{})
+	create := func(services ...string) error {
+		_, err := h.eng.Create(ctx, h.starter, h.sourceID, testEnvironment, selection(services...), "web", false)
+		return err
+	}
+	runCount := func() int {
+		var n int
+		if err := h.pool.QueryRow(ctx, "SELECT count(*) FROM runs").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// The environment's account is not connected.
+	if _, err := h.pool.Exec(ctx, "DELETE FROM aws_accounts WHERE account_id = $1", testAWSAccount); err != nil {
+		t.Fatal(err)
+	}
+	err := create("s1")
+	if !errors.Is(err, ErrNotRunnable) || !strings.Contains(err.Error(), testAWSAccount) || !strings.Contains(err.Error(), "not connected") {
+		t.Fatalf("environment account not connected: Create = %v, want ErrNotRunnable naming %s", err, testAWSAccount)
+	}
+	if n := runCount(); n != 0 {
+		t.Fatalf("%d runs after the refusal, want 0", n)
+	}
+	awsseed.Connect(t, h.pool, testAWSAccount)
+	if err := create("s1"); err != nil {
+		t.Fatalf("after connecting the environment account: Create = %v", err)
+	}
+
+	// A selected service's ECR repository lives in another, unconnected account;
+	// an unselected service's repository does not matter.
+	const ecrAccount = "999988887777"
+	inv := spec.Inventory{
+		Environments: []spec.Environment{{Name: testEnvironment, Label: testLabel, AWSAccount: testAWSAccount}},
+		Services:     map[string]spec.Service{},
+	}
+	for _, name := range []string{"s1", "s2"} {
+		env := spec.ServiceEnv{
+			ECSService: fmt.Sprintf("arn:aws:ecs:eu-west-1:%s:service/cluster/%s-staging", testAWSAccount, name),
+			Tomls:      []spec.Toml{{Name: "app", Destination: fmt.Sprintf("s3://cfg/staging/%s.toml", name)}},
+		}
+		if name == "s1" {
+			env.ECRRepository = ecrAccount + ".dkr.ecr.eu-west-1.amazonaws.com/s1"
+		}
+		inv.Services[name] = spec.Service{Name: name, Environments: map[string]spec.ServiceEnv{testEnvironment: env}}
+	}
+	if _, err := store.ActivateSnapshot(ctx, h.pool, "invcommit2", mustJSON(t, inv), nil, h.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	before := runCount()
+	err = create("s1", "s2")
+	if !errors.Is(err, ErrNotRunnable) || !strings.Contains(err.Error(), ecrAccount) {
+		t.Fatalf("ECR account not connected: Create = %v, want ErrNotRunnable naming %s", err, ecrAccount)
+	}
+	if n := runCount(); n != before {
+		t.Fatalf("%d runs after the refusal, want %d", n, before)
+	}
+	if err := create("s2"); err != nil {
+		t.Fatalf("service without the unconnected repository: Create = %v", err)
+	}
+	awsseed.Connect(t, h.pool, ecrAccount)
+	if err := create("s1", "s2"); err != nil {
+		t.Fatalf("after connecting the ECR account: Create = %v", err)
 	}
 }

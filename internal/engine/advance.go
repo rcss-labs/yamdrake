@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/awsx"
 	"github.com/rcss-labs/yamdrake/internal/spec"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/wake"
@@ -57,6 +58,9 @@ type Deps struct {
 	Log    *slog.Logger
 	// Publisher is optional: nil means no wake-ups.
 	Publisher Publisher
+	// AWS carries the deployment's AWS settings; an endpoint override lets
+	// Create read the ECR repository URIs of a local emulator.
+	AWS awsx.Options
 }
 
 // Engine creates runs, advances them under a run row lock and carries out
@@ -67,11 +71,12 @@ type Engine struct {
 	now    func() time.Time
 	log    *slog.Logger
 	pub    Publisher
+	aws    awsx.Options
 }
 
 // New builds an Engine, filling defaults for the clock, logger and limits.
 func New(deps Deps) *Engine {
-	e := &Engine{db: deps.DB, limits: deps.Limits, now: deps.Now, log: deps.Log, pub: deps.Publisher}
+	e := &Engine{db: deps.DB, limits: deps.Limits, now: deps.Now, log: deps.Log, pub: deps.Publisher, aws: deps.AWS}
 	if e.limits == (Limits{}) {
 		e.limits = Limits{PerEnvironment: defaultLimitPerEnvironment, PerAccount: defaultLimitPerAccount}
 	}

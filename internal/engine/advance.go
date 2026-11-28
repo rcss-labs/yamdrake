@@ -71,6 +71,9 @@ type Engine struct {
 	pub    Publisher
 	// publicURL is the base of the run links in notifications.
 	publicURL string
+	// lastPruned is when the loop last deleted old runner rows and system
+	// events. Only the loop goroutine touches it.
+	lastPruned time.Time
 }
 
 // New builds an Engine, filling defaults for the clock, logger and limits.

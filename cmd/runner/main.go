@@ -129,6 +129,7 @@ func newRunner(cfg config.Runner, pool *pgxpool.Pool, sink runner.LineSink, bus 
 	q := queue.New(pool, cfg.Lease, nil) // nil: the database clock, shared by every runner and orchestrator
 	r := runner.New(q, sink, cfg.RunnerID, cfg.Concurrency, cfg.Heartbeat, cfg.Poll, log).
 		WithShutdownTimeout(cfg.ShutdownTimeout).
+		WithRegistry(pool, 0).
 		WithSettledNotifier(func(runID int64) { bus.Publish(context.Background(), wake.TopicRuns, runID) })
 	if cfg.FakeSteps && cfg.Env == "dev" {
 		fake.Register(r, fake.Options{StepTime: 2 * time.Second, SlowFor: 30 * time.Second})

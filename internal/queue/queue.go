@@ -347,6 +347,15 @@ func (q *Queue) Sweep(ctx context.Context) (requeued, unknown int, err error) {
 		return 0, 0, fmt.Errorf("sweep: mark unknown: %w", err)
 	}
 	unknown = int(tag.RowsAffected())
+	// One event per leg taken away from its runner, in the same transaction, so
+	// the count is exactly the number of expiries that were applied.
+	if requeued+unknown > 0 {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO system_events (kind, at) SELECT 'lease_expired', coalesce($1::timestamptz, now())
+			 FROM generate_series(1, $2::int)`, now, requeued+unknown); err != nil {
+			return 0, 0, fmt.Errorf("sweep: record events: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, fmt.Errorf("sweep: %w", err)
 	}

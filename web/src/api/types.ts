@@ -1106,6 +1106,8 @@ export interface ServiceEnvironmentRunning {
   cell: RunningCell
   /** The run a restore of this service in this environment would start from, if any. */
   restore_from_run_id: number | null
+  /** The folder of that run, for a folder-scoped restore grant; null with restore_from_run_id. */
+  restore_from_folder_id: number | null
 }
 
 export interface ServiceDeployment {
@@ -1143,7 +1145,7 @@ export interface ServicePage {
 
 export interface QueueRun {
   id: number
-  job_id: number
+  job_id: string
   job_name: string
   environment: string
   label: string
@@ -1192,7 +1194,7 @@ export interface SyncStatus {
 
 export interface SyncJobStatus extends SyncStatus {
   id: number
-  job_id: number
+  job_id: string
   title: string
 }
 

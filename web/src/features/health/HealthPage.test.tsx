@@ -72,7 +72,7 @@ describe('the system health page', () => {
 
   it('shows the inventory and each sync job with its state', async () => {
     answer((health) => {
-      health.sync.jobs.push({ id: 2, job_id: 2, title: 'Deploy backend', checked_at: null, error: 'repository not found', error_at: '2026-11-28T11:59:00Z' })
+      health.sync.jobs.push({ id: 2, job_id: 'deploy-backend', title: 'Deploy backend', checked_at: null, error: 'repository not found', error_at: '2026-11-28T11:59:00Z' })
     })
     show()
     const sync = within(await section('Sync'))

@@ -745,8 +745,8 @@ func TestShutdownReleasesUnfinishedLegs(t *testing.T) {
 		t.Fatalf("Run = %v, want nil on shutdown", err)
 	}
 	got := h.leg(leg.ID)
-	if got.State != "queued" || got.RunnerID != "" || got.LeaseUntil != nil || got.Attempt != 1 {
-		t.Errorf("leg = state %s runner %q lease %v attempt %d; want it queued, unowned and unleased with its attempt kept",
+	if got.State != "queued" || got.RunnerID != "runner-1" || got.LeaseUntil != nil || got.Attempt != 1 {
+		t.Errorf("leg = state %s runner %q lease %v attempt %d; want it queued, unleased, last holder and attempt kept",
 			got.State, got.RunnerID, got.LeaseUntil, got.Attempt)
 	}
 }
@@ -806,9 +806,9 @@ func TestSecondAttemptWritesContinuationLine(t *testing.T) {
 			warnings = append(warnings, e.text)
 		}
 	}
-	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "attempt 2: a previous attempt") ||
-		!strings.HasSuffix(warnings[0], "did not finish; continuing from its last checkpoint") {
-		t.Errorf("warn lines = %q, want the attempt 2 continuation line", warnings)
+	const want = "attempt 2: a previous attempt by runner gone did not finish; continuing from its last checkpoint"
+	if len(warnings) != 1 || warnings[0] != want {
+		t.Errorf("warn lines = %q, want exactly %q", warnings, want)
 	}
 	r, _ := resumed.Load().(resumeResult)
 	if !r.found || r.step != 2 || r.err != nil {

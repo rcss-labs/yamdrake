@@ -45,6 +45,10 @@ type Claimed struct {
 	Leg  store.Leg
 	Run  store.Run
 	Step *store.RunStep // nil for resolve and revalidate legs
+	// PreviousRunnerID is the runner that held the leg before this claim: ""
+	// on a first attempt. Sweep and Release keep the last holder's name for
+	// this, so a runner can say whose attempt did not finish.
+	PreviousRunnerID string
 }
 
 // Outcome is how a leg ended. State is succeeded, failed, unknown or cancelled.
@@ -91,13 +95,17 @@ func (q *Queue) Claim(ctx context.Context, runnerID string) (*Claimed, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// The CTE picks and locks the row and reads the runner_id it had before
+	// the UPDATE overwrites it.
 	var legID int64
+	var previousRunner string
 	err = tx.QueryRow(ctx,
-		`UPDATE legs SET state = 'claimed', generation = generation + 1, attempt = attempt + 1,
-			runner_id = $1, lease_until = coalesce($2::timestamptz, now()) + make_interval(secs => $3::float8)
-		 WHERE state = 'queued' AND id = (SELECT id FROM legs WHERE state = 'queued'
+		`WITH picked AS (SELECT id, runner_id AS previous FROM legs WHERE state = 'queued'
 			ORDER BY queued_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
-		 RETURNING id`, runnerID, q.at(), q.leaseSeconds()).Scan(&legID)
+		 UPDATE legs SET state = 'claimed', generation = generation + 1, attempt = attempt + 1,
+			runner_id = $1, lease_until = coalesce($2::timestamptz, now()) + make_interval(secs => $3::float8)
+		 FROM picked WHERE legs.id = picked.id AND legs.state = 'queued'
+		 RETURNING legs.id, picked.previous`, runnerID, q.at(), q.leaseSeconds()).Scan(&legID, &previousRunner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -113,7 +121,7 @@ func (q *Queue) Claim(ctx context.Context, runnerID string) (*Claimed, error) {
 	if err != nil {
 		return nil, fmt.Errorf("claim: %w", err)
 	}
-	c := &Claimed{Leg: leg, Run: run}
+	c := &Claimed{Leg: leg, Run: run, PreviousRunnerID: previousRunner}
 	if leg.StepID != nil {
 		steps, err := store.StepsOfRun(ctx, tx, leg.RunID)
 		if err != nil {
@@ -187,14 +195,14 @@ func (q *Queue) Complete(ctx context.Context, legID, generation int64, o Outcome
 		legID, generation, o.State, jsonOrNull(o.Result), o.FailureShort, o.FailureDetail, q.at())
 }
 
-// Release gives the leg back to the queue: state queued, no runner, no lease.
-// Attempt, resume data and operations are kept, and so is queued_at: a leg a
+// Release gives the leg back to the queue: state queued, no lease. runner_id
+// keeps the last holder (Claimed.PreviousRunnerID). Attempt, resume data and operations are kept, and so is queued_at: a leg a
 // runner handed back gracefully keeps its place at the front. (Sweep, by
 // contrast, sets queued_at to now: a leg whose runner vanished goes to the
 // back, so a leg that keeps killing runners does not starve the others.)
 func (q *Queue) Release(ctx context.Context, legID, generation int64) error {
 	return q.guarded(ctx, "release",
-		`UPDATE legs SET state = 'queued', runner_id = '', lease_until = NULL WHERE id = $1 AND `+heldBy,
+		`UPDATE legs SET state = 'queued', lease_until = NULL WHERE id = $1 AND `+heldBy,
 		legID, generation)
 }
 
@@ -323,7 +331,7 @@ func (q *Queue) Sweep(ctx context.Context) (requeued, unknown int, err error) {
 	now := q.at()
 	expired := `state IN ('claimed', 'running') AND lease_until < coalesce($1::timestamptz, now())`
 	tag, err := tx.Exec(ctx,
-		`UPDATE legs SET state = 'queued', runner_id = '', lease_until = NULL,
+		`UPDATE legs SET state = 'queued', lease_until = NULL,
 			queued_at = coalesce($1::timestamptz, now()), lease_expiries = lease_expiries + 1
 		 WHERE `+expired+` AND lease_expiries + 1 < $2`, now, MaxLeaseExpiries)
 	if err != nil {

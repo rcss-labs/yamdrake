@@ -641,7 +641,7 @@ func TestSweepRequeuesThenMarksUnknownAtFiveAttempts(t *testing.T) {
 		}
 		got := e.get(leg.ID)
 		if attempt < 5 {
-			if requeued != 1 || unknown != 0 || got.State != "queued" || got.RunnerID != "" || got.LeaseUntil != nil ||
+			if requeued != 1 || unknown != 0 || got.State != "queued" || got.RunnerID != fmt.Sprintf("runner-%d", attempt) || got.LeaseUntil != nil ||
 				got.Attempt != attempt || got.LeaseExpiries != attempt || string(got.Resume) != `{"cp": 1}` {
 				t.Fatalf("attempt %d: sweep = %d, %d; leg %+v", attempt, requeued, unknown, got)
 			}
@@ -740,7 +740,7 @@ func TestReleaseReturnsLegToQueueKeepingResume(t *testing.T) {
 		t.Fatalf("Release: %v", err)
 	}
 	got := e.get(c.Leg.ID)
-	if got.State != "queued" || got.RunnerID != "" || got.LeaseUntil != nil || got.Attempt != 1 || got.LeaseExpiries != 0 || got.Generation != 1 || string(got.Resume) != `{"cp": 7}` {
+	if got.State != "queued" || got.RunnerID != "r1" || got.LeaseUntil != nil || got.Attempt != 1 || got.LeaseExpiries != 0 || got.Generation != 1 || string(got.Resume) != `{"cp": 7}` {
 		t.Fatalf("leg after Release = %+v", got)
 	}
 	if ops, _ := e.q.Ops(ctx, c.Leg.ID); len(ops) != 1 || ops[0].ID != op.ID {
@@ -906,5 +906,37 @@ func TestNilClockUsesDatabaseTime(t *testing.T) {
 	}
 	if requeued, _, err := q.Sweep(ctx); err != nil || requeued != 1 {
 		t.Fatalf("Sweep = %d, %v; want 1 requeued", requeued, err)
+	}
+}
+
+// R23: a leg keeps its last holder's name while queued, and the next claim says
+// who that was, so the runner can tell a person which attempt did not finish.
+func TestClaimReportsPreviousRunner(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	e := newEnv(t)
+	e.addLeg("svc", e.clock.Now())
+
+	first := e.claim("old")
+	if first.PreviousRunnerID != "" {
+		t.Fatalf("first claim PreviousRunnerID = %q, want empty", first.PreviousRunnerID)
+	}
+	e.clock.Advance(testLease + time.Second)
+	if requeued, _, err := e.q.Sweep(ctx); err != nil || requeued != 1 {
+		t.Fatalf("Sweep = %d, %v", requeued, err)
+	}
+	if got := e.get(first.Leg.ID); got.State != "queued" || got.RunnerID != "old" || got.LeaseUntil != nil {
+		t.Fatalf("swept leg = %+v, want queued, last holder kept, no lease", got)
+	}
+	second := e.claim("middle")
+	if second.PreviousRunnerID != "old" || second.Leg.RunnerID != "middle" {
+		t.Fatalf("after a sweep: PreviousRunnerID = %q, RunnerID = %q; want old and middle", second.PreviousRunnerID, second.Leg.RunnerID)
+	}
+	if err := e.q.Release(ctx, second.Leg.ID, second.Leg.Generation); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	third := e.claim("last")
+	if third.PreviousRunnerID != "middle" {
+		t.Fatalf("after a release: PreviousRunnerID = %q, want middle", third.PreviousRunnerID)
 	}
 }

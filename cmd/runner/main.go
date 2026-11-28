@@ -88,7 +88,7 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 // with plans 5 and 6, so until then a runner without fakes fails every leg it
 // claims with "no executor for this step".
 func newRunner(cfg config.Runner, pool *pgxpool.Pool, log *slog.Logger) *runner.Runner {
-	q := queue.New(pool, cfg.Lease, time.Now)
+	q := queue.New(pool, cfg.Lease, nil) // nil: the database clock, shared by every runner and orchestrator
 	r := runner.New(q, discardSink{}, cfg.RunnerID, cfg.Concurrency, cfg.Heartbeat, cfg.Poll, log).
 		WithShutdownTimeout(cfg.ShutdownTimeout)
 	if cfg.FakeSteps && cfg.Env == "dev" {

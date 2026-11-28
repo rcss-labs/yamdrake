@@ -210,9 +210,8 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 	}
 	env := newLegEnv(r.q, r.sink, leg, log)
 	if leg.Attempt > 1 {
-		// The queue clears the previous runner's name when it takes a leg back,
-		// so the line cannot say who it was.
-		env.Log("warn", fmt.Sprintf("attempt %d: a previous attempt did not finish; continuing from its last checkpoint", leg.Attempt))
+		env.Log("warn", fmt.Sprintf("attempt %d: a previous attempt by runner %s did not finish; continuing from its last checkpoint",
+			leg.Attempt, claimed.PreviousRunnerID))
 	}
 
 	stopHeartbeat := r.startHeartbeat(ctx, cancel, leg.ID, leg.Generation, log)

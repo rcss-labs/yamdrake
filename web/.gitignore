@@ -1,3 +1,6 @@
 node_modules
 dist
 coverage
+.e2e-bin
+playwright-report
+test-results

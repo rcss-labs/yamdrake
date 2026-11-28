@@ -121,6 +121,9 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 		list("GET /api/v1/admin/github-connections", "/api/v1/admin/github-connections", reflect.TypeFor[struct {
 			Connections []connectionResponse `json:"connections"`
 		}]()),
+		list("GET /api/v1/admin/aws-accounts", "/api/v1/admin/aws-accounts", reflect.TypeFor[struct {
+			Accounts []awsAccountResponse `json:"accounts"`
+		}]()),
 		list("GET /api/v1/admin/users", "/api/v1/admin/users", reflect.TypeFor[struct {
 			Users []userResponse `json:"users"`
 		}]()),
@@ -182,6 +185,7 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 	created := h.registerJob(folder)
 	jobID := itoa(int64(created["id"].(float64)))
 	h.mustDo("POST", "/api/v1/admin/github-connections", map[string]any{"owner": "acme", "method": "token", "token": "ghp_x"}, http.StatusCreated)
+	h.mustDo("POST", "/api/v1/admin/aws-accounts", awsRoleBody("empty-env", "999999999999"), http.StatusCreated)
 	h.newUser("nogroups") // a user who belongs to no group
 	group := h.createGroupVia("Operators", false)
 	if err := store.SetIDPMapping(ctx, h.pool, "idp-operators", group); err != nil {

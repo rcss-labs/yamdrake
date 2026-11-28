@@ -1,6 +1,7 @@
 package awsx
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -143,5 +144,20 @@ func TestParseS3(t *testing.T) {
 				t.Errorf("error %q does not name the value %q", err, in)
 			}
 		})
+	}
+}
+
+func TestBaseConfigNeedsNoCredentialsAndAppliesTheEndpoint(t *testing.T) {
+	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("AWS_CONFIG_FILE", "/nonexistent")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent")
+	cfg, err := BaseConfig(context.Background(), Options{EndpointURL: "http://localhost:4577"})
+	if err != nil {
+		t.Fatalf("BaseConfig: %v", err)
+	}
+	if cfg.BaseEndpoint == nil || *cfg.BaseEndpoint != "http://localhost:4577" {
+		t.Errorf("BaseEndpoint = %v", cfg.BaseEndpoint)
 	}
 }

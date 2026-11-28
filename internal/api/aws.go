@@ -1,0 +1,326 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/rcss-labs/yamdrake/internal/audit"
+	"github.com/rcss-labs/yamdrake/internal/store"
+)
+
+// Encryption purposes of the two secret access keys of an AWS account. They
+// are separate so the orchestrator, which only ever decrypts the discovery key,
+// cannot be made to hand out a deployment key (and KMS enforces it).
+const (
+	awsDiscoveryPurpose = "aws-discovery"
+	awsDeployPurpose    = "aws-deploy"
+)
+
+const awsTestTimeout = 20 * time.Second
+
+var (
+	awsAccountIDPattern = regexp.MustCompile(`^[0-9]{12}$`)
+	awsRoleARNPattern   = regexp.MustCompile(`^arn:aws(?:-[a-z]+)*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$`)
+	awsExternalIDRegexp = regexp.MustCompile(`^[A-Za-z0-9+=,.@:/_-]+$`)
+	awsAccessKeyPattern = regexp.MustCompile(`^[A-Za-z0-9]{12,128}$`)
+)
+
+// awsCredentialRequest is what an administrator submits for one credential.
+// secret_access_key is write-only: no response or audit entry has it.
+type awsCredentialRequest struct {
+	Method          string `json:"method"`
+	RoleARN         string `json:"role_arn"`
+	ExternalID      string `json:"external_id"`
+	AccessKeyID     string `json:"access_key_id"`
+	SecretAccessKey string `json:"secret_access_key"`
+}
+
+type awsAccountRequest struct {
+	Name      string               `json:"name"`
+	AccountID string               `json:"account_id"`
+	Discovery awsCredentialRequest `json:"discovery"`
+	Deploy    awsCredentialRequest `json:"deploy"`
+}
+
+// check validates one credential and returns the secret to encrypt (nil for
+// the role method). Messages never repeat a submitted value.
+func (c awsCredentialRequest) check(label string) ([]byte, string) {
+	switch c.Method {
+	case "role":
+		switch {
+		case !awsRoleARNPattern.MatchString(c.RoleARN):
+			return nil, label + ` needs role_arn, an IAM role ARN such as arn:aws:iam::123456789012:role/name`
+		case c.ExternalID != "" && (len(c.ExternalID) > 1224 || !awsExternalIDRegexp.MatchString(c.ExternalID)):
+			return nil, label + " external_id has characters AWS does not accept or is too long"
+		case c.AccessKeyID != "" || c.SecretAccessKey != "":
+			return nil, label + ` method "role" takes only role_arn and external_id`
+		}
+		return nil, ""
+	case "key":
+		switch {
+		case !awsAccessKeyPattern.MatchString(c.AccessKeyID):
+			return nil, label + " needs access_key_id (12 to 128 letters and digits)"
+		case c.SecretAccessKey == "" || utf8.RuneCountInString(c.SecretAccessKey) > 512 || strings.ContainsAny(c.SecretAccessKey, " \t\r\n"):
+			return nil, label + " needs secret_access_key (no spaces, at most 512 characters)"
+		case c.RoleARN != "" || c.ExternalID != "":
+			return nil, label + ` method "key" takes only access_key_id and secret_access_key`
+		}
+		return []byte(c.SecretAccessKey), ""
+	default:
+		return nil, label + ` method must be "role" or "key"`
+	}
+}
+
+func (c awsCredentialRequest) credential() store.AWSCredential {
+	return store.AWSCredential{Method: c.Method, RoleARN: c.RoleARN, ExternalID: c.ExternalID, AccessKeyID: c.AccessKeyID}
+}
+
+// awsCredentialView is what the API shows of a credential: never a secret, and
+// a key id only by its last 4 characters.
+type awsCredentialView struct {
+	Method           string `json:"method"`
+	RoleARN          string `json:"role_arn"`
+	ExternalID       string `json:"external_id"`
+	AccessKeyIDLast4 string `json:"access_key_id_last4"`
+}
+
+func credentialView(c store.AWSCredential) awsCredentialView {
+	last4 := c.AccessKeyID
+	if len(last4) > 4 {
+		last4 = last4[len(last4)-4:]
+	}
+	return awsCredentialView{Method: c.Method, RoleARN: c.RoleARN, ExternalID: c.ExternalID, AccessKeyIDLast4: last4}
+}
+
+type awsAccountResponse struct {
+	ID           int64             `json:"id"`
+	Name         string            `json:"name"`
+	AccountID    string            `json:"account_id"`
+	Discovery    awsCredentialView `json:"discovery"`
+	Deploy       awsCredentialView `json:"deploy"`
+	Environments []string          `json:"environments"`
+	CreatedAt    time.Time         `json:"created_at"`
+}
+
+// environmentsByAccount maps an AWS account id to the names of the environments
+// of the active inventory that use it.
+func (s *server) environmentsByAccount(ctx context.Context) (map[string][]string, error) {
+	_, inventory, _, active, err := s.inventoryView(ctx)
+	if err != nil || !active {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, environment := range inventory.Environments {
+		out[environment.AWSAccount] = append(out[environment.AWSAccount], environment.Name)
+	}
+	return out, nil
+}
+
+func awsAccountView(a store.AWSAccount, environments map[string][]string) awsAccountResponse {
+	names := append([]string{}, environments[a.AccountID]...)
+	return awsAccountResponse{ID: a.ID, Name: a.Name, AccountID: a.AccountID,
+		Discovery: credentialView(a.Discovery), Deploy: credentialView(a.Deploy), Environments: names, CreatedAt: a.CreatedAt}
+}
+
+func (s *server) listAWSAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts, err := store.ListAWSAccounts(r.Context(), s.Pool)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	environments, err := s.environmentsByAccount(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	out := make([]awsAccountResponse, 0, len(accounts))
+	for _, a := range accounts {
+		out = append(out, awsAccountView(a, environments))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+}
+
+func (s *server) createAWSAccount(w http.ResponseWriter, r *http.Request) {
+	var req awsAccountRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.AccountID = strings.TrimSpace(req.AccountID)
+	switch {
+	case req.Name == "" || utf8.RuneCountInString(req.Name) > 100:
+		invalid(w, "name is required and at most 100 characters")
+		return
+	case !awsAccountIDPattern.MatchString(req.AccountID):
+		invalid(w, "account_id must be 12 digits")
+		return
+	}
+	discoverySecret, problem := req.Discovery.check("discovery")
+	if problem == "" {
+		var deploySecret []byte
+		deploySecret, problem = req.Deploy.check("deploy")
+		if problem == "" {
+			s.storeAWSAccount(w, r, req, discoverySecret, deploySecret)
+			return
+		}
+	}
+	invalid(w, problem)
+}
+
+func (s *server) storeAWSAccount(w http.ResponseWriter, r *http.Request, req awsAccountRequest, discoverySecret, deploySecret []byte) {
+	var err error
+	if discoverySecret, err = s.sealAWSSecret(r.Context(), awsDiscoveryPurpose, discoverySecret); err != nil {
+		s.internalError(w, r, fmt.Errorf("encrypt discovery secret: %w", err))
+		return
+	}
+	if deploySecret, err = s.sealAWSSecret(r.Context(), awsDeployPurpose, deploySecret); err != nil {
+		s.internalError(w, r, fmt.Errorf("encrypt deployment secret: %w", err))
+		return
+	}
+	var created store.AWSAccount
+	err = s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+		var err error
+		created, err = store.CreateAWSAccount(ctx, tx, store.AWSAccount{
+			Name: req.Name, AccountID: req.AccountID, Discovery: req.Discovery.credential(), Deploy: req.Deploy.credential(),
+		}, discoverySecret, deploySecret)
+		// Never a secret or a key id: only what identifies the account.
+		return audit.Event{Action: "aws_account.create", TargetType: "aws_account", TargetID: strconv.FormatInt(created.ID, 10),
+			Detail: map[string]any{"name": req.Name, "account_id": req.AccountID,
+				"discovery_method": req.Discovery.Method, "deploy_method": req.Deploy.Method}}, err
+	})
+	switch {
+	case errors.Is(err, store.ErrDuplicate):
+		writeError(w, http.StatusConflict, codeConflict, "an account with that name or account id already exists")
+		return
+	case err != nil:
+		s.internalError(w, r, err)
+		return
+	}
+	environments, err := s.environmentsByAccount(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, awsAccountView(created, environments))
+}
+
+// sealAWSSecret encrypts a secret under purpose; nil (the role method) stays nil.
+func (s *server) sealAWSSecret(ctx context.Context, purpose string, plaintext []byte) ([]byte, error) {
+	if plaintext == nil {
+		return nil, nil
+	}
+	return s.Cipher.Encrypt(ctx, purpose, plaintext)
+}
+
+// awsTestResult is the answer of the connection test. ErrorCode is the AWS
+// error code (or AccountMismatch), never a message from AWS or a secret.
+type awsTestResult struct {
+	OK        bool   `json:"ok"`
+	ErrorCode string `json:"error_code"`
+	Message   string `json:"message"`
+}
+
+func (s *server) testAWSAccount(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		notFound(w, "AWS account")
+		return
+	}
+	ctx := r.Context()
+	account, err := store.AWSAccountByID(ctx, s.Pool, id)
+	if errors.Is(err, store.ErrNotFound) {
+		notFound(w, "AWS account")
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	// Only the discovery secret is ever decrypted here, under its own purpose.
+	var secret []byte
+	if account.Discovery.Method == "key" {
+		ciphertext, err := store.DiscoverySecret(ctx, s.Pool, account.AccountID)
+		if err == nil {
+			secret, err = s.Cipher.Decrypt(ctx, awsDiscoveryPurpose, ciphertext)
+		}
+		if err != nil {
+			s.internalError(w, r, fmt.Errorf("read discovery secret: %w", err))
+			return
+		}
+	}
+	result := s.checkAWSDiscovery(ctx, account, string(secret))
+	if err := s.recordAudit(ctx, s.Pool, r, audit.Event{Action: "aws_account.test", TargetType: "aws_account", TargetID: strconv.FormatInt(account.ID, 10),
+		Detail: map[string]any{"account_id": account.AccountID, "ok": result.OK, "error_code": result.ErrorCode}}); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// checkAWSDiscovery signs in with the discovery credential (a role is assumed
+// from the orchestrator's own credentials, with the external id) and checks
+// that GetCallerIdentity answers with the account on the row.
+func (s *server) checkAWSDiscovery(ctx context.Context, account store.AWSAccount, secret string) awsTestResult {
+	ctx, cancel := context.WithTimeout(ctx, awsTestTimeout)
+	defer cancel()
+	cfg := s.AWSConfig.Copy()
+	if cfg.Region == "" {
+		cfg.Region = "us-east-1" // STS answers from any region
+	}
+	credential := account.Discovery
+	switch credential.Method {
+	case "key":
+		cfg.Credentials = credentials.NewStaticCredentialsProvider(credential.AccessKeyID, secret, "")
+	case "role":
+		input := &sts.AssumeRoleInput{
+			RoleArn: aws.String(credential.RoleARN), RoleSessionName: aws.String("yumdrake-connection-test"), DurationSeconds: aws.Int32(900),
+		}
+		if credential.ExternalID != "" {
+			input.ExternalId = aws.String(credential.ExternalID)
+		}
+		assumed, err := sts.NewFromConfig(cfg).AssumeRole(ctx, input)
+		if err != nil {
+			return awsFailure(err)
+		}
+		if assumed.Credentials == nil {
+			return awsTestResult{ErrorCode: "RequestFailed", Message: "AWS returned no credentials for the role"}
+		}
+		cfg.Credentials = credentials.NewStaticCredentialsProvider(
+			aws.ToString(assumed.Credentials.AccessKeyId), aws.ToString(assumed.Credentials.SecretAccessKey), aws.ToString(assumed.Credentials.SessionToken))
+	}
+	identity, err := sts.NewFromConfig(cfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return awsFailure(err)
+	}
+	if got := aws.ToString(identity.Account); got != account.AccountID {
+		return awsTestResult{ErrorCode: "AccountMismatch", Message: "The credential belongs to another account than " + account.AccountID}
+	}
+	return awsTestResult{OK: true, Message: "Connected to account " + account.AccountID}
+}
+
+// awsFailure reports only the AWS error code: the text of an SDK error can carry
+// request details.
+func awsFailure(err error) awsTestResult {
+	code := "RequestFailed"
+	var apiErr smithy.APIError
+	switch {
+	case errors.As(err, &apiErr):
+		code = apiErr.ErrorCode()
+	case errors.Is(err, context.DeadlineExceeded):
+		code = "Timeout"
+	}
+	return awsTestResult{ErrorCode: code, Message: "AWS did not accept the credential: " + code}
+}

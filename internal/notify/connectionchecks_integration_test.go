@@ -55,6 +55,26 @@ func TestSlackDeliveryRecordsConnectionCheck(t *testing.T) {
 			t.Fatalf("check = %+v, want OK recorded and no error for a message-level refusal", c)
 		}
 	})
+	t.Run("service unavailable records the connection as failed", func(t *testing.T) {
+		t.Parallel()
+		f := newSenderFixture(t)
+		enqueue(t, f.pool, f.runs.newRun(t), "started", f.clock.now())
+		f.slack.set(func(post) (int, string, string) { return 200, "", `{"ok":false,"error":"service_unavailable"}` })
+		f.deliver(t)
+		if c := check(t, f); c.LastErrorAt == nil || c.LastErrorCode != "service_unavailable" {
+			t.Fatalf("check = %+v, want service_unavailable recorded as the error", c)
+		}
+	})
+	t.Run("invalid response records the connection as failed", func(t *testing.T) {
+		t.Parallel()
+		f := newSenderFixture(t)
+		enqueue(t, f.pool, f.runs.newRun(t), "started", f.clock.now())
+		f.slack.set(func(post) (int, string, string) { return 200, "", `{"ok":false,"error":"invalid_response"}` })
+		f.deliver(t)
+		if c := check(t, f); c.LastErrorAt == nil || c.LastErrorCode != "invalid_response" {
+			t.Fatalf("check = %+v, want invalid_response recorded as the error", c)
+		}
+	})
 	t.Run("a server error records the connection as failed", func(t *testing.T) {
 		t.Parallel()
 		f := newSenderFixture(t)

@@ -294,10 +294,19 @@ func (s *Sender) recordSlackOK(ctx context.Context) {
 	}
 }
 
+// messageRefusalCodes are Slack codes that refuse this one message; any other ok:false is a connection fault.
+var messageRefusalCodes = map[string]bool{
+	"channel_not_found": true,
+	"not_in_channel":    true,
+	"is_archived":       true,
+	"msg_too_long":      true,
+	"no_text":           true,
+}
+
 // messageRefused reports whether Slack answered normally and refused only this message.
 func messageRefused(err error) bool {
 	var se *SlackError
-	return errors.As(err, &se) && se.Status == http.StatusOK && se.Code != "invalid_response"
+	return errors.As(err, &se) && se.Status == http.StatusOK && messageRefusalCodes[se.Code]
 }
 
 // recordPostFailure marks the connection OK when Slack refused only this message,

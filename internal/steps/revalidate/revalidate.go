@@ -31,6 +31,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
@@ -202,7 +203,13 @@ func (r *revalidation) service(ctx context.Context, s manifest.Service) {
 	} else {
 		r.unchecked(name, "the service identifier in the manifest is not usable")
 	}
-	r.image(ctx, s, &region)
+	if s.TargetTaskDefinition != "" {
+		// A restore puts the service on a task definition that exists already:
+		// that is what must still be usable, not an image found by digest.
+		r.targetTaskDefinition(ctx, s, region)
+	} else {
+		r.image(ctx, s, &region)
+	}
 	for _, item := range s.Config {
 		r.destination(ctx, s, item, region)
 		r.storedCopy(ctx, name, item.Name, "new", item.ArtifactKey, item.SHA256)
@@ -248,6 +255,35 @@ func (r *revalidation) taskDefinition(ctx context.Context, s manifest.Service, r
 		r.changed(s.Name, "service %s runs %s now; it ran %s at planning time", ref.Service, found.taskDefinition, s.PreviousTaskDefinition)
 	default:
 		r.ok(s.Name, "service still runs %s", s.PreviousTaskDefinition)
+	}
+}
+
+// targetTaskDefinition checks that the task definition a restore goes back to
+// is still registered and ACTIVE.
+func (r *revalidation) targetTaskDefinition(ctx context.Context, s manifest.Service, region string) {
+	if region == "" {
+		r.unchecked(s.Name, "the region of the target task definition is unknown")
+		return
+	}
+	clients, err := r.clientsFor(ctx, region)
+	if err != nil {
+		r.unchecked(s.Name, resolve.ErrorDetail("sign-in", err))
+		return
+	}
+	out, err := clients.ECS.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String(s.TargetTaskDefinition)})
+	switch {
+	case resolve.ErrorCode(err) == "ClientException": // what ECS answers for a task definition it does not know
+		r.changed(s.Name, "task definition %s to restore no longer exists", s.TargetTaskDefinition)
+	case err != nil:
+		r.unchecked(s.Name, resolve.ErrorDetail("ecs:DescribeTaskDefinition", err))
+	case out.TaskDefinition == nil || out.TaskDefinition.Status != ecstypes.TaskDefinitionStatusActive:
+		status := "missing"
+		if out.TaskDefinition != nil {
+			status = string(out.TaskDefinition.Status)
+		}
+		r.changed(s.Name, "task definition %s to restore is now %s, not ACTIVE", s.TargetTaskDefinition, status)
+	default:
+		r.ok(s.Name, "task definition %s to restore is still ACTIVE", s.TargetTaskDefinition)
 	}
 }
 

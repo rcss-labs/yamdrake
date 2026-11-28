@@ -25,6 +25,12 @@ import (
 // resolving with a snapshot of the job. The resolve leg is queued; the run
 // becomes planned (or, with autoStart, moves on) when it succeeds.
 func (e *Engine) Create(ctx context.Context, p auth.Principal, jobSourceID int64, envName string, sel Selection, via string, autoStart bool) (store.Run, error) {
+	return e.create(ctx, p, jobSourceID, envName, sel, via, autoStart, nil)
+}
+
+// create is Create for a run that may follow another (a re-run of failed
+// services): a non-nil parentRunID is stored on the run and named in its audit entry.
+func (e *Engine) create(ctx context.Context, p auth.Principal, jobSourceID int64, envName string, sel Selection, via string, autoStart bool, parentRunID *int64) (store.Run, error) {
 	source, err := store.GetJobSource(ctx, e.db, jobSourceID)
 	if err != nil {
 		return store.Run{}, fmt.Errorf("create run: %w", err)
@@ -78,7 +84,7 @@ func (e *Engine) Create(ctx context.Context, p auth.Principal, jobSourceID int64
 		Environment: envName, Label: environment.Label, AWSAccount: environment.AWSAccount, FolderID: source.FolderID,
 		Selection: selectionJSON, LockResources: built.Resources,
 		ApprovalRequired: needsApproval(job, environment.Label), AutoStart: autoStart,
-		State: "resolving", RequestedBy: p.UserID, Via: via, CreatedAt: now,
+		State: "resolving", RequestedBy: p.UserID, Via: via, CreatedAt: now, ParentRunID: parentRunID,
 	}
 
 	var created store.Run
@@ -91,9 +97,12 @@ func (e *Engine) Create(ctx context.Context, p auth.Principal, jobSourceID int64
 			fmt.Sprintf("Run created by %s for %s in %s; working out the plan.", displayName(p), job.ID, envName), now); err != nil {
 			return err
 		}
+		detail := map[string]any{"job_id": job.ID, "environment": envName, "via": via, "auto_start": autoStart, "approval_required": created.ApprovalRequired}
+		if parentRunID != nil {
+			detail["rerun_of"] = *parentRunID
+		}
 		return audit.Record(ctx, tx, &p, now, audit.Event{
-			Action: "run.create", TargetType: "run", TargetID: fmt.Sprint(created.ID),
-			Detail: map[string]any{"job_id": job.ID, "environment": envName, "via": via, "auto_start": autoStart, "approval_required": created.ApprovalRequired},
+			Action: "run.create", TargetType: "run", TargetID: fmt.Sprint(created.ID), Detail: detail,
 		})
 	})
 	if err != nil {

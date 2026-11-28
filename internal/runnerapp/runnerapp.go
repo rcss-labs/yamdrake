@@ -106,6 +106,7 @@ func resolveDeps(cfg config.Runner, pool *pgxpool.Pool, id identity, log *slog.L
 			}
 			return inventory, nil
 		},
-		Options: cfg.AWS,
+		SourceRun: func(ctx context.Context, runID int64) (store.Run, error) { return store.GetRun(ctx, pool, runID) },
+		Options:   cfg.AWS,
 	}
 }

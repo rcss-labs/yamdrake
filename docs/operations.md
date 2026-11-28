@@ -32,7 +32,44 @@ docker run --rm -v yumdrake_log-archive:/v alpine:3.22.2 sh -c 'rm -rf /v/* /v/.
 
 ### Upgrade check
 
-Recorded by the whole-system check.
+Done by hand on 2026-11-28, once, with the images of the merge base with `main`
+(`c04a051`, schema up to migration 00008) as `prev` and this branch as `next`.
+CI does not repeat it; repeat it before a release that adds a migration.
+
+What was done:
+
+1. `docker build` both images from each tree as `yumdrake-upgrade/yumdrake-{orchestrator,runner}:{prev,next}`,
+   and the demo helper from this branch as `:next` (it serves the fake GitHub and seeds the admin, the
+   jobs and the inventory, the cheapest way to get a working system).
+2. `docker compose -p yumdrake-upgrade-check` with `deploy/compose/compose.yaml`, `compose.demo.yaml`
+   (fake steps, `YUMDRAKE_ENV=dev`, the fake GitHub), plain HTTP on port 18480, a throwaway env file
+   and a small override (`pull_policy: never`, demo helper pinned to `:next`), at `YUMDRAKE_VERSION=prev`.
+3. Signed in as the admin and started a run of `deploy-backend-api` in `dev` with version
+   `v1.4.0-slow` (a fake step that takes 30 seconds).
+4. Set `YUMDRAKE_VERSION=next` and ran `up -d --no-build --wait` (38 seconds to all healthy).
+5. `down -v --remove-orphans` for that project only, removed the temporary worktree and the images.
+
+Seen:
+
+- Before: migrations 0 to 8 applied. After: 0 to 8 and 10, each once (`goose_db_version`; 00009
+  does not exist on this branch). The orchestrator log shows only `applying migrations`, not the
+  version numbers, so the table is the evidence.
+- All five services healthy after the switch; the runner logged `waiting for schema` (want 10) until
+  the new orchestrator had migrated, then started.
+- The run was in flight when the services were replaced. The new runner took the leg over as
+  attempt 2, and because the fake steps keep their pretend world in memory, which a restart loses, it
+  could not see the change and settled the leg `unknown`. The run ended `needs_reconciliation`: not
+  lost, and waiting for a person, which is the designed outcome for an interrupted change.
+- The admin signed in with the same password after the upgrade.
+
+Limits and finding:
+
+- The `prev` images read no Valkey password (that setting arrived with the Compose setup), so the
+  `prev` phase ran Valkey without `requirepass` through an extra override, and the switch to `next`
+  recreated Valkey with the password. A real upgrade from a release built before this
+  `compose.yaml` therefore does not exist; the next upgrade (from a release that already runs
+  under this file) has the password on both sides.
+- No real steps and no AWS: the check ran on fake steps only.
 
 ## Backup and restore
 

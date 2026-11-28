@@ -6,6 +6,28 @@ DevOps describe jobs and inventory in YAML. QA, developers and DevOps run those 
 
 See the [design spec](docs/superpowers/specs/2026-11-27-yumdrake-design.md).
 
+## Try it
+
+With Docker and Compose installed, from the repository root:
+
+```sh
+make demo        # builds and starts the demo (the first build takes a few minutes)
+```
+
+Open http://localhost:18280 and sign in as one of these:
+
+| Person | Email | Password |
+| --- | --- | --- |
+| Admin | `admin@demo.yumdrake.test` | `demo-admin-password` |
+| Deployer | `deployer@demo.yumdrake.test` | `demo-deployer-password` |
+| Viewer | `viewer@demo.yumdrake.test` | `demo-viewer-password` |
+
+```sh
+make demo-down   # stop it and delete its data
+```
+
+The demo runs on fake steps that change nothing, and it refuses to run anywhere but localhost. To run Yumdrake for real on one host, see [deploy/compose/README.md](deploy/compose/README.md); for ECS, see [deploy/terraform/example/README.md](deploy/terraform/example/README.md).
+
 ## Prerequisites
 
 - Go 1.26

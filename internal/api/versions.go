@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/running"
@@ -22,6 +24,26 @@ type VersionLister interface {
 type RunningReader interface {
 	Matrix(ctx context.Context, inv spec.Inventory) (running.Matrix, error)
 	MatrixFresh(ctx context.Context, inv spec.Inventory) (running.Matrix, error)
+	ForService(ctx context.Context, inv spec.Inventory, name string) ([]running.Cell, error)
+}
+
+// connectionChecks records how reading an AWS account went, for the System
+// health page. A failure to record is logged and never fails the read.
+type connectionChecks struct {
+	pool store.DBTX
+	log  *slog.Logger
+}
+
+func (c connectionChecks) OK(ctx context.Context, kind, ref string, at time.Time) {
+	if err := store.RecordConnectionOK(ctx, c.pool, kind, ref, at); err != nil {
+		c.log.Warn("could not record a connection check", "kind", kind, "ref", ref, "error", err.Error())
+	}
+}
+
+func (c connectionChecks) Error(ctx context.Context, kind, ref, code string, at time.Time) {
+	if err := store.RecordConnectionError(ctx, c.pool, kind, ref, code, at); err != nil {
+		c.log.Warn("could not record a connection check", "kind", kind, "ref", ref, "error", err.Error())
+	}
 }
 
 // getJobVersions answers GET /api/v1/jobs/{id}/versions?environment=<name>:

@@ -161,6 +161,8 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 		}]()),
 		list("GET /api/v1/freezes", "/api/v1/freezes", reflect.TypeFor[freezeListResponse]()),
 		list("GET /api/v1/approvals", "/api/v1/approvals", reflect.TypeFor[approvalListResponse]()),
+		list("GET /api/v1/queue", "/api/v1/queue", reflect.TypeFor[queueResponse]()),
+		list("GET /api/v1/system/health", "/api/v1/system/health", reflect.TypeFor[healthResponse]()),
 	}
 	check := func(stage string, routes []listRoute) {
 		t.Helper()
@@ -184,6 +186,7 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 	populatedOnly := []listRoute{
 		list("GET /api/v1/inventory/services/{name}", "/api/v1/inventory/services/orders", reflect.TypeFor[serviceDetail]()),
 		list("GET /api/v1/inventory/services/{name}", "/api/v1/inventory/services/backend-api", reflect.TypeFor[serviceDetail]()),
+		list("GET /api/v1/services/{name}", "/api/v1/services/orders", reflect.TypeFor[servicePageResponse]()),
 	}
 	for _, r := range populatedOnly {
 		listed[r.pattern] = true

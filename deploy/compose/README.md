@@ -162,3 +162,70 @@ docker compose logs --tail 100 runner caddy
 | `orchestrator` stays `starting` or unhealthy | `docker compose logs orchestrator`. A wrong database or Valkey password shows there. |
 | Runners wait for the schema | The orchestrator has not finished its migrations; wait, or read its log. |
 | Encrypted data cannot be read after a restore | `YUMDRAKE_LOCAL_SECRET_KEY` is not the key used when the data was written. |
+
+## Try the demo
+
+The demo is a self-contained Yumdrake on your own machine for trying it out. It
+is not the setup above: it builds the images from this checkout, needs no DNS
+name, no secrets and no AWS, and every deployment step is a fake that changes
+nothing. Docker with Compose v2.24 or newer is all it needs. Run these from the
+repository root.
+
+Start it (the first build takes a few minutes):
+
+```sh
+make demo
+```
+
+Open http://localhost:18280 and sign in as one of these (the passwords are
+public, see "Why it refuses to run elsewhere"):
+
+| Person | Email | Password | May |
+| --- | --- | --- | --- |
+| Admin | `admin@demo.yumdrake.test` | `demo-admin-password` | everything |
+| Deployer | `deployer@demo.yumdrake.test` | `demo-deployer-password` | plan and run in `dev` and `qa`, read logs |
+| Viewer | `viewer@demo.yumdrake.test` | `demo-viewer-password` | look only |
+
+It comes with five environments (`dev`, `qa`, `staging`, `preprod`, `prod`),
+five services and three jobs, read from a fake GitHub that the `demo` service
+serves. Browse the inventory and the jobs in the web app, then start a run
+with the command line tool (build it with `make build`; it is `bin/yumdrake`):
+
+```sh
+export YUMDRAKE_SERVER=http://localhost:18280
+bin/yumdrake login
+bin/yumdrake run deploy-platform --env dev \
+  --set backends=v1.5.0 --set workers=v1.5.0 --set frontend=v1.5.0 --watch
+```
+
+The run then shows live in the web app too. A version containing `fail`,
+`slow` or `unknown` makes the fake step fail, take 30 seconds or end with an
+unknown outcome, so you can see each case. The web app's own version picker
+needs a version source that arrives with the real steps (see "Not yet in the
+demo"), so for now runs are started from the command line.
+
+Stop it and delete its data (this touches only the Compose project
+`yumdrake-demo`):
+
+```sh
+make demo-down
+```
+
+`make demo-check` runs the demo for real on another port and project
+(`yumdrake-demo-check`, port 18380) and checks the sign-ins, the permissions
+and a fake deployment through the API and the command line tool.
+
+### Why it refuses to run elsewhere
+
+The demo uses a public encryption key and public passwords, all committed to
+this repository. Both services therefore refuse that key unless
+`YUMDRAKE_ENV=dev`, and the orchestrator refuses `YUMDRAKE_ENV=dev` unless
+`YUMDRAKE_PUBLIC_URL` is on `localhost` or `127.0.0.1`. A demo copied to a
+server does not start. Never put the demo's values into a real setup.
+
+### Not yet in the demo
+
+A local AWS emulator (Floci) with seeded accounts, images, buckets and config
+files, AWS account connections and real deployment steps against it come
+later. Until then the runner runs with `YUMDRAKE_FAKE_STEPS=true`, and the
+marked comment in `compose.demo.yaml` is where they will be added.

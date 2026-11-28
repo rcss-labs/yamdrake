@@ -26,7 +26,10 @@ type Common struct {
 	ValkeyPassword Secret
 	// ValkeyTLS connects to Valkey over TLS (YUMDRAKE_VALKEY_TLS, "true" or
 	// "false", default false). ElastiCache with encryption in transit needs it.
-	ValkeyTLS       bool
+	ValkeyTLS bool
+	// Env is "dev" or "prod" (YUMDRAKE_ENV, default prod). Fake steps and the
+	// public demo key are allowed only in dev.
+	Env             string
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 	StartupTimeout  time.Duration
@@ -87,8 +90,6 @@ type Runner struct {
 	// ValkeyKeyPrefix goes in front of the Valkey channels; it must equal the
 	// orchestrator's so that wake-ups reach each other.
 	ValkeyKeyPrefix string
-	// Env is "dev" or "prod". Fake steps are allowed only in dev.
-	Env string
 	// FakeSteps registers the fake step executors instead of real ones.
 	FakeSteps bool
 	// ArtifactDir is the directory for config copies (YUMDRAKE_ARTIFACT_DIR).
@@ -148,10 +149,19 @@ func (l *loader) loadCommon() Common {
 		l.fail("YUMDRAKE_VALKEY_TLS", `must be "true" or "false"`)
 	}
 
+	switch c.Env = l.valueOr("YUMDRAKE_ENV", "prod"); c.Env {
+	case "dev", "prod":
+	default:
+		l.fail("YUMDRAKE_ENV", `must be "dev" or "prod"`)
+	}
+
 	c.LogLevel = l.logLevel("YUMDRAKE_LOG_LEVEL", "info")
 	c.ShutdownTimeout = l.duration("YUMDRAKE_SHUTDOWN_TIMEOUT", "20s")
 	c.StartupTimeout = l.duration("YUMDRAKE_STARTUP_TIMEOUT", "60s")
 	c.SecretSettings = l.loadSecretSettings()
+	if c.LocalSecretKey.Reveal() == mustDecodeDemoKey() && c.Env != "dev" {
+		l.fail("YUMDRAKE_LOCAL_SECRET_KEY", "is the public demo key; it is allowed only with YUMDRAKE_ENV=dev")
+	}
 	return c
 }
 
@@ -174,6 +184,12 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	}
 
 	cfg.PublicURL = l.publicURL("YUMDRAKE_PUBLIC_URL")
+	if cfg.Env == "dev" && cfg.PublicURL != "" {
+		// publicURL already validated and normalised the value.
+		if u, err := url.Parse(cfg.PublicURL); err == nil && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
+			l.fail("YUMDRAKE_ENV", "dev is allowed only when YUMDRAKE_PUBLIC_URL is on localhost or 127.0.0.1")
+		}
+	}
 	cfg.ValkeyKeyPrefix = l.keyPrefix()
 	cfg.LogArchiveDir = l.getenv("YUMDRAKE_LOG_ARCHIVE_DIR")
 	if cfg.LogArchiveDir != "" && !filepath.IsAbs(cfg.LogArchiveDir) {
@@ -224,11 +240,6 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 		cfg.RunnerID = hostname
 	}
 
-	switch cfg.Env = l.valueOr("YUMDRAKE_ENV", "prod"); cfg.Env {
-	case "dev", "prod":
-	default:
-		l.fail("YUMDRAKE_ENV", `must be "dev" or "prod"`)
-	}
 	switch raw := l.valueOr("YUMDRAKE_FAKE_STEPS", "false"); raw {
 	case "true":
 		cfg.FakeSteps = true

@@ -144,7 +144,11 @@ stream through unbuffered.
 ## Upgrade, backup, restore
 
 See [../../docs/operations.md](../../docs/operations.md). In short: change
-`YUMDRAKE_VERSION`, then `docker compose pull && docker compose up -d`.
+`YUMDRAKE_VERSION`, then
+`docker compose pull --ignore-buildable && docker compose up -d --build`. The
+`--build` is needed with the HTTPS front: Caddy is built locally
+(`yumdrake-caddy:local`, never published), so `pull` must skip it. For images in
+a private ghcr.io package, run `docker login ghcr.io` first.
 
 ## Logs
 

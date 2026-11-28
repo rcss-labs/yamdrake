@@ -22,6 +22,8 @@ const MaxObjectBytes = 16 << 20
 
 const keyPrefix = "manifests/"
 
+const previousSegment = "previous"
+
 // Store holds configuration copies. Put returns the key and the SHA-256 (hex,
 // lowercase) of the plaintext; Get refuses data whose checksum differs from
 // wantSHA256.
@@ -42,8 +44,13 @@ func objectKey(runID int64, service, kind, name string, previous bool) (string, 
 			return "", fmt.Errorf("artifacts: invalid %s: %w", f.name, err)
 		}
 	}
+	// Previous copies live in a "previous" directory placed before the kind, so
+	// no name can collide with it; the kind "previous" is reserved for that.
+	if kind == previousSegment {
+		return "", fmt.Errorf("artifacts: invalid kind: %q is reserved", previousSegment)
+	}
 	if previous {
-		return fmt.Sprintf("%s%d/%s/%s/previous/%s", keyPrefix, runID, service, kind, name), nil
+		return fmt.Sprintf("%s%d/%s/%s/%s/%s", keyPrefix, runID, service, previousSegment, kind, name), nil
 	}
 	return fmt.Sprintf("%s%d/%s/%s/%s", keyPrefix, runID, service, kind, name), nil
 }

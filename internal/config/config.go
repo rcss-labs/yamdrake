@@ -124,6 +124,15 @@ func (l *loader) err() error {
 	return errors.Join(l.problems...)
 }
 
+// refusePlaceholder fails when a password still has the <placeholder> form of
+// deploy/compose/.env.example, so a forgotten edit cannot run with a public
+// password. The value is never echoed.
+func (l *loader) refusePlaceholder(variable, value string) {
+	if len(value) >= 2 && strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") {
+		l.fail(variable, "is still the <placeholder> from .env.example; set a generated password")
+	}
+}
+
 func (l *loader) loadCommon() Common {
 	var c Common
 
@@ -140,6 +149,8 @@ func (l *loader) loadCommon() Common {
 	}
 
 	c.ValkeyPassword = Secret(l.getenv("YUMDRAKE_VALKEY_PASSWORD"))
+	l.refusePlaceholder("YUMDRAKE_VALKEY_PASSWORD", c.ValkeyPassword.Reveal())
+	l.refusePlaceholder("PGPASSWORD", l.getenv("PGPASSWORD"))
 	switch raw := l.valueOr("YUMDRAKE_VALKEY_TLS", "false"); raw {
 	case "true":
 		c.ValkeyTLS = true

@@ -84,8 +84,15 @@ failures=0
 started=0
 
 # The public demo settings, with this check's own port. The last assignment in an env file wins.
-grep -vE '^(YUMDRAKE_HTTP_PORT|YUMDRAKE_PUBLIC_URL)=' "$compose_dir/demo/demo.env" >"$env_file"
+grep -vE '^(YUMDRAKE_HTTP_PORT|YUMDRAKE_PUBLIC_URL|YUMDRAKE_IMAGE_REPO|YUMDRAKE_VERSION)=' "$compose_dir/demo/demo.env" >"$env_file"
+check_images=(
+	yumdrake-demo-check/yumdrake-orchestrator:check
+	yumdrake-demo-check/yumdrake-runner:check
+	yumdrake-demo-check/yumdrake-demo:check
+)
 {
+	echo "YUMDRAKE_IMAGE_REPO=yumdrake-demo-check"
+	echo "YUMDRAKE_VERSION=check"
 	echo "YUMDRAKE_HTTP_PORT=$port"
 	echo "YUMDRAKE_PUBLIC_URL=$base_url"
 } >>"$env_file"
@@ -124,6 +131,9 @@ cleanup() {
 	local status=$?
 	# Only this project, and only here.
 	compose down -v --remove-orphans >/dev/null 2>&1 || true
+	# The images carry this check's own tags (set in the env file), so `make demo`
+	# images are never touched.
+	docker rmi "${check_images[@]}" >/dev/null 2>&1 || true
 	rm -rf "$work_dir"
 	local left
 	left="$(docker ps -a --filter "label=com.docker.compose.project=$project" -q 2>/dev/null | wc -l | tr -d ' ')"

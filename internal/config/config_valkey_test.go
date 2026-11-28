@@ -88,3 +88,28 @@ func TestValkeyPasswordNeverPrinted(t *testing.T) {
 		}
 	}
 }
+
+func TestPlaceholderPasswordsAreRefused(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ variable, value string }{
+		{"YUMDRAKE_VALKEY_PASSWORD", "<generated-password>"},
+		{"YUMDRAKE_VALKEY_PASSWORD", "<anything>"},
+		{"PGPASSWORD", "<generated-password>"},
+	}
+	for _, tc := range cases {
+		env := requiredEnv()
+		env[tc.variable] = tc.value
+		if _, err := LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), tc.variable) {
+			t.Errorf("LoadOrchestrator with %s=%s: error = %v, want one naming the variable", tc.variable, tc.value, err)
+		}
+		if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), tc.variable) {
+			t.Errorf("LoadRunner with %s=%s: error = %v, want one naming the variable", tc.variable, tc.value, err)
+		}
+	}
+	// A real password that merely contains angle brackets inside is fine.
+	env := requiredEnv()
+	env["YUMDRAKE_VALKEY_PASSWORD"] = "ab<c>d"
+	if _, err := LoadOrchestrator(envFrom(env)); err != nil {
+		t.Errorf("a password with brackets inside was refused: %v", err)
+	}
+}

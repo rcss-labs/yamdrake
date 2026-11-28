@@ -32,6 +32,11 @@ type Archive interface {
 // logArchivePurpose binds every stored archive to this use in the cipher.
 const logArchivePurpose = "log-archive"
 
+// archivePurpose is the purpose (the cipher's authenticated data) of one
+// archive: the use plus its key, so a file copied over another one's path does
+// not decrypt.
+func archivePurpose(key string) string { return logArchivePurpose + ":" + key }
+
 type dirArchive struct {
 	root   string
 	cipher secrets.Cipher
@@ -73,7 +78,7 @@ func (d *dirArchive) Put(ctx context.Context, key string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	sealed, err := d.cipher.Encrypt(ctx, logArchivePurpose, data)
+	sealed, err := d.cipher.Encrypt(ctx, archivePurpose(key), data)
 	if err != nil {
 		return fmt.Errorf("log archive: encrypt %s: %w", key, err)
 	}
@@ -111,7 +116,7 @@ func (d *dirArchive) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("log archive: read %s: %w", key, err)
 	}
-	data, err := d.cipher.Decrypt(ctx, logArchivePurpose, sealed)
+	data, err := d.cipher.Decrypt(ctx, archivePurpose(key), sealed)
 	if err != nil {
 		// The message carries the key only, never the stored bytes.
 		return nil, fmt.Errorf("log archive: cannot decrypt %s", key)

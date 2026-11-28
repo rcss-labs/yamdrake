@@ -78,7 +78,7 @@ func TestDirPreviousCopiesUseSeparateKeys(t *testing.T) {
 	if currentKey == previousKey {
 		t.Fatalf("current and previous share key %q", currentKey)
 	}
-	if want := "manifests/7/api/manifest/previous/app.yaml"; previousKey != want {
+	if want := "manifests/7/api/previous/manifest/app.yaml"; previousKey != want {
 		t.Errorf("previous key = %q, want %q", previousKey, want)
 	}
 	if got, err := s.Get(ctx, currentKey, currentSum); err != nil || string(got) != "current" {
@@ -272,5 +272,37 @@ func TestDirPutRecreatesDirectoryRemovedBySweep(t *testing.T) {
 	got, err := s.Get(ctx, key, sum)
 	if err != nil || !bytes.Equal(got, data) {
 		t.Errorf("Get = %q, %v; want the stored body", got, err)
+	}
+}
+
+func TestAFileNamedPreviousDoesNotCollideWithPreviousCopies(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	keyOfFile, sumOfFile, err := s.Put(ctx, 7, "api", "manifest", "previous", false, []byte("a file called previous"))
+	if err != nil {
+		t.Fatalf("Put current file named previous: %v", err)
+	}
+	keyOfCopy, sumOfCopy, err := s.Put(ctx, 7, "api", "manifest", "app.yaml", true, []byte("a previous copy"))
+	if err != nil {
+		t.Fatalf("Put previous copy: %v", err)
+	}
+	keyOfCopyOfFile, sumOfCopyOfFile, err := s.Put(ctx, 7, "api", "manifest", "previous", true, []byte("a previous copy of previous"))
+	if err != nil {
+		t.Fatalf("Put previous copy of a file named previous: %v", err)
+	}
+	for key, want := range map[string][2]string{
+		keyOfFile:       {sumOfFile, "a file called previous"},
+		keyOfCopy:       {sumOfCopy, "a previous copy"},
+		keyOfCopyOfFile: {sumOfCopyOfFile, "a previous copy of previous"},
+	} {
+		if got, err := s.Get(ctx, key, want[0]); err != nil || string(got) != want[1] {
+			t.Errorf("Get %s = %q, %v; want %q", key, got, err, want[1])
+		}
+	}
+
+	// A kind called previous would sit where the previous copies are kept.
+	if _, _, err := s.Put(ctx, 7, "api", "previous", "app.yaml", false, []byte("x")); err == nil {
+		t.Error("a kind named previous was accepted")
 	}
 }

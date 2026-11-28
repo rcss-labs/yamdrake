@@ -36,9 +36,11 @@ import type {
   JobVersions,
   Me,
   Overview,
+  QueueView,
   RunningCell,
   RunningMatrix,
   ServicePage,
+  SystemHealth,
   Problem,
   RunDetail,
   JobGroup,
@@ -711,6 +713,76 @@ export function runningFixture(): RunningMatrix {
       { service: 'backend-api', cells: [runningCell('1.4.2'), runningCell('1.4.2')] },
       { service: 'billing', cells: [runningCell('2.0.1'), absentCell] },
     ],
+  }
+}
+
+/** The default answer of GET /api/v1/queue: two runners, one run running, one waiting on it, one lock. */
+export function queueFixture(): QueueView {
+  return {
+    runs: [
+      {
+        id: 41,
+        job_id: 1,
+        job_name: 'Deploy billing',
+        environment: 'hetzner-01',
+        label: 'dev',
+        state: 'running',
+        wait_reason: '',
+        blocked_by_run_id: null,
+        waiting_since: '2026-11-28T11:50:00Z',
+        waited_seconds: 0,
+        legs_running: 1,
+        legs_queued: 0,
+      },
+      {
+        id: 42,
+        job_id: 2,
+        job_name: 'Deploy backend',
+        environment: 'hetzner-01',
+        label: 'dev',
+        state: 'queued',
+        wait_reason: 'waiting for run #41',
+        blocked_by_run_id: 41,
+        waiting_since: '2026-11-28T11:58:00Z',
+        waited_seconds: 134,
+        legs_running: 0,
+        legs_queued: 2,
+      },
+    ],
+    locks: [{ resource: 'ecs:111111111111:eu-west-1:cluster/main:service/billing-api', run_id: 41, acquired_at: '2026-11-28T11:50:00Z' }],
+    runners: [
+      { id: 'runner-a', version: '0.9.0', concurrency: 8, busy: 3, started_at: '2026-11-28T08:00:00Z', last_seen_at: '2026-11-28T11:59:55Z' },
+      { id: 'runner-b', version: '0.9.0', concurrency: 8, busy: 2, started_at: '2026-11-28T08:00:00Z', last_seen_at: '2026-11-28T11:59:58Z' },
+    ],
+    free_slots: 11,
+    queued_legs: 2,
+    oldest_queued_at: '2026-11-28T11:58:00Z',
+    runner_gone_after_seconds: 120,
+  }
+}
+
+/** The default answer of GET /api/v1/system/health: everything works. */
+export function healthFixture(): SystemHealth {
+  const queue = queueFixture()
+  return {
+    problems: [],
+    runners: queue.runners,
+    runner_gone_after_seconds: 120,
+    queue: { queued_legs: 2, oldest_queued_at: queue.oldest_queued_at, active_runs: 2 },
+    counters: {
+      lease_expired: { hour: 0, day: 1 },
+      log_persist_failed: { hour: 0, day: 0 },
+      sync_failed: { hour: 0, day: 2 },
+    },
+    sync: {
+      inventory: { checked_at: '2026-11-28T11:57:00Z', error: '', error_at: null },
+      jobs: [{ id: 1, job_id: 1, title: 'Deploy billing', checked_at: '2026-11-28T11:55:00Z', error: '', error_at: null }],
+    },
+    connections: [
+      { kind: 'aws', name: 'homelab', last_ok_at: '2026-11-28T11:59:00Z', last_error_at: null, last_error_code: '', failing: false },
+      { kind: 'github', name: 'rcss-labs', last_ok_at: '2026-11-28T11:56:00Z', last_error_at: null, last_error_code: '', failing: false },
+    ],
+    notifications: { pending: 0, failed_last_day: 0, oldest_pending_at: null },
   }
 }
 
@@ -1747,6 +1819,10 @@ export const handlers: HttpHandler[] = [
     const service = state.services.find((candidate) => candidate.name === params.name)
     return service ? json(servicePageFixture(service)) : notFound('service')
   }),
+
+  // ---- Queue and system health (Plan 9) ----
+  route('GET', '/api/v1/queue', view, () => json(queueFixture())),
+  route('GET', '/api/v1/system/health', manageConnections, () => json(healthFixture())),
 
   // ---- Overview (Plan 9) ----
   route('GET', '/api/v1/analytics/overview', view, ({ url }) => {

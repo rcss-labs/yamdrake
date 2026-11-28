@@ -22,7 +22,7 @@ type Approval struct {
 	RequestedAt, ExpiresAt time.Time
 	DecidedBy              *int64
 	DecidedAt              *time.Time
-	Decision               string // "" (open) | "approved" | "rejected" | "expired"
+	Decision               string // "" (open) | "approved" | "rejected" | "expired" | "withdrawn" (the run ended otherwise)
 	Comment                string
 }
 
@@ -66,14 +66,28 @@ func OpenApproval(ctx context.Context, db DBTX, runID int64) (Approval, bool, er
 	return a, true, nil
 }
 
-// DecideApproval records the decision ("approved", "rejected" or "expired";
-// ErrInvalid otherwise) on an open approval. The decision is one conditional
+// LatestApproval returns the run's open approval, else its most recent decided
+// one. ok is false when the run never asked for approval.
+func LatestApproval(ctx context.Context, db DBTX, runID int64) (Approval, bool, error) {
+	a, err := scanApproval(db.QueryRow(ctx,
+		"SELECT "+approvalColumns+" FROM approvals WHERE run_id = $1 ORDER BY (decision = '') DESC, id DESC LIMIT 1", runID))
+	if errors.Is(mapError(err), ErrNotFound) {
+		return Approval{}, false, nil
+	}
+	if err != nil {
+		return Approval{}, false, fmt.Errorf("latest approval: %w", mapError(err))
+	}
+	return a, true, nil
+}
+
+// DecideApproval records the decision ("approved", "rejected", "expired" or
+// "withdrawn"; ErrInvalid otherwise) on an open approval. The decision is one conditional
 // UPDATE, so of two concurrent deciders the second waits for the first's
 // transaction and then finds the approval decided: ErrAlreadyDecided. ErrNotFound
 // for an unknown id.
 func DecideApproval(ctx context.Context, tx DBTX, id int64, decision string, by *int64, comment string, at time.Time) error {
 	switch decision {
-	case "approved", "rejected", "expired":
+	case "approved", "rejected", "expired", "withdrawn":
 	default:
 		return fmt.Errorf("decide approval: %w: decision %q", ErrInvalid, decision)
 	}
@@ -101,11 +115,12 @@ func OpenApprovals(ctx context.Context, db DBTX) ([]Approval, error) {
 	return queryApprovals(ctx, db, "SELECT "+approvalColumns+" FROM approvals WHERE decision = '' ORDER BY id")
 }
 
-// ExpiredApprovals returns the open approvals whose ExpiresAt is not after now,
-// oldest first.
+// ExpiredApprovals returns the open approvals whose ExpiresAt is not after now
+// and whose run is still waiting for approval, oldest first.
 func ExpiredApprovals(ctx context.Context, db DBTX, now time.Time) ([]Approval, error) {
 	return queryApprovals(ctx, db,
-		"SELECT "+approvalColumns+" FROM approvals WHERE decision = '' AND expires_at <= $1 ORDER BY id", dbTime(now))
+		`SELECT `+approvalColumns+` FROM approvals WHERE decision = '' AND expires_at <= $1
+		 AND run_id IN (SELECT id FROM runs WHERE state = 'waiting_approval') ORDER BY id`, dbTime(now))
 }
 
 func queryApprovals(ctx context.Context, db DBTX, query string, args ...any) ([]Approval, error) {

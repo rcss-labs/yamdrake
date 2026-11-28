@@ -12,7 +12,7 @@ CREATE TABLE approvals (
     decided_by   bigint      REFERENCES users (id),
     decided_at   timestamptz,
     -- '' while the approval is open.
-    decision     text        NOT NULL DEFAULT '' CHECK (decision IN ('', 'approved', 'rejected', 'expired')),
+    decision     text        NOT NULL DEFAULT '' CHECK (decision IN ('', 'approved', 'rejected', 'expired', 'withdrawn')),
     comment      text        NOT NULL DEFAULT ''
 );
 -- One open approval per run; decided ones may repeat (a run can be asked again).

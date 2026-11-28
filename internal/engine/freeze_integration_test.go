@@ -182,7 +182,7 @@ func TestPlanningAndApprovingAreNotBlocked(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	h.expectState(run.ID, "waiting_approval")
-	if err := h.eng.Approve(ctx, h.approver, run.ID); err != nil {
+	if err := h.eng.Approve(ctx, h.approver, run.ID, h.run(run.ID).ManifestID, ""); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 	h.advance(run.ID)

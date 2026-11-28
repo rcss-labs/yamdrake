@@ -325,7 +325,7 @@ func (h *harness) running(services ...string) store.Run {
 		h.t.Fatalf("Start: %v", err)
 	}
 	if h.run(run.ID).State == "waiting_approval" {
-		if err := h.eng.Approve(context.Background(), h.approver, run.ID); err != nil {
+		if err := h.eng.Approve(context.Background(), h.approver, run.ID, h.run(run.ID).ManifestID, ""); err != nil {
 			h.t.Fatalf("Approve: %v", err)
 		}
 		h.advance(run.ID)

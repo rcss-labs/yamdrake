@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -129,6 +128,11 @@ func (e *Engine) moveTo(ctx context.Context, tx pgx.Tx, run store.Run, state, re
 	if err := store.UpdateRunState(ctx, tx, run.ID, state, "", now); err != nil {
 		return err
 	}
+	if state != run.State {
+		if err := e.onEnterState(ctx, tx, run, state, now); err != nil {
+			return err
+		}
+	}
 	if isFinalRunState(state) && reason != "" {
 		if err := store.SetEndReason(ctx, tx, run.ID, reason); err != nil {
 			return err
@@ -216,61 +220,31 @@ func (e *Engine) Cancel(ctx context.Context, p auth.Principal, runID int64) erro
 	})
 }
 
-// Approve lets an approver (not the person who started the run, unless an
-// admin) approve exactly the manifest the run holds; the run is then queued.
-func (e *Engine) Approve(ctx context.Context, p auth.Principal, runID int64) error {
-	return e.decideApproval(ctx, p, runID, "run.approve", "queued")
-}
-
-// Reject ends a run waiting for approval as rejected.
-func (e *Engine) Reject(ctx context.Context, p auth.Principal, runID int64) error {
-	return e.decideApproval(ctx, p, runID, "run.reject", "rejected")
-}
-
-func (e *Engine) decideApproval(ctx context.Context, p auth.Principal, runID int64, action, next string) error {
-	reason := ""
-	if next == "rejected" {
-		reason = "rejected by " + displayName(p)
-	}
-	return e.inTx(ctx, runID, func(tx pgx.Tx, o *outcome) error {
-		run, err := store.LockRun(ctx, tx, runID)
-		if err != nil {
-			return fmt.Errorf("%s %d: %w", action, runID, err)
-		}
-		if !p.MayApproveRunStartedBy(run.RequestedBy, targetOf(run)) {
-			return fmt.Errorf("%s %d: %w", action, runID, ErrForbidden)
-		}
-		if run.State != "waiting_approval" {
-			return fmt.Errorf("%s %d: %w: it is %s", action, runID, ErrWrongState, run.State)
-		}
-		if err := e.moveTo(ctx, tx, run, next, reason, displayName(p), o); err != nil {
-			return err
-		}
-		return e.record(ctx, tx, &p, action, runID, map[string]any{"manifest_id": run.ManifestID})
-	})
-}
-
 // Expire ends a run nobody acted on: a planned run after an hour, a run
-// waiting for approval after the job's approval expiry. Any other run is left
+// waiting for approval once its approval request has expired. Any other run is left
 // alone. It is the system's doing, not a person's.
 func (e *Engine) Expire(ctx context.Context, runID int64) error {
-	return e.expire(ctx, runID, ApprovalExpiry)
-}
-
-// expire is Expire with the approval waiting time chosen by the caller.
-func (e *Engine) expire(ctx context.Context, runID int64, approvalAfter func(store.Run) time.Duration) error {
 	return e.inTx(ctx, runID, func(tx pgx.Tx, o *outcome) error {
 		run, err := store.LockRun(ctx, tx, runID)
 		if err != nil {
 			return fmt.Errorf("expire run %d: %w", runID, err)
 		}
-		waited := e.now().Sub(run.StateChangedAt)
 		var reason string
-		switch {
-		case run.State == "planned" && waited > plannedRunLifetime:
+		switch run.State {
+		case "planned":
+			if e.now().Sub(run.StateChangedAt) <= plannedRunLifetime {
+				return nil
+			}
 			reason = "nobody started the plan within " + plannedRunLifetime.String()
-		case run.State == "waiting_approval" && waited > approvalAfter(run):
-			reason = "nobody approved the plan within " + approvalAfter(run).String()
+		case "waiting_approval":
+			due, window, err := e.approvalDue(ctx, tx, run)
+			if err != nil || !due {
+				return err
+			}
+			reason = "nobody approved the plan within " + window.String()
+			if err := e.expireApproval(ctx, tx, run.ID); err != nil {
+				return err
+			}
 		default:
 			return nil
 		}

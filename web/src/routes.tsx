@@ -5,6 +5,7 @@ import { InventoryPage } from './features/inventory/InventoryPage'
 import { OverviewPage } from './features/overview/OverviewPage'
 import { JobPage } from './features/jobs/JobPage'
 import { JobsPage } from './features/jobs/JobsPage'
+import { QueuePage } from './features/queue/QueuePage'
 import { RunPage } from './features/runs/RunPage'
 import { RunsPage } from './features/runs/RunsPage'
 import { ConfirmDevicePage } from './features/tokens/ConfirmDevicePage'
@@ -22,6 +23,7 @@ export function AppRoutes() {
       <Route path="/jobs/:id" element={<JobPage />} />
       <Route path="/runs" element={<RunsPage />} />
       <Route path="/runs/:id" element={<RunPage />} />
+      <Route path="/queue" element={<QueuePage />} />
       <Route path="/approvals" element={<ApprovalsPage />} />
       <Route path="/versions" element={<VersionsPage />} />
       <Route path="/services/:name" element={<ServicePage />} />

@@ -74,3 +74,27 @@ describe('StepsTree', () => {
     expect(within(tree).queryByText('attempt 1')).toBeNull()
   })
 })
+
+describe('StepsTree planning items and the current item', () => {
+  it('keeps the planning items apart from a real step named "resolve"', async () => {
+    const run = structuredClone(runOf(runIds.partiallySucceeded))
+    for (const step of run.steps) if (step.name === 'copy-config') step.name = 'resolve'
+    for (const leg of run.legs) if (leg.step === 'copy-config') leg.step = 'resolve'
+    const onSelect = vi.fn()
+    render(<StepsTree run={run} lines={[]} scope={{ kind: 'step', step: 'resolve' }} onSelect={onSelect} />)
+    const current = screen.getAllByRole('button').filter((button) => button.getAttribute('aria-current') === 'true')
+    expect(current).toHaveLength(1)
+    expect(current[0]).toHaveTextContent(/^resolve1\/2/)
+    await userEvent.click(screen.getByRole('button', { name: /^Resolve/ }))
+    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'step', step: ':resolve' })
+    await userEvent.click(screen.getByRole('button', { name: /^resolve/ }))
+    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'step', step: 'resolve' })
+  })
+
+  it('marks only one row as current when the selected service is listed under several steps', () => {
+    render(<StepsTree run={runOf(runIds.partiallySucceeded)} lines={[]} scope={{ kind: 'service', service: 'billing' }} onSelect={() => {}} />)
+    const current = screen.getAllByRole('button').filter((button) => button.getAttribute('aria-current') === 'true')
+    expect(current).toHaveLength(1)
+    expect(current[0]).toHaveTextContent(/^billing/)
+  })
+})

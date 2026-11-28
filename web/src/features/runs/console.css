@@ -269,3 +269,19 @@
   font-size: 13px;
   font-weight: 500;
 }
+.con-dl:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.con-strip-btn {
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #fff;
+  text-decoration: underline;
+  font: inherit;
+}
+.con-strip-btn:disabled {
+  opacity: 0.6;
+}

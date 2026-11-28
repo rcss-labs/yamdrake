@@ -3,7 +3,8 @@
 import { memo, useDeferredValue, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { LogLine, RunDetail, RunLive } from '../../api/types'
 import { isFinalRunState } from '../../api/types'
-import { buildConsoleView, logDownloadPath, scopeTitle, type ConsoleRow } from './consoleModel'
+import { buildConsoleView, countDropped, scopeTitle, type ConsoleRow } from './consoleModel'
+import { fetchLogText, logFileName, saveText } from './downloadLog'
 import type { ConsoleScope } from './scope'
 import { MAX_LINES } from './useRunLive'
 import './console.css'
@@ -38,6 +39,22 @@ function ConsoleRowView({ row }: { row: ConsoleRow }) {
   return <ConsoleLineRow line={row.line} number={row.number} prefix={row.prefix} />
 }
 
+/** Reads the whole log of the scope page by page and saves it as a text file. */
+function useLogDownload(run: RunDetail, scope: ConsoleScope) {
+  const [state, setState] = useState<'idle' | 'busy' | 'failed'>('idle')
+  const start = () => {
+    setState('busy')
+    fetchLogText(run, scope).then(
+      (text) => {
+        saveText(text, logFileName(run, scope))
+        setState('idle')
+      },
+      () => setState('failed'),
+    )
+  }
+  return { busy: state === 'busy', failed: state === 'failed', start }
+}
+
 export function Console({ run, live, scope }: { run: RunDetail; live: RunLive; scope: ConsoleScope }) {
   const [query, setQuery] = useState('')
   const [errorsOnly, setErrorsOnly] = useState(false)
@@ -45,17 +62,29 @@ export function Console({ run, live, scope }: { run: RunDetail; live: RunLive; s
   const noAccess = live.connection === 'no-access'
   const active = !isFinalRunState(run.state)
 
+  const scopeKey = `${scope.kind}:${scope.kind === 'step' ? scope.step : scope.kind === 'service' ? scope.service : ''}`
+
+  // Line numbers count from the first line ever held, so a line keeps its number when the oldest lines are
+  // dropped at the cap and its memoised row is not redrawn. `dropped` is how many lines of this scope fell off.
+  const [held, setHeld] = useState({ lines: live.lines, scopeKey, dropped: 0 })
+  let dropped = held.dropped
+  if (held.lines !== live.lines || held.scopeKey !== scopeKey) {
+    dropped = held.scopeKey === scopeKey ? held.dropped + countDropped(held.lines, live.lines, run.legs, scope) : 0
+    setHeld({ lines: live.lines, scopeKey, dropped })
+  }
+
   const view = useMemo(
-    () => buildConsoleView(run.legs, live.lines, live.gaps, scope, deferredQuery, errorsOnly),
-    [run.legs, live.lines, live.gaps, scope, deferredQuery, errorsOnly],
+    () => buildConsoleView(run.legs, live.lines, live.gaps, scope, deferredQuery, errorsOnly, dropped),
+    [run.legs, live.lines, live.gaps, scope, deferredQuery, errorsOnly, dropped],
   )
+
+  const download = useLogDownload(run, scope)
 
   // Follow the tail: stay at the bottom while the person is there, leave the view alone once they scrolled up.
   const bodyRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
   const [atBottom, setAtBottom] = useState(true)
   // A new scope starts at the tail again.
-  const scopeKey = `${scope.kind}:${scope.kind === 'step' ? scope.step : scope.kind === 'service' ? scope.service : ''}`
   const [seenScopeKey, setSeenScopeKey] = useState(scopeKey)
   if (seenScopeKey !== scopeKey) {
     setSeenScopeKey(scopeKey)
@@ -86,7 +115,6 @@ export function Console({ run, live, scope }: { run: RunDetail; live: RunLive; s
     setAtBottom(true)
   }
 
-  const downloadPath = logDownloadPath(run.id, scope)
   const filtering = query.trim() !== '' || errorsOnly
   const errorWord = view.errors === 1 ? 'error line' : 'error lines'
 
@@ -105,9 +133,9 @@ export function Console({ run, live, scope }: { run: RunDetail; live: RunLive; s
             <button type="button" className={`con-tog${errorsOnly ? ' on' : ''}`} aria-pressed={errorsOnly} onClick={() => setErrorsOnly((on) => !on)}>
               Errors only
             </button>
-            <a className="con-dl" href={downloadPath} download>
-              Download
-            </a>
+            <button type="button" className="con-dl" disabled={download.busy} onClick={download.start}>
+              {download.busy ? 'Preparing download' : 'Download'}
+            </button>
           </div>
         )}
       </div>
@@ -124,13 +152,20 @@ export function Console({ run, live, scope }: { run: RunDetail; live: RunLive; s
       {live.truncated && !noAccess && (
         <div className="con-strip con-strip-note">
           {`Only the latest ${MAX_LINES.toLocaleString('en-US')} lines are shown. `}
-          <a href={downloadPath} download>
-            Download the log
-          </a>
+          <button type="button" className="con-strip-btn" disabled={download.busy} onClick={download.start}>
+            Download the full log
+          </button>
+        </div>
+      )}
+      {download.failed && (
+        <div className="con-strip" role="alert">
+          The log could not be downloaded. Try again.
         </div>
       )}
       <div className="con-body-wrap">
-        <div ref={bodyRef} className="con-body" role="log" aria-label="Log lines" aria-live="off" onScroll={onScroll}>
+        {/* A scrollable region must be reachable by keyboard so the lines can be scrolled with the arrow keys. */}
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
+        <div ref={bodyRef} className="con-body" role="log" aria-label="Log lines" aria-live="off" tabIndex={0} onScroll={onScroll}>
           {view.rows.map((row) => (
             <ConsoleRowView key={row.key} row={row} />
           ))}

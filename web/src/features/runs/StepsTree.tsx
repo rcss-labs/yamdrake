@@ -1,10 +1,10 @@
 // The steps and services of a run as a list of buttons. The chosen item is the console's scope.
 // Planning legs (resolve, revalidate) have no step: they are their own items before the steps, with the
-// scope { kind: 'step', step: 'resolve' | 'revalidate' }.
+// scope { kind: 'step', step: ':resolve' | ':revalidate' } (a colon cannot be in a real step name).
 import { useMemo } from 'react'
 import type { LegState, LogLine, RunDetail, RunLeg } from '../../api/types'
 import { statusLabel, statusShape, statusTone } from '../../ui'
-import { combinedState, needsAttention } from './consoleModel'
+import { combinedState, needsAttention, planningStep } from './consoleModel'
 import { sameScope, wholeRun, type ConsoleScope } from './scope'
 import './console.css'
 
@@ -34,8 +34,8 @@ function buildItems(run: RunDetail): StepItem[] {
     const legs = run.legs.filter((leg) => leg.kind === kind)
     if (legs.length === 0) continue
     items.push({
-      key: kind,
-      scope: { kind: 'step', step: kind },
+      key: `:${kind}`,
+      scope: { kind: 'step', step: planningStep(kind) },
       name: kind === 'resolve' ? 'Resolve' : 'Revalidate',
       meta: '',
       state: combinedState(legs.map((leg) => leg.state)),
@@ -85,7 +85,10 @@ export function StepsTree({
   onSelect(scope: ConsoleScope): void
 }) {
   const items = useMemo(() => buildItems(run), [run])
-  const choose = (next: ConsoleScope) => () => onSelect(next)
+  // A service listed under several steps is one scope; only its first row is marked as the current item.
+  const currentServiceKey =
+    scope.kind === 'service' ? items.flatMap((item) => item.services).find((service) => service.service === scope.service)?.key : undefined
+  const choose =(next: ConsoleScope) => () => onSelect(next)
 
   return (
     <nav className="tree" aria-label="Steps and services">
@@ -111,7 +114,7 @@ export function StepsTree({
                   key={service.key}
                   type="button"
                   className="tn tn-svc"
-                  aria-current={sameScope(scope, serviceScope) ? 'true' : undefined}
+                  aria-current={service.key === currentServiceKey ? 'true' : undefined}
                   onClick={choose(serviceScope)}
                 >
                   <Mark state={service.state} />

@@ -2,9 +2,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { describe, expect, it } from 'vitest'
-import type { LogGap, LogLevel, LogLine, RunDetail, RunLive } from '../../api/types'
-import { mockState, requests, runIds } from '../../test/server'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ApiLogLine, LogGap, LogLevel, LogLine, RunDetail, RunLive } from '../../api/types'
+import { failNext, mockState, requests, runIds } from '../../test/server'
 import { Console } from './Console'
 import { StepsTree } from './StepsTree'
 import { wholeRun, type ConsoleScope } from './scope'
@@ -168,17 +168,121 @@ describe('Console connection and notices', () => {
     render(<Console run={finished} live={liveOf(finished, sample, { truncated: true })} scope={wholeRun} />)
     const notice = screen.getByText(/Only the latest 20,000 lines are shown/)
     expect(notice).toBeInTheDocument()
-    expect(screen.getAllByRole('link', { name: /Download/ }).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByRole('button', { name: 'Download the full log' })).toBeInTheDocument()
+  })
+})
+
+describe('Console download', () => {
+  const run = runOf(runIds.partiallySucceeded)
+  let saved: { blob: Blob; name: string }[]
+  let revoked: string[]
+
+  beforeEach(() => {
+    saved = []
+    revoked = []
+    let blobs = 0
+    const made = new Map<string, Blob>()
+    URL.createObjectURL = (blob: Blob | MediaSource) => {
+      const url = `blob:test/${(blobs += 1)}`
+      made.set(url, blob as Blob)
+      return url
+    }
+    URL.revokeObjectURL = (url: string) => {
+      revoked.push(url)
+    }
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      saved.push({ blob: made.get(this.href) as Blob, name: this.download })
+    })
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  const apiLine = (legId: number, seq: number, text: string, at = '2026-11-27T10:03:00Z'): ApiLogLine => ({ leg_id: legId, seq, at, level: 'info', text })
+  const logRequests = () => requests.filter((request) => request.path === '/api/v1/runs/105/log')
+
+  it('reads every page of the scope, in order, and saves one text line per log line with the gap notice', async () => {
+    const many = Array.from({ length: 2300 }, (_, index) => apiLine(10504, index + 1, `<b>billing</b> ${index + 1}`, `2026-11-27T10:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}Z`))
+    mockState().logs[105] = [...many, apiLine(10503, 1, 'other service')]
+    mockState().logGaps[105] = [{ leg_id: 10504, from_seq: 5000, to_seq: 5009 }]
+    render(<Console run={run} live={liveOf(run, [])} scope={{ kind: 'service', service: 'billing' }} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(logRequests().map((request) => request.search)).toEqual([
+      '?service=billing&limit=1000',
+      '?service=billing&limit=1000&after=c1000',
+      '?service=billing&limit=1000&after=c2000',
+    ])
+    expect(saved[0]?.name).toBe('run-105-billing.log')
+    expect(saved[0]?.blob.type).toBe('text/plain')
+    const text = await readBlob(saved[0]?.blob as Blob)
+    const rows = text.trimEnd().split('\n')
+    expect(rows).toHaveLength(2301)
+    expect(rows[0]).toBe('2026-11-27T10:00:00Z info <b>billing</b> 1')
+    expect(rows[2299]).toContain('<b>billing</b> 2300')
+    expect(rows[2300]).toBe('-- Lines 5000 to 5009 of this step are missing --')
+    expect(text).not.toContain('other service')
+    await waitFor(() => expect(revoked).toEqual(['blob:test/1']))
   })
 
-  it('links Download to the log endpoint for the scope', () => {
-    const finished = runOf(runIds.partiallySucceeded)
-    const { rerender } = render(<Console run={finished} live={liveOf(finished, sample)} scope={wholeRun} />)
-    expect(screen.getByRole('link', { name: 'Download' })).toHaveAttribute('href', '/api/v1/runs/105/log?limit=1000')
-    rerender(<Console run={finished} live={liveOf(finished, sample)} scope={{ kind: 'step', step: 'copy-config' }} />)
-    expect(screen.getByRole('link', { name: 'Download' })).toHaveAttribute('href', '/api/v1/runs/105/log?step=copy-config&limit=1000')
-    rerender(<Console run={finished} live={liveOf(finished, sample)} scope={{ kind: 'service', service: 'billing' }} />)
-    expect(screen.getByRole('link', { name: 'Download' })).toHaveAttribute('href', '/api/v1/runs/105/log?service=billing&limit=1000')
+  it('says so when a page fails, and works again on the next try', async () => {
+    mockState().logs[105] = [apiLine(10504, 1, 'x')]
+    failNext('GET', '/api/v1/runs/105/log', 500, 'internal')
+    render(<Console run={run} live={liveOf(run, [])} scope={wholeRun} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The log could not be downloaded')
+    expect(saved).toEqual([])
+    // Trying again works and clears the message.
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('cuts the planning scopes in the browser, since the server cannot filter by them', async () => {
+    mockState().logs[105] = [apiLine(10501, 1, 'resolved'), apiLine(10504, 1, 'copied')]
+    render(<Console run={run} live={liveOf(run, [])} scope={{ kind: 'step', step: ':resolve' }} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(logRequests().map((request) => request.search)).toEqual(['?limit=1000'])
+    expect(await readBlob(saved[0]?.blob as Blob)).toBe('2026-11-27T10:03:00Z info resolved\n')
+    expect(saved[0]?.name).toBe('run-105-resolve.log')
+  })
+})
+
+function readBlob(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsText(blob)
+  })
+}
+
+describe('Console line numbers and planning scopes', () => {
+  it('keeps the number of a held line when the oldest lines are dropped, so held rows are not redrawn', () => {
+    const run = runOf(runIds.partiallySucceeded)
+    const all = Array.from({ length: 8 }, (_, index) => line(0, index + 1, `n${index + 1}`))
+    const numberOf = (container: HTMLElement, text: string) =>
+      Array.from(container.querySelectorAll('.con-ln')).find((row) => row.querySelector('.con-tx')?.textContent === text)?.querySelector('.con-no')?.textContent
+    const { container, rerender } = render(<Console run={run} live={liveOf(run, all.slice(0, 6))} scope={wholeRun} />)
+    expect(numberOf(container, 'n3')).toBe('3')
+    rerender(<Console run={run} live={liveOf(run, all.slice(2))} scope={wholeRun} />) // n1 and n2 dropped, n7 and n8 added
+    expect(numberOf(container, 'n3')).toBe('3')
+    expect(numberOf(container, 'n8')).toBe('8')
+    expect(container.querySelectorAll('.con-ln')).toHaveLength(6)
+  })
+
+  it('shows the planning legs under ":resolve" and keeps a real step named "resolve" apart', () => {
+    const base = runOf(runIds.partiallySucceeded)
+    const run = structuredClone(base)
+    for (const step of run.steps) if (step.name === 'copy-config') step.name = 'resolve'
+    for (const leg of run.legs) if (leg.step === 'copy-config') leg.step = 'resolve'
+    const lines = [line(10501, 1, 'planning line'), line(10503, 1, 'real step line')]
+    const { container, rerender } = render(<Console run={run} live={liveOf(run, lines)} scope={{ kind: 'step', step: ':resolve' }} />)
+    expect(rowsOf(container).join('\n')).toContain('planning line')
+    expect(rowsOf(container).join('\n')).not.toContain('real step line')
+    expect(screen.getByText('Resolve')).toBeInTheDocument()
+    rerender(<Console run={run} live={liveOf(run, lines)} scope={{ kind: 'step', step: 'resolve' }} />)
+    expect(rowsOf(container).join('\n')).toContain('real step line')
+    expect(rowsOf(container).join('\n')).not.toContain('planning line')
   })
 })
 
@@ -249,15 +353,23 @@ describe('Console with thousands of lines', () => {
       )
     }
     // CPU time of this process, not wall time: the suite runs on a shared, busy machine where wall time varies several-fold.
+    const cpuMs = (since: NodeJS.CpuUsage) => {
+      const used = process.cpuUsage(since)
+      return (used.user + used.system) / 1000
+    }
+    const wallStart = performance.now()
     const start = process.cpuUsage()
     const { container } = render(<Harness />)
-    const used = process.cpuUsage(start)
-    const elapsed = (used.user + used.system) / 1000
+    const elapsed = cpuMs(start)
     expect(rowsOf(container)).toHaveLength(5000)
     expect(elapsed).toBeLessThan(1500)
 
+    const clickStart = process.cpuUsage()
     await userEvent.click(screen.getAllByRole('button', { name: /^billing/ })[0] as HTMLElement)
     const shown = rowsOf(container)
+    expect(cpuMs(clickStart)).toBeLessThan(1500)
+    // A generous wall-time bound as well, so a hang on a quiet machine still fails.
+    expect(performance.now() - wallStart).toBeLessThan(5000)
     expect(shown).toHaveLength(billingFailed)
     expect(billingFailed).toBeGreaterThan(40)
     expect(billingFailed).toBeLessThan(5000)

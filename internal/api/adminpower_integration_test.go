@@ -404,3 +404,36 @@ func TestManagerCannotRemoveMembershipsOrMappingsOfAGroupHoldingMoreThanTheirOwn
 		t.Errorf("admin deletes the mapping: %d, want 204", code)
 	}
 }
+
+// The scope-width half of the removal rule: the group holds `run` in prod, which
+// is not admin-only, but a manager scoped to dev does not hold it.
+func TestScopedManagerCannotRemoveFromAGroupWiderInScopeThanTheirOwn(t *testing.T) {
+	m := newManagerHarness(t)
+	prod := m.createGroupVia("prodrm-"+uniqueEmail(t, "g"), false)
+	m.expect(m.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": prod, "action": "run", "label": "prod"}), http.StatusCreated, "")
+	_, scopedToken := m.scopedManager()
+
+	member := m.newUser("prodmember")
+	m.expect(m.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(member.ID), map[string]any{"group_ids": []int64{prod}}), http.StatusOK, "")
+	if code := m.send(sent{method: "PATCH", path: "/api/v1/admin/users/" + itoa(member.ID), bearer: scopedToken, body: map[string]any{"group_ids": []int64{}}}).Code; code != http.StatusForbidden {
+		t.Errorf("remove a membership of a prod group: %d, want 403", code)
+	}
+	if !m.memberOf(member.ID)[prod] {
+		t.Error("the prod membership was removed")
+	}
+
+	m.expect(m.asAdmin("PUT", "/api/v1/admin/idp-mappings/prod-rm", map[string]any{"group_id": prod}), http.StatusOK, "")
+	modest := m.createGroupVia("modestprod-"+uniqueEmail(t, "g"), false)
+	m.expect(m.asAdmin("POST", "/api/v1/admin/grants", map[string]any{"group_id": modest, "action": "run", "label": "dev"}), http.StatusCreated, "")
+	path := "/api/v1/admin/idp-mappings/prod-rm"
+	if code := m.send(sent{method: "PUT", path: path, bearer: scopedToken, body: map[string]any{"group_id": modest}}).Code; code != http.StatusForbidden {
+		t.Errorf("repoint a mapping away from a prod group: %d, want 403", code)
+	}
+	if code := m.send(sent{method: "DELETE", path: path, bearer: scopedToken}).Code; code != http.StatusForbidden {
+		t.Errorf("delete a mapping to a prod group: %d, want 403", code)
+	}
+	mappings, err := store.ListIDPMappings(context.Background(), m.pool)
+	if err != nil || mappings["prod-rm"] != prod {
+		t.Errorf("mapping = %v, %v; want unchanged pointing at the prod group", mappings["prod-rm"], err)
+	}
+}

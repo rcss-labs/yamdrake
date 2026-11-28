@@ -671,7 +671,8 @@ func (s *server) putIDPMapping(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return audit.Event{}, err
 		}
-		if principal, _ := PrincipalFrom(ctx); !principal.Admin {
+		principal, _ := PrincipalFrom(ctx)
+		if !principal.Admin {
 			if err := checkGroupWithinPower(ctx, tx, principal, req.GroupID); err != nil {
 				return audit.Event{}, err
 			}
@@ -682,7 +683,7 @@ func (s *server) putIDPMapping(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if !isAdmin(r) {
+		if !principal.Admin {
 			admins, err := adminGroupIDs(ctx, tx)
 			if err != nil {
 				return audit.Event{}, err

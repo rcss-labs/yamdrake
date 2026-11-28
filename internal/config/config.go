@@ -57,11 +57,22 @@ type Runner struct {
 	Common
 	HealthAddr string
 	RunnerID   string
+
+	// ArtifactBucket (YUMDRAKE_ARTIFACT_BUCKET, required) holds config copies;
+	// ArtifactKMSKeyID (YUMDRAKE_ARTIFACT_KMS_KEY_ID, optional) selects KMS
+	// encryption instead of S3-managed keys.
+	ArtifactBucket   string
+	ArtifactKMSKeyID string
 }
 
 const redactedPassword = "REDACTED"
 
 const minTokenSSOMaxAge = time.Hour
+
+var (
+	bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+	kmsKeyIDPattern   = regexp.MustCompile(`^[A-Za-z0-9:/_+=,.@-]{1,1000}$`)
+)
 
 var keyPrefixPattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{0,64}$`)
 
@@ -157,6 +168,17 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 			l.fail("YUMDRAKE_RUNNER_ID", "is not set and the host name could not be determined")
 		}
 		cfg.RunnerID = hostname
+	}
+
+	cfg.ArtifactBucket = l.getenv("YUMDRAKE_ARTIFACT_BUCKET")
+	if cfg.ArtifactBucket == "" {
+		l.fail("YUMDRAKE_ARTIFACT_BUCKET", "is required")
+	} else if !bucketNamePattern.MatchString(cfg.ArtifactBucket) || strings.Contains(cfg.ArtifactBucket, "..") {
+		l.fail("YUMDRAKE_ARTIFACT_BUCKET", "must be a valid S3 bucket name (3 to 63 lowercase letters, digits, '-' or '.')")
+	}
+	cfg.ArtifactKMSKeyID = l.getenv("YUMDRAKE_ARTIFACT_KMS_KEY_ID")
+	if cfg.ArtifactKMSKeyID != "" && !kmsKeyIDPattern.MatchString(cfg.ArtifactKMSKeyID) {
+		l.fail("YUMDRAKE_ARTIFACT_KMS_KEY_ID", "must be a KMS key id, key ARN or alias without spaces")
 	}
 
 	if err := l.err(); err != nil {

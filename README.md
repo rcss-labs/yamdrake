@@ -249,6 +249,8 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_MIGRATE_ON_START` | orchestrator | `true` | Must be `true` or `false`. |
 | `YUMDRAKE_HEALTH_ADDR` | runner | `127.0.0.1:8081` | `host:port`, with a port from 1 to 65535. Also read by `healthcheck`. |
 | `YUMDRAKE_RUNNER_ID` | runner | the host name | Identifies the runner in its logs. If unset and the host name cannot be determined, startup fails. |
+| `YUMDRAKE_ARTIFACT_BUCKET` | runner | none, required | S3 bucket (3 to 63 lowercase letters, digits, `-`, `.`) that holds encrypted copies of the config files a run touches, under `manifests/<run>/<service>/<kind>/`. |
+| `YUMDRAKE_ARTIFACT_KMS_KEY_ID` | runner | empty (S3-managed encryption) | KMS key id, ARN or alias used to encrypt those copies instead of S3-managed keys. |
 | `YUMDRAKE_SECRETS_MODE` | orchestrator, runner | `local` | `local` or `kms`. With `kms` the secrets are encrypted by an AWS KMS key (`YUMDRAKE_KMS_KEY_ID`) using the default AWS credential chain and region (`AWS_REGION`); the purpose of each secret is the KMS encryption context. Any other value is a config error. |
 | `YUMDRAKE_LOCAL_SECRET_KEY` | orchestrator, runner | none (required when the mode is `local`) | Base64 of exactly 32 bytes (for example `openssl rand -base64 32`). Encrypts stored GitHub credentials. For development and tests only; never printed. |
 | `YUMDRAKE_KMS_KEY_ID` | orchestrator, runner | none (required when the mode is `kms`) | Id, ARN or alias of the KMS key that encrypts stored secrets (GitHub and AWS credentials). In `kms` mode the orchestrator role's `kms:Decrypt` grant must carry a condition on `kms:EncryptionContext:purpose` that excludes `aws-deploy`; only the runner's grant may decrypt `aws-deploy`. |

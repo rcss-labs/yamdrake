@@ -1005,3 +1005,60 @@ export interface SlackTestResult {
   /** Slack's error code when ok is false (for example "channel_not_found"); "" otherwise. */
   code: string
 }
+
+// ---- Overview (Plan 9) -------------------------------------------------------
+
+export interface OverviewDay {
+  /** "2026-11-28". */
+  date: string
+  succeeded: number
+  /** Includes partly succeeded runs. */
+  failed: number
+  /** Cancelled and invalidated runs. */
+  other: number
+}
+
+export interface OverviewFailingService {
+  service: string
+  failures: number
+  common_reason: string
+}
+
+export interface OverviewAttention {
+  run_id: number
+  state: RunState
+  job: string
+  environment: string
+  label: string
+  reason: string
+  by: string
+  at: string
+}
+
+export interface OverviewEnvironment {
+  environment: string
+  label: string
+  run_id: number | null
+  state: RunState
+  job: string
+  at: string | null
+}
+
+/** GET /api/v1/analytics/overview?label=&days=. */
+export interface Overview {
+  from: string
+  to: string
+  runs: number
+  prev_runs: number
+  /** 0..1, null when no run finished in the period. */
+  success_rate: number | null
+  prev_success_rate: number | null
+  median_duration_seconds: number | null
+  prev_median_duration_seconds: number | null
+  waiting_approval: number
+  oldest_waiting: string | null
+  days: OverviewDay[]
+  top_failing: OverviewFailingService[]
+  attention: OverviewAttention[]
+  environments: OverviewEnvironment[]
+}

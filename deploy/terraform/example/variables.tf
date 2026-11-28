@@ -236,7 +236,7 @@ variable "kms_key_administrator_arns" {
 }
 
 variable "log_archive_retention_days" {
-  description = "Days an archived run log is kept in the log bucket before it expires."
+  description = "Days an archived run log is kept in the log bucket before it expires. Also sets YUMDRAKE_LOG_ARCHIVE_RETENTION so the orchestrator drops the index rows with the objects. The default matches the orchestrator's own default of 8760h."
   type        = number
   default     = 365
 }
@@ -339,6 +339,12 @@ variable "cache_node_count" {
 variable "alarm_topic_arn" {
   description = "ARN of an existing SNS topic that receives the alarms."
   type        = string
+}
+
+variable "aws_throttles_alarm_threshold" {
+  description = "Alarm when AWS throttles Yumdrake more than this many times in a minute (the alarm needs 3 of 5 such minutes)."
+  type        = number
+  default     = 10
 }
 
 variable "oldest_queued_leg_age_alarm_seconds" {

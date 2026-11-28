@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -1420,5 +1422,95 @@ func TestLogWriterRecordsPersistFailure(t *testing.T) {
 	}
 	if n := events(); n != 1 {
 		t.Fatalf("after recovery there are %d events, want still 1", n)
+	}
+}
+
+func TestMissingArchiveObjectReadsAsAGap(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 3)
+	ctx := context.Background()
+	seedForArchive(t, e)
+	settle(t, e, "succeeded")
+	dir := t.TempDir()
+	archive, err := NewDirArchive(dir, archiveTestCipher(t, "0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewDirArchive: %v", err)
+	}
+	now := baseTime.Add(48 * time.Hour)
+	if n, err := NewArchiver(e.pool, archive, time.Hour, func() time.Time { return now }, nil).ArchiveSettledLegs(ctx); err != nil || n != 2 {
+		t.Fatalf("ArchiveSettledLegs = %d, %v; want 2", n, err)
+	}
+	if err := os.Remove(filepath.Join(dir, filepath.FromSlash(archiveKey(e.runID, e.legs[0].ID)))); err != nil {
+		t.Fatalf("remove the archive object: %v", err)
+	}
+
+	r := NewReader(e.pool, archive)
+	page, err := r.Read(ctx, e.runID, Filter{}, "", 100)
+	if err != nil {
+		t.Fatalf("Read with a missing archive object: %v", err)
+	}
+	var fromLeg1, runLines int
+	for _, l := range page.Lines {
+		switch l.LegID {
+		case e.legs[0].ID:
+			t.Fatalf("a line of the lost leg came back: %+v", l)
+		case e.legs[1].ID:
+			fromLeg1++
+		default:
+			runLines++
+		}
+	}
+	if fromLeg1 != 4 || runLines != 1 {
+		t.Fatalf("lines of the intact leg = %d, run lines = %d; want 4 and 1", fromLeg1, runLines)
+	}
+	want := []Gap{{LegID: e.legs[0].ID, FromSeq: 1, ToSeq: 4, Note: "older log lines for this step are no longer available"}}
+	if !reflect.DeepEqual(page.Gaps, want) {
+		t.Fatalf("gaps = %+v, want %+v", page.Gaps, want)
+	}
+	// Reported once: the next page does not report it again.
+	again, err := r.Read(ctx, e.runID, Filter{}, page.Next, 100)
+	if err != nil || len(again.Gaps) != 0 {
+		t.Fatalf("second read = %+v, %v; want no gaps", again, err)
+	}
+}
+
+func TestPruneExpiredDeletesObjectsAndRowsTogether(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, 3)
+	ctx := context.Background()
+	seedForArchive(t, e)
+	settle(t, e, "succeeded")
+	dir := t.TempDir()
+	archive, err := NewDirArchive(dir, archiveTestCipher(t, "0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewDirArchive: %v", err)
+	}
+	now := baseTime.Add(48 * time.Hour)
+	clock := func() time.Time { return now }
+	ar := NewArchiver(e.pool, archive, time.Hour, clock, nil).WithRetention(24 * time.Hour)
+	if n, err := ar.ArchiveSettledLegs(ctx); err != nil || n != 2 {
+		t.Fatalf("ArchiveSettledLegs = %d, %v; want 2", n, err)
+	}
+	// Archived just now: inside retention, nothing is deleted.
+	if n, err := ar.PruneExpired(ctx); err != nil || n != 0 {
+		t.Fatalf("PruneExpired inside retention = %d, %v; want 0", n, err)
+	}
+	now = now.Add(25 * time.Hour)
+	if n, err := ar.PruneExpired(ctx); err != nil || n != 2 {
+		t.Fatalf("PruneExpired after retention = %d, %v; want 2", n, err)
+	}
+	var rows int
+	if err := e.pool.QueryRow(ctx, `SELECT count(*) FROM log_archives WHERE run_id = $1`, e.runID).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("log_archives rows = %d, %v; want 0", rows, err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(archiveKey(e.runID, e.legs[i].ID)))); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("object of leg %d still exists: %v", i, err)
+		}
+	}
+	// Retention 0 keeps everything.
+	forever := NewArchiver(e.pool, archive, time.Hour, clock, nil)
+	if n, err := forever.PruneExpired(ctx); err != nil || n != 0 {
+		t.Fatalf("PruneExpired with no retention = %d, %v; want 0", n, err)
 	}
 }

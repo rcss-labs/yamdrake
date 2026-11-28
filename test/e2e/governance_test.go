@@ -147,6 +147,18 @@ func (g *governanceStack) messagesOf(runID int64) []string {
 	return slackMessagesOf(g.t, g.slack, runID)
 }
 
+// runMessages are the recorded messages about runs. A local-account sign-in
+// also posts a break-glass message, which is not about any run.
+func runMessages(slack *fakeslack.Server) []fakeslack.Message {
+	var out []fakeslack.Message
+	for _, m := range slack.Messages() {
+		if !strings.HasPrefix(m.Text, "Break-glass sign-in:") {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func slackMessagesOf(t *testing.T, slack *fakeslack.Server, runID int64) []string {
 	var texts []string
 	suffix := fmt.Sprintf("/runs/%d", runID)
@@ -342,7 +354,7 @@ func TestSlackOutageDoesNotAffectRuns(t *testing.T) {
 		err := g.pool.QueryRow(t.Context(), `SELECT count(*) FROM notifications WHERE state = 'pending' AND attempts >= 1`).Scan(&n)
 		return err == nil && n >= 1
 	})
-	if sent := g.slack.Messages(); len(sent) != 0 {
+	if sent := runMessages(g.slack); len(sent) != 0 {
 		t.Fatalf("fake Slack recorded %d messages during the outage", len(sent))
 	}
 

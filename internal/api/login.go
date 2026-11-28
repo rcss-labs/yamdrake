@@ -17,6 +17,7 @@ import (
 
 	"github.com/rcss-labs/yumdrake/internal/audit"
 	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/notify"
 	"github.com/rcss-labs/yumdrake/internal/session"
 	"github.com/rcss-labs/yumdrake/internal/store"
 )
@@ -204,7 +205,27 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	if user.Source == "local" {
+		s.announceBreakGlass(r, user.Email)
+	}
 	writeJSON(w, http.StatusOK, principalView(principal))
+}
+
+// announceBreakGlass tells people that a local account signed in: a warn line in
+// the service log (the audit entry already exists) and a Slack message to every
+// channel that hears about production runs. Single sign-on is the normal way
+// in, so a local sign-in should be noticed. A failure here is logged and never
+// stops the sign-in.
+func (s *server) announceBreakGlass(r *http.Request, email string) {
+	ctx := context.WithoutCancel(r.Context())
+	s.Log.Warn("break-glass sign-in", "email", email)
+	channels, err := store.ProductionNotificationChannels(ctx, s.Pool)
+	if err == nil {
+		err = notify.EnqueueBreakGlassSignIn(ctx, s.Pool, channels, email, s.Now())
+	}
+	if err != nil {
+		s.Log.Error("announce break-glass sign-in", "error", err.Error())
+	}
 }
 
 // recordFailedLogin audits a failed sign-in of an account that exists. Anyone

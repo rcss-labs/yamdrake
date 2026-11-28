@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -126,6 +127,7 @@ func resolveDeps(cfg config.Runner, pool *pgxpool.Pool, id identity, copies arti
 			return inventory, nil
 		},
 		SourceRun: func(ctx context.Context, runID int64) (store.Run, error) { return store.GetRun(ctx, pool, runID) },
+		Freezes:   func(ctx context.Context) ([]store.Freeze, error) { return store.ActiveFreezes(ctx, pool, time.Now()) },
 		Options:   cfg.AWS,
 	}
 }

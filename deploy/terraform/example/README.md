@@ -24,7 +24,7 @@ default are required.
 - Task roles for the orchestrator and the runner, and a task execution role.
 - An ECS cluster on Fargate with an orchestrator service behind an internal HTTPS
   load balancer, and a runner service that scales on the `QueueDepth` metric.
-- CloudWatch log groups and four alarms to an SNS topic you provide.
+- CloudWatch log groups and five alarms to an SNS topic you provide.
 
 ## What it assumes already exists
 

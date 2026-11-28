@@ -104,3 +104,15 @@ func PruneEvents(ctx context.Context, db DBTX, olderThan time.Time) (int, error)
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// RecordEvents adds n system events of one kind at the same time, in one
+// statement. n below one does nothing.
+func RecordEvents(ctx context.Context, db DBTX, kind string, n int, at time.Time) error {
+	if n < 1 {
+		return nil
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO system_events (kind, at) SELECT $1, $2 FROM generate_series(1, $3::int)`, kind, dbTime(at), n); err != nil {
+		return fmt.Errorf("record events: %w", mapError(err))
+	}
+	return nil
+}

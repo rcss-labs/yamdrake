@@ -27,7 +27,17 @@ import (
 type Archive interface {
 	Put(ctx context.Context, key string, data []byte) error
 	Get(ctx context.Context, key string) ([]byte, error)
+	// Delete removes the object; deleting a missing object is not an error.
+	Delete(ctx context.Context, key string) error
 }
+
+// lostArchiveNote is the marker on the gap that stands for a leg whose archive
+// object is gone.
+const lostArchiveNote = "older log lines for this step are no longer available"
+
+// ErrArchiveNotFound is wrapped by Get when the object does not exist, for
+// example because retention removed it.
+var ErrArchiveNotFound = errors.New("log archive: object not found")
 
 // logArchivePurpose binds every stored archive to this use in the cipher.
 const logArchivePurpose = "log-archive"
@@ -113,6 +123,9 @@ func (d *dirArchive) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	sealed, err := os.ReadFile(target) //nolint:gosec // target comes from file(), which confines keys to the archive root
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("log archive: read %s: %w", key, ErrArchiveNotFound)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("log archive: read %s: %w", key, err)
 	}
@@ -178,6 +191,7 @@ type Archiver struct {
 	pool      *pgxpool.Pool
 	archive   Archive
 	olderThan time.Duration
+	retention time.Duration
 	now       func() time.Time
 	log       *slog.Logger
 }
@@ -386,7 +400,7 @@ func (r *Reader) archivedLegs(ctx context.Context, q querier, runID int64) (map[
 // in sequence order with a non-decreasing sort key, so no later line of the leg
 // can belong to a page of limit lines. cache, when not nil, keeps each decoded
 // leg between calls so a paged read decompresses a leg once.
-func (r *Reader) readArchived(ctx context.Context, q querier, runID int64, f Filter, cursor map[int64]int64, archived map[int64]archiveRef, limit int, cache archiveCache, rowCands []candidate) ([]candidate, map[int64][]Gap, error) {
+func (r *Reader) readArchived(ctx context.Context, q querier, runID int64, f Filter, cursor map[int64]int64, archived map[int64]archiveRef, limit int, cache archiveCache, rowCands []candidate, lost map[int64]Gap) ([]candidate, map[int64][]Gap, error) {
 	var wanted []int64
 	for leg, ref := range archived {
 		if ref.LastSeq > cursor[leg] {
@@ -463,6 +477,17 @@ func (r *Reader) readArchived(ctx context.Context, q querier, runID int64, f Fil
 		lines, cached := cache[leg]
 		if !cached {
 			data, err := r.archive.Get(ctx, ref.Key)
+			if errors.Is(err, ErrArchiveNotFound) {
+				// Retention or an operator removed the object. The rest of the run's
+				// log is still readable, so this leg's lines become one gap, and
+				// read() moves the cursor past the leg so it is reported once.
+				g := Gap{LegID: leg, FromSeq: cursor[leg] + 1, ToSeq: ref.LastSeq, Note: lostArchiveNote}
+				if lm := meta[leg]; (f.StepID != nil && (lm.stepID == nil || *lm.stepID != *f.StepID)) || (f.Service != "" && lm.service != f.Service) {
+					g.Note = "" // the filter hides this leg: skip it quietly, but do not read it again
+				}
+				lost[leg] = g
+				continue
+			}
 			if err != nil {
 				return nil, nil, fmt.Errorf("read archived leg %d: %w", leg, err)
 			}
@@ -514,4 +539,68 @@ func (r *Reader) readArchived(ctx context.Context, q querier, runID int64, f Fil
 		}
 	}
 	return out, gaps, nil
+}
+
+// WithRetention makes PruneExpired delete archives older than d. Zero keeps
+// them forever.
+func (a *Archiver) WithRetention(d time.Duration) *Archiver {
+	a.retention = d
+	return a
+}
+
+// PruneExpired deletes up to archiveBatchSize archives older than the
+// retention, object first and then its log_archives row, so the index never
+// points at a removed object for long and a failed delete leaves both for the
+// next call. It returns how many it removed. No retention keeps everything.
+func (a *Archiver) PruneExpired(ctx context.Context) (int, error) {
+	if a.retention <= 0 {
+		return 0, nil
+	}
+	cutoff := a.now().Add(-a.retention).UTC()
+	rows, err := a.pool.Query(ctx, `SELECT run_id, leg_id, key FROM log_archives WHERE archived_at < $1 ORDER BY archived_at LIMIT $2`, cutoff, archiveBatchSize)
+	if err != nil {
+		return 0, fmt.Errorf("find expired log archives: %w", err)
+	}
+	type expired struct {
+		run, leg int64
+		key      string
+	}
+	var found []expired
+	for rows.Next() {
+		var e expired
+		if err := rows.Scan(&e.run, &e.leg, &e.key); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan expired log archive: %w", err)
+		}
+		found = append(found, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("find expired log archives: %w", err)
+	}
+	removed := 0
+	var errs []error
+	for _, e := range found {
+		if err := a.archive.Delete(ctx, e.key); err != nil {
+			errs = append(errs, fmt.Errorf("leg %d: %w", e.leg, err))
+			continue
+		}
+		if _, err := a.pool.Exec(ctx, `DELETE FROM log_archives WHERE run_id = $1 AND leg_id = $2`, e.run, e.leg); err != nil {
+			errs = append(errs, fmt.Errorf("leg %d: delete archive record: %w", e.leg, err))
+			continue
+		}
+		removed++
+	}
+	return removed, errors.Join(errs...)
+}
+
+func (d *dirArchive) Delete(_ context.Context, key string) error {
+	target, err := d.file(key)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("log archive: delete %s: %w", key, err)
+	}
+	return nil
 }

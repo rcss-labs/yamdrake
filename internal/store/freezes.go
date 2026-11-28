@@ -101,3 +101,24 @@ func queryFreezes(ctx context.Context, db DBTX, query string, args ...any) ([]Fr
 	}
 	return freezes, nil
 }
+
+// freezeTimeLayout is how a freeze's end is worded.
+const freezeTimeLayout = "2006-01-02 15:04 UTC"
+
+// FrozenReason words the freeze that blocks a run, or "" when none does. When
+// several apply it names the one that ends last (the lowest id on a tie), as
+// that is the one the run has to wait for.
+func FrozenReason(run Run, active []Freeze) string {
+	var blocking *Freeze
+	for i := range active {
+		f := active[i]
+		applies := (f.Label != "" && f.Label == run.Label) || (f.Environment != "" && f.Environment == run.Environment)
+		if applies && (blocking == nil || f.ExpiresAt.After(blocking.ExpiresAt)) {
+			blocking = &active[i]
+		}
+	}
+	if blocking == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s, until %s", blocking.Reason, blocking.ExpiresAt.UTC().Format(freezeTimeLayout))
+}

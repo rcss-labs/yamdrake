@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rcss-labs/yumdrake/internal/logs"
 	"github.com/rcss-labs/yumdrake/internal/spec"
 	"github.com/rcss-labs/yumdrake/internal/store"
 	"github.com/rcss-labs/yumdrake/internal/testutil/awsseed"
@@ -735,5 +736,44 @@ func TestRunDetailCarriesJobAndRequesterNames(t *testing.T) {
 	f.exec(`UPDATE users SET name = 'Ada Admin' WHERE email = $1`, email)
 	if started := f.mustDo("POST", runPath(id, "/cancel"), nil, http.StatusOK); started["requested_by_name"] != "Ada Admin" || started["job_name"] != "Release backends" {
 		t.Errorf("a run action answers job_name %v requested_by_name %v, want the same names", started["job_name"], started["requested_by_name"])
+	}
+}
+
+// goneArchive stands for an archive whose objects were deleted.
+type goneArchive struct{}
+
+func (goneArchive) Put(context.Context, string, []byte) error { return nil }
+func (goneArchive) Get(_ context.Context, key string) ([]byte, error) {
+	return nil, fmt.Errorf("read %s: %w", key, logs.ErrArchiveNotFound)
+}
+func (goneArchive) Delete(context.Context, string) error { return nil }
+
+func TestLogRouteAnswers200WithAGapWhenTheArchiveObjectIsGone(t *testing.T) {
+	f := newRunFixture(t)
+	f.deps.Logs = logs.NewReader(f.pool, goneArchive{})
+	f.handler = New(f.deps)
+	id := f.newRun(f.jobID, devEnvironment, "s1")
+	legs, err := store.LegsOfRun(context.Background(), f.pool, id)
+	if err != nil || len(legs) == 0 {
+		t.Fatalf("LegsOfRun: %v %v", legs, err)
+	}
+	if _, err := f.pool.Exec(context.Background(),
+		`INSERT INTO log_archives (run_id, leg_id, key, line_count, first_seq, last_seq, archived_at) VALUES ($1, $2, 'runs/gone.ndjson.gz', 4, 1, 4, now())`,
+		id, legs[0].ID); err != nil {
+		t.Fatalf("record the archive: %v", err)
+	}
+
+	code, got := f.get(f.adminToken, runPath(id, "/log"))
+	if code != http.StatusOK {
+		t.Fatalf("log route = %d %v, want 200", code, got)
+	}
+	gaps := got["gaps"].([]any)
+	if len(gaps) != 1 {
+		t.Fatalf("gaps = %v, want one", gaps)
+	}
+	gap := gaps[0].(map[string]any)
+	if gap["leg_id"] != float64(legs[0].ID) || gap["from_seq"] != float64(1) || gap["to_seq"] != float64(4) ||
+		gap["note"] != "older log lines for this step are no longer available" {
+		t.Errorf("gap = %v", gap)
 	}
 }

@@ -65,6 +65,7 @@ type Orchestrator struct {
 	// LogArchiveAfter how long a leg must have been settled first. Both apply
 	// only when LogArchiveDir is set.
 	LogArchiveInterval, LogArchiveAfter time.Duration
+	LogArchiveRetention                 time.Duration
 	// SweepInterval is how often the engine loop sweeps expired leases and
 	// advances every active run, whether or not a wake-up arrived.
 	SweepInterval time.Duration
@@ -262,6 +263,7 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	}
 	cfg.LogArchiveInterval = l.duration("YUMDRAKE_LOG_ARCHIVE_INTERVAL", "1m")
 	cfg.LogArchiveAfter = l.duration("YUMDRAKE_LOG_ARCHIVE_AFTER", "1h")
+	cfg.LogArchiveRetention = l.durationOrZero("YUMDRAKE_LOG_ARCHIVE_RETENTION", "8760h")
 	cfg.SweepInterval = l.duration("YUMDRAKE_SWEEP_INTERVAL", "2s")
 	cfg.RunnerGoneAfter = l.duration("YUMDRAKE_RUNNER_GONE_AFTER", "2m")
 	if cfg.RunnerGoneAfter > 0 && cfg.RunnerGoneAfter < minRunnerGoneAfter {
@@ -398,7 +400,7 @@ const maxMetricDimensions = 30
 // use one; a test in internal/metrics keeps this list in step with Collect.
 var MetricNames = []string{
 	"QueueDepth", "OldestQueuedLegAge", "ActiveRunners", "ExpiredLeases", "RunsFinished", "RunsFailed",
-	"RunDuration", "SyncAge", "LogPersistenceFailures", "NotificationFailures", "NotificationsPending",
+	"RunDuration", "SyncAge", "LogPersistenceFailures", "AWSThrottles", "NotificationFailures", "NotificationsPending",
 }
 
 var metricDimensionName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,255}$`)
@@ -471,6 +473,20 @@ func (l *loader) duration(variable, fallback string) time.Duration {
 	}
 	if d <= 0 {
 		l.fail(variable, "must be greater than zero")
+		return 0
+	}
+	return d
+}
+
+// durationOrZero is duration, except that 0 is allowed and means "never".
+func (l *loader) durationOrZero(variable, fallback string) time.Duration {
+	raw := l.valueOr(variable, fallback)
+	if raw == "0" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		l.fail(variable, "must be a Go duration such as 8760h, or 0 to keep forever")
 		return 0
 	}
 	return d

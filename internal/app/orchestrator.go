@@ -109,7 +109,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			}
 		}
 		if archive != nil {
-			archiver = logs.NewArchiver(pool, archive, cfg.LogArchiveAfter, nil, log)
+			archiver = logs.NewArchiver(pool, archive, cfg.LogArchiveAfter, nil, log).WithRetention(cfg.LogArchiveRetention)
 		}
 		slack := notify.NewSlack(cfg.SlackAPIURL, nil)
 		sender := notify.NewSender(pool, slack, notify.SlackTokenSource(pool, cipher), time.Now, log)
@@ -149,6 +149,10 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			sender.Run(ctx, cfg.NotifyInterval)
 			log.Info("notification sender stopped")
 		}}
+		// AWS throttling this service saw (discovery, versions) feeds the AWSThrottles metric.
+		background = append(background, func(ctx context.Context) {
+			metrics.RunThrottleRecorder(ctx, pool, awsx.TakeThrottles, metrics.ThrottleRecordInterval, log)
+		})
 		if archiver != nil {
 			background = append(background, func(ctx context.Context) {
 				log.Info("log archive loop started", "interval", cfg.LogArchiveInterval.String(), "after", cfg.LogArchiveAfter.String())
@@ -219,6 +223,7 @@ func notificationStats(pool *pgxpool.Pool) func(context.Context) (any, error) {
 // settledLegArchiver is what archiveLoop drives; *logs.Archiver satisfies it.
 type settledLegArchiver interface {
 	ArchiveSettledLegs(ctx context.Context) (int, error)
+	PruneExpired(ctx context.Context) (int, error)
 }
 
 // archiveLoop archives settled legs every interval until ctx ends. A failed
@@ -240,6 +245,11 @@ func archiveLoop(ctx context.Context, archiver settledLegArchiver, every time.Du
 			log.Error("log archive round failed", "error", err.Error())
 		} else if n > 0 {
 			log.Info("archived settled legs", "legs", n)
+		}
+		if n, err := archiver.PruneExpired(ctx); err != nil && ctx.Err() == nil {
+			log.Error("log archive retention round failed", "error", err.Error())
+		} else if n > 0 {
+			log.Info("deleted expired log archives", "archives", n)
 		}
 	}
 }

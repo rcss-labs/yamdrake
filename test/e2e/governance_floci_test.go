@@ -339,7 +339,7 @@ func TestSlackOutageDoesNotAffectRunsOnFloci(t *testing.T) {
 		err := g.pool.QueryRow(t.Context(), `SELECT count(*) FROM notifications WHERE state = 'pending' AND attempts >= 1`).Scan(&n)
 		return err == nil && n >= 1
 	})
-	if sent := g.slack.Messages(); len(sent) != 0 {
+	if sent := runMessages(g.slack); len(sent) != 0 {
 		t.Fatalf("fake Slack recorded %d messages during the outage", len(sent))
 	}
 

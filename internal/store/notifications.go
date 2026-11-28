@@ -26,7 +26,8 @@ type Notification struct {
 	SentAt        *time.Time
 }
 
-const notificationColumns = `id, run_id, kind, channel, payload, state, attempts, next_attempt_at, last_error, created_at, sent_at`
+// run_id is NULL for a notification that is not about a run; RunID is 0 then.
+const notificationColumns = `id, coalesce(run_id, 0), kind, channel, payload, state, attempts, next_attempt_at, last_error, created_at, sent_at`
 
 func scanNotification(r rowScanner) (Notification, error) {
 	var n Notification
@@ -52,7 +53,7 @@ func EnqueueNotification(ctx context.Context, tx DBTX, n Notification) error {
 	}
 	_, err := tx.Exec(ctx,
 		`INSERT INTO notifications (run_id, kind, channel, payload, next_attempt_at, created_at)
-		 VALUES ($1, $2, $3, $4, coalesce($5::timestamptz, now()), coalesce($6::timestamptz, now()))
+		 VALUES (nullif($1::bigint, 0), $2, $3, $4, coalesce($5::timestamptz, now()), coalesce($6::timestamptz, now()))
 		 ON CONFLICT (run_id, kind) DO NOTHING`,
 		n.RunID, n.Kind, n.Channel, payload, next, created)
 	if err != nil {
@@ -209,4 +210,29 @@ func NotificationStats(ctx context.Context, db DBTX) (pending, failed int, oldes
 		return 0, 0, nil, fmt.Errorf("notification stats: %w", mapError(err))
 	}
 	return pending, failed, oldestPending, nil
+}
+
+// ProductionNotificationChannels lists, without repeats, the Slack channels of
+// the jobs that can run in an environment labelled prod: the channels that
+// already hear about production runs.
+func ProductionNotificationChannels(ctx context.Context, db DBTX) ([]string, error) {
+	rows, err := db.Query(ctx, `
+SELECT DISTINCT last_good->>'slack_channel' AS channel FROM job_sources
+WHERE last_good IS NOT NULL
+  AND coalesce(last_good->>'slack_channel', '') <> ''
+  AND last_good->'labels' ? 'prod'
+ORDER BY channel`)
+	if err != nil {
+		return nil, fmt.Errorf("list production notification channels: %w", mapError(err))
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var channel string
+		if err := rows.Scan(&channel); err != nil {
+			return nil, fmt.Errorf("scan production notification channel: %w", err)
+		}
+		out = append(out, channel)
+	}
+	return out, rows.Err()
 }

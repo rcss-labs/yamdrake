@@ -29,7 +29,10 @@ type Filter struct {
 }
 
 // Gap is a missing run of sequence numbers inside one leg.
-type Gap struct{ LegID, FromSeq, ToSeq int64 }
+type Gap struct {
+	LegID, FromSeq, ToSeq int64
+	Note                  string // why the lines are missing, when known
+}
 
 // Page is one answer of Read. Next resumes right after the last line
 // returned, whatever the filter.
@@ -212,8 +215,9 @@ func (r *Reader) read(ctx context.Context, runID int64, f Filter, after Cursor, 
 		return Page{}, err
 	}
 	archiveGaps := map[int64][]Gap{} // per archived leg, every gap after the cursor
+	lost := map[int64]Gap{}          // archived legs whose object is gone
 	if len(archived) > 0 {
-		archCands, gaps, err := r.readArchived(ctx, tx, runID, f, cursor, archived, limit, cache, cands)
+		archCands, gaps, err := r.readArchived(ctx, tx, runID, f, cursor, archived, limit, cache, cands, lost)
 		if err != nil {
 			return Page{}, err
 		}
@@ -247,6 +251,9 @@ func (r *Reader) read(ctx context.Context, runID int64, f Filter, after Cursor, 
 	for leg, seq := range covered {
 		next[leg] = seq
 	}
+	for leg, g := range lost {
+		next[leg] = g.ToSeq
+	}
 	if page.Next, err = encodeCursor(next); err != nil {
 		return Page{}, err
 	}
@@ -260,6 +267,17 @@ func (r *Reader) read(ctx context.Context, runID int64, f Filter, after Cursor, 
 	if page.Gaps, err = r.gaps(ctx, tx, runID, cursor, covered, archived, archiveGaps); err != nil {
 		return Page{}, err
 	}
+	for _, g := range lost {
+		if g.Note != "" {
+			page.Gaps = append(page.Gaps, g)
+		}
+	}
+	sort.Slice(page.Gaps, func(i, j int) bool {
+		if page.Gaps[i].LegID != page.Gaps[j].LegID {
+			return page.Gaps[i].LegID < page.Gaps[j].LegID
+		}
+		return page.Gaps[i].FromSeq < page.Gaps[j].FromSeq
+	})
 	return page, nil
 }
 

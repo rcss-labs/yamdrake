@@ -1004,3 +1004,54 @@ func TestLegCancelledBeforeStartIsNotExecuted(t *testing.T) {
 		t.Errorf("the executor ran %d times for a leg cancelled before it started, want 0", n)
 	}
 }
+
+// "Check again" after a cancel request must run the executor: the leg was
+// attempted, its operation is still intended, and settling it as "cancelled
+// before it started" would hide an uncertain change and release the run's locks.
+// The executor runs with CancelRequested true, reconciles through ErrAmbiguous
+// and settles the leg with what it found.
+func TestCheckAgainAfterCancelRunsTheExecutorToReconcile(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	ctx := context.Background()
+	leg := h.addLeg("billing")
+	h.abandonedAttempt(func(c *queue.Claimed) {
+		if _, err := h.q.Intend(ctx, c.Leg.ID, c.Leg.Generation, "deploy", "deploy-1", []byte(`{"image":"app:1"}`)); err != nil {
+			t.Fatalf("Intend: %v", err)
+		}
+	})
+	// The leg ended unknown, a person cancelled the run, then asked to check again.
+	if _, err := h.pool.Exec(ctx, `UPDATE legs SET state = 'unknown', finished_at = now() WHERE id = $1`, leg.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FlagLegCancel(ctx, h.pool, leg.ID); err != nil {
+		t.Fatalf("FlagLegCancel: %v", err)
+	}
+	if err := store.SetLegState(ctx, h.pool, leg.ID, "queued", h.clock.Now()); err != nil {
+		t.Fatalf("check again: %v", err)
+	}
+
+	var executed atomic.Int32
+	var sawCancel, sawAmbiguous atomic.Bool
+	rr := h.startRunner(h.q, runnerOptions{id: "checker", executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			executed.Add(1)
+			sawCancel.Store(env.CancelRequested(ctx))
+			_, err := env.Do(ctx, "deploy", "deploy-1", nil, func() (any, error) { return nil, nil })
+			sawAmbiguous.Store(errors.Is(err, ErrAmbiguous))
+			return succeed(`{}`) // the executor looked at the real system and found the change in place
+		}),
+	}})
+	waitFor(t, "the leg to settle", func() bool {
+		return h.leg(leg.ID).State != "queued" && h.leg(leg.ID).State != "claimed" && h.leg(leg.ID).State != "running"
+	})
+	if err := rr.stop(t); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if got := h.leg(leg.ID); got.State != "succeeded" {
+		t.Fatalf("leg = %s (%s), want succeeded after reconciling, not cancelled before it started", got.State, got.FailureShort)
+	}
+	if executed.Load() != 1 || !sawCancel.Load() || !sawAmbiguous.Load() {
+		t.Errorf("executed %d times, saw cancel %v, saw ambiguous %v; want once, true, true", executed.Load(), sawCancel.Load(), sawAmbiguous.Load())
+	}
+}

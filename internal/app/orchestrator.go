@@ -77,7 +77,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 		var archive logs.Archive
 		var archiver *logs.Archiver
 		if cfg.LogArchiveDir != "" {
-			if archive, err = logs.NewDirArchive(cfg.LogArchiveDir); err != nil {
+			if archive, err = logs.NewDirArchive(cfg.LogArchiveDir, cipher); err != nil {
 				return Extension{}, fmt.Errorf("log archive: %w", err)
 			}
 			archiver = logs.NewArchiver(pool, archive, cfg.LogArchiveAfter, nil, log)

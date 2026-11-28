@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/version"
+	"github.com/rcss-labs/yumdrake/internal/version"
 )
 
 const validTree = "../../internal/spec/testdata/valid"

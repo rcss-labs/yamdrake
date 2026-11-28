@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 func (s *server) queueRoutes() []routeDef {

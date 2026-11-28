@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
 )
 
 // Common holds the settings shared by both service binaries.

@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/rcss-labs/yamdrake/internal/audit"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/audit"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // recordAudit writes an audit entry for the request's principal into db. Its

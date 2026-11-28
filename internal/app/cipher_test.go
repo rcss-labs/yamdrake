@@ -7,7 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
-	"github.com/rcss-labs/yamdrake/internal/config"
+	"github.com/rcss-labs/yumdrake/internal/config"
 )
 
 func TestNewCipherLocalWorksWithoutAWS(t *testing.T) {

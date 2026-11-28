@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/cli"
 )
 
 // recorded is one request the fake server saw.

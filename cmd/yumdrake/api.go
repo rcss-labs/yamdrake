@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/cli"
 )
 
 // apiFlags are the flags every command that talks to the server shares.

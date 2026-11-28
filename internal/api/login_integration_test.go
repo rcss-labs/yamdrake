@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/auth"
-	"github.com/rcss-labs/yamdrake/internal/session"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/auth"
+	"github.com/rcss-labs/yumdrake/internal/session"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 func (h *harness) login(email, password string, extra ...func(*sent)) *httptest.ResponseRecorder {

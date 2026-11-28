@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/cli"
 )
 
 const approvalsUsage = `usage: yumdrake approvals <command>

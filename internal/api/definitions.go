@@ -13,10 +13,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/rcss-labs/yamdrake/internal/audit"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/store"
-	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
+	"github.com/rcss-labs/yumdrake/internal/audit"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/store"
+	yumsync "github.com/rcss-labs/yumdrake/internal/sync"
 )
 
 type inventoryResponse struct {

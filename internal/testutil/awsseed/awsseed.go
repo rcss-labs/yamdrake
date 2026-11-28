@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // Connect adds a connected AWS account (role method, no secrets) for each

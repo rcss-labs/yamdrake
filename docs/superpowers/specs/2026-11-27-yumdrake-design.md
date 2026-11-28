@@ -3,7 +3,7 @@
 Date: 27 November 2026
 Status: revision 3, draft for approval. Revised after the architecture review in `docs/reviews/2026-11-27-design-review.md` and the owner's decisions recorded in section 19.
 Clickable mockup: https://claude.ai/artifact/5ew1QJFSoieUcSnKzKuP9L
-Mockup source: `docs/mockup/yumdrake-mockup.dc.html`. Its `<style>` block holds the design tokens and component styles, its markup holds each screen's layout, fields and filters, and its script holds sample data and behaviour. The mockup predates this revision; section 12 lists the screens it does not have yet. The repository is named `yamdrake`; the product is Yumdrake.
+Mockup source: `docs/mockup/yumdrake-mockup.dc.html`. Its `<style>` block holds the design tokens and component styles, its markup holds each screen's layout, fields and filters, and its script holds sample data and behaviour. The mockup predates this revision; section 12 lists the screens it does not have yet. The repository and the Go module are named `yumdrake` (github.com/rcss-labs/yumdrake); the product is Yumdrake.
 
 Calls marked **(call)** were made while writing and were not decided in conversation. Section 19 records what the owner decided and what is still open. Appendix A records what was done with each review finding.
 
@@ -550,7 +550,7 @@ Decided by the owner on 27 November 2026:
 4. **Verification**: the ECS check inside `ecs-deploy` only. A separate verify step with HTTP and alarm checks comes after version 1.
 5. **Script step**: after version 1.
 6. **Scope**: restore, freezes, and the Queue and System health screens all stay in version 1.
-7. **Name**: Yumdrake. The repository stays `yamdrake`.
+7. **Name**: Yumdrake. The repository and the Go module are `yumdrake`.
 
 Decided on 28 November 2026:
 

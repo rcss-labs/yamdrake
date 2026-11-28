@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/spec"
 )
 
 // The shapes below are the JSON of the server's /api/v1 routes (internal/api),

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/spec"
 )
 
 const testAccount = "123456789012"

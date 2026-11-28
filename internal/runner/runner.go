@@ -38,8 +38,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/queue"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/queue"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // LineSink takes the log lines of legs. The generation stamps each line so that

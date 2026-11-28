@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // window is how far back the counters and the run figures of one sample look.

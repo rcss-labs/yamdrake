@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // ThrottleRecordInterval is how often each service stores its throttling count.

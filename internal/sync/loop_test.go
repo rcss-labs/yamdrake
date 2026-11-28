@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/github"
+	"github.com/rcss-labs/yumdrake/internal/github"
 )
 
 func TestNextWait(t *testing.T) {

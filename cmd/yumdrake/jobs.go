@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
-	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/spec"
 )
 
 const jobsUsage = `usage: yumdrake jobs <command>

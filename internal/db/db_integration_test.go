@@ -18,7 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/rcss-labs/yamdrake/internal/testutil/testdb"
+	"github.com/rcss-labs/yumdrake/internal/testutil/testdb"
 )
 
 func TestMigrateAppliesAllAndIsIdempotent(t *testing.T) {

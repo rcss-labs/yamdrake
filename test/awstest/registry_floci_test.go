@@ -5,7 +5,7 @@ package awstest_test
 import (
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 // The demo seeds images with no Docker daemon: they are written over the

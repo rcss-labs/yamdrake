@@ -29,7 +29,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
 )
 
 // EndpointVariable names the environment variable that holds the emulator URL.

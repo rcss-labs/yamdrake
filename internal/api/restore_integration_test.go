@@ -10,8 +10,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/manifest"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/manifest"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 // finishedRun is a dev run of s1 and s2 that ended in state: s1 was deployed

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/rcss-labs/yamdrake/internal/manifest"
+	"github.com/rcss-labs/yumdrake/internal/manifest"
 )
 
 // planView is the manifest as the web application reads it. Artifact keys are

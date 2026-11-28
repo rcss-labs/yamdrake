@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	modulePath  = "github.com/rcss-labs/yamdrake"
+	modulePath  = "github.com/rcss-labs/yumdrake"
 	deployPkg   = modulePath + "/internal/awsx/deploy"
 	purposeFile = "internal/awsx/purpose.go" // the one file that may spell the deploy purpose
 )

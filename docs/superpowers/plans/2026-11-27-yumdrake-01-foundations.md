@@ -14,7 +14,7 @@ This plan follows the owner's rule for plans: no full code. Each task gives file
 
 ## Global Constraints
 
-- Module path: `github.com/rcss-labs/yamdrake`. Product and binary names use `yumdrake`: `yumdrake-orchestrator`, `yumdrake-runner`.
+- Module path: `github.com/rcss-labs/yumdrake`. Product and binary names use `yumdrake`: `yumdrake-orchestrator`, `yumdrake-runner`.
 - Go version in `go.mod`: `go 1.26`.
 - Only the three third-party modules named in Tech Stack. Adding any other needs a recorded evaluation of maintenance, security and supply-chain risk and an escalation, not a quiet `go get`.
 - Tests use the standard `testing` package only. No assertion library.
@@ -91,7 +91,7 @@ Conditions the spec implies that an operator will meet. Each is pinned by a test
 
 - [ ] **Step 1: Write the failing test** `TestStringIncludesVersionAndCommit`: with `Version="1.2.3"` and `Commit="abc1234"` set in the test, `String()` returns `"1.2.3 (abc1234)"`; with the defaults it returns `"dev (unknown)"`.
 - [ ] **Step 2: Run** `go test ./internal/version/` and confirm it fails because the package does not exist.
-- [ ] **Step 3: Create** `go.mod` (`go mod init github.com/rcss-labs/yamdrake`, `go 1.26`) and `internal/version/version.go`.
+- [ ] **Step 3: Create** `go.mod` (`go mod init github.com/rcss-labs/yumdrake`, `go 1.26`) and `internal/version/version.go`.
 - [ ] **Step 4: Create** `Makefile` with the targets above and a `help` target that lists them. `golangci-lint` is expected on the PATH; `lint` prints how to install it if it is missing and exits 2.
 - [ ] **Step 5: Create** `.golangci.yml` enabling `errcheck`, `govet`, `staticcheck`, `ineffassign`, `unused`, `gosec`, `bodyclose`, `errorlint`, `misspell`.
 - [ ] **Step 6: Run** `make lint test`. Expected: both pass, `version` test green.

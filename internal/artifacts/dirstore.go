@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rcss-labs/yamdrake/internal/secrets"
+	"github.com/rcss-labs/yumdrake/internal/secrets"
 )
 
 // artifactPurpose binds every stored copy to this use in the cipher.

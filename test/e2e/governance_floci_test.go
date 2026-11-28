@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/test/e2e/fakeslack"
+	"github.com/rcss-labs/yumdrake/test/e2e/fakeslack"
 )
 
 // flociGovernance is the Floci stack (dev-1 and prod-1 seeded, real steps)

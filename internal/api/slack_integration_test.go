@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/notify"
+	"github.com/rcss-labs/yumdrake/internal/notify"
 )
 
 const slackFakeToken = "xoxb-api-fake-token" //nolint:gosec // a fake token for tests

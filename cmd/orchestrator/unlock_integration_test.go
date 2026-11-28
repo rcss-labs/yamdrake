@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/api"
-	"github.com/rcss-labs/yamdrake/internal/cache"
-	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yumdrake/internal/api"
+	"github.com/rcss-labs/yumdrake/internal/cache"
+	"github.com/rcss-labs/yumdrake/internal/store"
 )
 
 func runUnlock(t *testing.T, env map[string]string, args ...string) adminRun {

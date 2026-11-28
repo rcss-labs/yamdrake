@@ -9,10 +9,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 
-	"github.com/rcss-labs/yamdrake/internal/awsx"
-	"github.com/rcss-labs/yamdrake/internal/spec"
-	"github.com/rcss-labs/yamdrake/internal/versions"
-	"github.com/rcss-labs/yamdrake/test/awstest"
+	"github.com/rcss-labs/yumdrake/internal/awsx"
+	"github.com/rcss-labs/yumdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/versions"
+	"github.com/rcss-labs/yumdrake/test/awstest"
 )
 
 func TestListAgainstFloci(t *testing.T) {

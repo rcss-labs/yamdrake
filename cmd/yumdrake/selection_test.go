@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/cli"
-	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yumdrake/internal/cli"
+	"github.com/rcss-labs/yumdrake/internal/spec"
 )
 
 func selectionJob() spec.Job {

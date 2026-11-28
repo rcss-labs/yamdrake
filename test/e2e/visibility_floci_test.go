@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rcss-labs/yamdrake/internal/queue"
+	"github.com/rcss-labs/yumdrake/internal/queue"
 )
 
 const (

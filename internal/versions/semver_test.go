@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/rcss-labs/yamdrake/internal/versions"
+	"github.com/rcss-labs/yumdrake/internal/versions"
 )
 
 func TestCompareSemver(t *testing.T) {

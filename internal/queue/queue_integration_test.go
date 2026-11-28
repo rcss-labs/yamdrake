@@ -67,7 +67,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatalf("CreateJobSource: %v", err)
 	}
-	snapshot, err := store.ActivateSnapshot(ctx, pool, "queue-inventory", []byte(`{}`), time.Now())
+	snapshot, err := store.ActivateSnapshot(ctx, pool, "queue-inventory", []byte(`{}`), nil, time.Now())
 	if err != nil {
 		t.Fatalf("ActivateSnapshot: %v", err)
 	}

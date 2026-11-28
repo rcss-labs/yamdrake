@@ -35,7 +35,7 @@ func newRunFixture(t *testing.T, pool *pgxpool.Pool) runFixture {
 	if err != nil {
 		t.Fatalf("CreateJobSource: %v", err)
 	}
-	snapshot, err := ActivateSnapshot(ctx, pool, fmt.Sprintf("inv-%d", time.Now().UnixNano()), []byte(`{}`), time.Now())
+	snapshot, err := ActivateSnapshot(ctx, pool, fmt.Sprintf("inv-%d", time.Now().UnixNano()), []byte(`{}`), nil, time.Now())
 	if err != nil {
 		t.Fatalf("ActivateSnapshot: %v", err)
 	}

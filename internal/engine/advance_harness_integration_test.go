@@ -157,14 +157,14 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		t.Fatalf("CreateJobSource: %v", err)
 	}
 	h.sourceID = source.ID
-	if err := store.SaveJobGood(ctx, pool, source.ID, mustJSON(t, h.job), h.job.ID, h.job.Title, "jobcommit1", h.clock.Now()); err != nil {
+	if err := store.SaveJobGood(ctx, pool, source.ID, mustJSON(t, h.job), "", h.job.ID, h.job.Title, "jobcommit1", h.clock.Now()); err != nil {
 		t.Fatalf("SaveJobGood: %v", err)
 	}
 	if err := store.SaveJobProblems(ctx, pool, source.ID, nil, "jobcommit1", true, h.clock.Now()); err != nil {
 		t.Fatalf("SaveJobProblems: %v", err)
 	}
 	if !opts.noInventory {
-		snapshot, err := store.ActivateSnapshot(ctx, pool, "invcommit1", mustJSON(t, inv), h.clock.Now())
+		snapshot, err := store.ActivateSnapshot(ctx, pool, "invcommit1", mustJSON(t, inv), nil, h.clock.Now())
 		if err != nil {
 			t.Fatalf("ActivateSnapshot: %v", err)
 		}

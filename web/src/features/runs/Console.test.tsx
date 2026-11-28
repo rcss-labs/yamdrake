@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../../api/error'
 import type { ApiLogLine, LogGap, LogLevel, LogLine, RunDetail, RunLive } from '../../api/types'
@@ -376,10 +377,10 @@ describe('Console with thousands of lines', () => {
     function Harness() {
       const [scope, setScope] = useState<ConsoleScope>(wholeRun)
       return (
-        <>
+        <MemoryRouter>
           <StepsTree run={run} lines={lines} scope={scope} onSelect={setScope} />
           <Console run={run} live={liveOf(run, lines)} scope={scope} />
-        </>
+        </MemoryRouter>
       )
     }
     // CPU time of this process, not wall time: the suite runs on a shared, busy machine where wall time varies several-fold.

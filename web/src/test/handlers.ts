@@ -36,6 +36,9 @@ import type {
   JobVersions,
   Me,
   Overview,
+  RunningCell,
+  RunningMatrix,
+  ServicePage,
   Problem,
   RunDetail,
   JobGroup,
@@ -665,6 +668,70 @@ export function overviewFixture(days: number, label = ''): Overview {
     environments: [
       { environment: 'hetzner-01', label: 'dev', run_id: 41, state: 'failed', job: 'deploy-billing', at: '2026-11-28T09:00:00Z' },
       { environment: 'preprod-01', label: 'preprod', run_id: null, state: 'failed', job: '', at: null },
+    ],
+  }
+}
+
+/** A cell that is running `version`, deployed by run #12 unless said otherwise. */
+export function runningCell(version: string, over: Partial<RunningCell> = {}): RunningCell {
+  return {
+    state: 'ok',
+    version,
+    task_definition: `billing-api:${version.replace(/\D/g, '') || '1'}`,
+    by_yumdrake: true,
+    run_id: 12,
+    last_deploy_failed: false,
+    behind: false,
+    error: '',
+    read_at: '2026-11-28T11:58:00Z',
+    ...over,
+  }
+}
+
+export const absentCell: RunningCell = {
+  state: 'absent',
+  version: '',
+  task_definition: '',
+  by_yumdrake: false,
+  run_id: 0,
+  last_deploy_failed: false,
+  behind: false,
+  error: '',
+  read_at: '',
+}
+
+/** The default answer of GET /api/v1/versions/running: two environments of different labels. */
+export function runningFixture(): RunningMatrix {
+  return {
+    environments: [
+      { name: 'hetzner-01', label: 'dev', aws_account: '111111111111' },
+      { name: 'prod-01', label: 'prod', aws_account: '333333333333' },
+    ],
+    rows: [
+      { service: 'backend-api', cells: [runningCell('1.4.2'), runningCell('1.4.2')] },
+      { service: 'billing', cells: [runningCell('2.0.1'), absentCell] },
+    ],
+  }
+}
+
+/** The default answer of GET /api/v1/services/{name}. */
+export function servicePageFixture(service: ServicePage['service']): ServicePage {
+  return {
+    service,
+    environments: [
+      { environment: 'hetzner-01', label: 'dev', cell: runningCell('1.4.2'), restore_from_run_id: 12 },
+      { environment: 'prod-01', label: 'prod', cell: runningCell('1.4.1', { by_yumdrake: false, run_id: 0 }), restore_from_run_id: null },
+    ],
+    deployments: [
+      { run_id: 12, leg_id: 301, environment: 'hetzner-01', version: '1.4.2', state: 'succeeded', at: '2026-11-28T11:00:00Z', by: 'Ada' },
+    ],
+    config: [
+      {
+        run_id: 12,
+        environment: 'hetzner-01',
+        at: '2026-11-28T11:00:00Z',
+        items: [{ kind: 'env_file', name: 'app.env', destination: '/etc/app/app.env', checksum: 'a1b2c3d4e5f6' }],
+      },
     ],
   }
 }
@@ -1666,6 +1733,19 @@ export const handlers: HttpHandler[] = [
       return json({ ok: false, code: 'not_configured' })
     }
     return json(channel.includes('missing') ? { ok: false, code: 'channel_not_found' } : { ok: true, code: '' })
+  }),
+
+  // ---- Running versions and the service page (Plan 9) ----
+  route('GET', '/api/v1/versions/running', view, ({ url, me }) => {
+    if (url.searchParams.get('refresh') === '1' && me && !can(me, 'manage_connections')) {
+      return errorResponse(403, 'forbidden', 'You do not have permission to do this')
+    }
+    return json(runningFixture())
+  }),
+
+  route('GET', '/api/v1/services/:name', view, ({ params }) => {
+    const service = state.services.find((candidate) => candidate.name === params.name)
+    return service ? json(servicePageFixture(service)) : notFound('service')
   }),
 
   // ---- Overview (Plan 9) ----

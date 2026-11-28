@@ -1066,3 +1066,77 @@ export interface Overview {
   attention: OverviewAttention[]
   environments: OverviewEnvironment[]
 }
+
+// ---- Running versions and the service page (Plan 9) -----------------------------
+
+/** One service in one environment, as read from ECS. */
+export interface RunningCell {
+  state: 'ok' | 'error' | 'absent'
+  /** "" when ECS runs it but no version could be worked out. */
+  version: string
+  /** "family:revision". */
+  task_definition: string
+  /** False when no Yumdrake run deployed what is running. */
+  by_yumdrake: boolean
+  /** The run that deployed it; 0 when by_yumdrake is false. */
+  run_id: number
+  last_deploy_failed: boolean
+  /** Another environment with the same label runs a newer version. */
+  behind: boolean
+  /** The AWS error code when state is "error", otherwise "". */
+  error: string
+  read_at: string
+}
+
+export interface RunningRow {
+  service: string
+  /** One cell per environment of the matrix, in the same order. */
+  cells: RunningCell[]
+}
+
+/** GET /api/v1/versions/running (?refresh=1 reads ECS again; needs manage_connections). */
+export interface RunningMatrix {
+  environments: EnvironmentSummary[]
+  rows: RunningRow[]
+}
+
+export interface ServiceEnvironmentRunning {
+  environment: string
+  label: string
+  cell: RunningCell
+  /** The run a restore of this service in this environment would start from, if any. */
+  restore_from_run_id: number | null
+}
+
+export interface ServiceDeployment {
+  run_id: number
+  leg_id: number
+  environment: string
+  version: string
+  state: LegState
+  at: string
+  by: string
+}
+
+export interface ServiceConfigItem {
+  kind: string
+  name: string
+  destination: string
+  /** The first 12 characters. */
+  checksum: string
+}
+
+export interface ServiceConfigChange {
+  run_id: number
+  environment: string
+  at: string
+  items: ServiceConfigItem[]
+}
+
+/** GET /api/v1/services/{name}. */
+export interface ServicePage {
+  service: Service
+  environments: ServiceEnvironmentRunning[]
+  deployments: ServiceDeployment[]
+  config: ServiceConfigChange[]
+}

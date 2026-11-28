@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -19,6 +20,13 @@ import (
 
 // ErrCorrupt means the stored bytes do not hash to the expected SHA-256.
 var ErrCorrupt = errors.New("artifacts: stored object does not match its checksum")
+
+// ErrTooLarge means an object exceeds MaxObjectBytes. It is not corruption.
+var ErrTooLarge = errors.New("artifacts: object exceeds the size limit")
+
+// MaxObjectBytes is the largest object Put writes and Get reads (16 MiB);
+// config files are small, and the cap bounds runner memory.
+const MaxObjectBytes = 16 << 20
 
 const keyPrefix = "manifests/"
 
@@ -39,6 +47,9 @@ func New(client *s3.Client, bucket, kmsKeyID string) *Store {
 // .../<kind>/previous/<name> when previous is true (the prior destination
 // content). It returns the key and the hex SHA-256 of data.
 func (s *Store) Put(ctx context.Context, runID int64, service, kind, name string, previous bool, data []byte) (key, sha256hex string, err error) {
+	if len(data) > MaxObjectBytes {
+		return "", "", fmt.Errorf("%w: %d bytes, limit %d", ErrTooLarge, len(data), MaxObjectBytes)
+	}
 	for field, value := range map[string]string{"service": service, "kind": kind, "name": name} {
 		if err := validComponent(value); err != nil {
 			return "", "", fmt.Errorf("artifacts: invalid %s: %w", field, err)
@@ -79,9 +90,15 @@ func (s *Store) Get(ctx context.Context, key, wantSHA256 string) ([]byte, error)
 		return nil, fmt.Errorf("artifacts: get %s: %w", key, err)
 	}
 	defer func() { _ = out.Body.Close() }()
-	data, err := io.ReadAll(out.Body)
+	if aws.ToInt64(out.ContentLength) > MaxObjectBytes {
+		return nil, fmt.Errorf("%w: %s exceeds %d bytes", ErrTooLarge, key, MaxObjectBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(out.Body, MaxObjectBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("artifacts: read %s: %w", key, err)
+	}
+	if len(data) > MaxObjectBytes {
+		return nil, fmt.Errorf("%w: %s exceeds %d bytes", ErrTooLarge, key, MaxObjectBytes)
 	}
 	sum := sha256.Sum256(data)
 	if !strings.EqualFold(hex.EncodeToString(sum[:]), wantSHA256) {
@@ -97,8 +114,10 @@ func validComponent(v string) error {
 		return errors.New("must not be empty")
 	case strings.Contains(v, "/"):
 		return errors.New("must not contain '/'")
-	case strings.Contains(v, ".."):
-		return errors.New("must not contain '..'")
+	case v == ".", strings.Contains(v, ".."):
+		return errors.New("must not be '.' or contain '..'")
+	case strings.IndexFunc(v, unicode.IsControl) >= 0:
+		return errors.New("must not contain control characters")
 	}
 	return nil
 }

@@ -31,7 +31,8 @@ const rollout = { timeout: 300_000 }
 
 const problems: string[] = []
 
-test.afterEach(async ({}, testInfo) => {
+test.afterEach(async ({ browserName }, testInfo) => {
+  void browserName
   if (testInfo.status !== testInfo.expectedStatus && problems.length > 0) {
     await testInfo.attach('browser-problems', { body: problems.join('\n'), contentType: 'text/plain' })
   }

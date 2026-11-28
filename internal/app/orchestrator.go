@@ -13,9 +13,12 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/api"
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
+	"github.com/rcss-labs/yamdrake/internal/engine"
+	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
+	"github.com/rcss-labs/yamdrake/internal/wake"
 	"github.com/rcss-labs/yamdrake/internal/webui"
 )
 
@@ -47,8 +50,9 @@ func NewOrchestratorService(cfg config.Orchestrator) Service {
 }
 
 // OrchestratorExtension wires the orchestrator's own parts into Run: the
-// secret cipher, the sync engine with its polling loop, and the /api/v1 API
-// with its sessions. Without an inventory source the loop finds nothing to do.
+// secret cipher, the sync engine with its polling loop, the run engine's loop
+// (woken through Valkey, with a timer as fallback) and the /api/v1 API with
+// its sessions. Without an inventory source the loop finds nothing to do.
 func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.Logger, *pgxpool.Pool, valkey.Client) (Extension, error) {
 	return func(_ context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (Extension, error) {
 		cipher, err := secrets.NewLocal([]byte(cfg.LocalSecretKey.Reveal()))
@@ -56,10 +60,10 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			return Extension{}, fmt.Errorf("secret cipher: %w", err)
 		}
 		sources := newGitHubSources(pool, cipher, cfg.GitHubAPIURL, log)
-		engine := yumsync.NewEngine(pool, sources.For, log, time.Now)
+		syncEngine := yumsync.NewEngine(pool, sources.For, log, time.Now)
 		handler := api.New(api.Deps{
 			Pool:                pool,
-			Engine:              engine,
+			Engine:              syncEngine,
 			Cipher:              cipher,
 			Log:                 log,
 			OnConnectionCreated: sources.Forget,
@@ -68,12 +72,26 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			KeyPrefix:           cfg.ValkeyKeyPrefix,
 			PublicURL:           cfg.PublicURL,
 		})
+		bus := wake.New(client, log, wake.WithKeyPrefix(cfg.ValkeyKeyPrefix))
+		runEngine := engine.New(engine.Deps{
+			DB:        pool,
+			Limits:    engine.Limits{PerEnvironment: cfg.LimitPerEnvironment, PerAccount: cfg.LimitPerAccount},
+			Log:       log,
+			Publisher: bus,
+		})
+		// The queue is used only for Sweep, which compares against the database
+		// clock (nil) and does not need a lease length.
+		sweepQueue := queue.New(pool, 0, nil)
 		return Extension{
 			Handlers: map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},
 			Background: []func(context.Context){func(ctx context.Context) {
 				log.Info("sync loop started", "interval", cfg.SyncInterval.String(), "github_api_url", cfg.GitHubAPIURL)
-				engine.Run(ctx, cfg.SyncInterval)
+				syncEngine.Run(ctx, cfg.SyncInterval)
 				log.Info("sync loop stopped")
+			}, func(ctx context.Context) {
+				log.Info("engine loop started", "sweep_interval", cfg.SweepInterval.String())
+				runEngine.Loop(ctx, bus.Subscribe(ctx, wake.TopicRuns), cfg.SweepInterval, sweepQueue, nil)
+				log.Info("engine loop stopped")
 			}},
 		}, nil
 	}

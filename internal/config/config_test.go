@@ -526,3 +526,32 @@ func TestLoadOrchestratorLogArchiveDir(t *testing.T) {
 		t.Fatalf("relative path: err = %v, want a complaint naming the variable", err)
 	}
 }
+
+func TestOrchestratorEngineSettings(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.SweepInterval != 2*time.Second || cfg.LimitPerEnvironment != 10 || cfg.LimitPerAccount != 20 {
+		t.Fatalf("defaults = %v, %d, %d, %v; want 2s, 10, 20", cfg.SweepInterval, cfg.LimitPerEnvironment, cfg.LimitPerAccount, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_SWEEP_INTERVAL"] = "500ms"
+	env["YUMDRAKE_LIMIT_PER_ENVIRONMENT"] = "3"
+	env["YUMDRAKE_LIMIT_PER_ACCOUNT"] = "6"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.SweepInterval != 500*time.Millisecond || cfg.LimitPerEnvironment != 3 || cfg.LimitPerAccount != 6 {
+		t.Fatalf("overrides = %v, %d, %d, %v", cfg.SweepInterval, cfg.LimitPerEnvironment, cfg.LimitPerAccount, err)
+	}
+	for variable, bad := range map[string]string{"YUMDRAKE_SWEEP_INTERVAL": "0s", "YUMDRAKE_LIMIT_PER_ENVIRONMENT": "0", "YUMDRAKE_LIMIT_PER_ACCOUNT": "many"} {
+		env := requiredEnv()
+		env[variable] = bad
+		if _, err := LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), variable) {
+			t.Errorf("%s=%s: error = %v, want one naming the variable", variable, bad, err)
+		}
+	}
+}
+
+func TestRunnerReadsTheKeyPrefix(t *testing.T) {
+	env := requiredEnv()
+	env["YUMDRAKE_VALKEY_KEY_PREFIX"] = "blue:"
+	if cfg, err := LoadRunner(envFrom(env)); err != nil || cfg.ValkeyKeyPrefix != "blue:" {
+		t.Fatalf("prefix = %q, %v; want blue:", cfg.ValkeyKeyPrefix, err)
+	}
+}

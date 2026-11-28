@@ -199,6 +199,7 @@ type runnerOptions struct {
 	shutdown        time.Duration
 	executors       map[string]Executor
 	sink            LineSink
+	onSettled       func(runID int64)
 }
 
 type runningRunner struct {
@@ -240,7 +241,7 @@ func (h *harness) startRunner(q *queue.Queue, o runnerOptions) *runningRunner {
 		o.sink = &recordingSink{}
 	}
 	r := New(q, o.sink, o.id, o.concurrency, o.heartbeat, o.poll, slog.New(slog.NewTextHandler(io.Discard, nil))).
-		WithShutdownTimeout(o.shutdown)
+		WithShutdownTimeout(o.shutdown).WithSettledNotifier(o.onSettled)
 	for kind, e := range o.executors {
 		r.Register(kind, e)
 	}
@@ -946,4 +947,35 @@ func TestUnregisteredResolveAndRevalidateFailWithReason(t *testing.T) {
 		}
 	}
 	_ = rr.stop(t)
+}
+
+func TestSettledNotifierCalledAfterTheLegIsCompleted(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	leg := h.addLeg("billing")
+	type call struct {
+		runID int64
+		state string
+	}
+	calls := make(chan call, 4)
+	rr := h.startRunner(h.q, runnerOptions{
+		onSettled: func(runID int64) {
+			// The notifier must see the leg already settled, or the orchestrator would advance too early.
+			calls <- call{runID, h.leg(leg.ID).State}
+		},
+		executors: map[string]Executor{
+			"ecs-deploy": execFunc(func(context.Context, Env, queue.Claimed) queue.Outcome { return succeed(`{}`) }),
+		},
+	})
+	select {
+	case c := <-calls:
+		if c.runID != h.runID || c.state != "succeeded" {
+			t.Errorf("notified %+v, want run %d with the leg succeeded", c, h.runID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the notifier was not called")
+	}
+	if err := rr.stop(t); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
 }

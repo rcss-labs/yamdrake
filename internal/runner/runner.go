@@ -76,6 +76,7 @@ type Runner struct {
 	poll        time.Duration
 	shutdown    time.Duration
 	log         *slog.Logger
+	onSettled   func(runID int64)
 
 	mu        sync.Mutex
 	executors map[string]Executor
@@ -98,6 +99,14 @@ func New(q *queue.Queue, sink LineSink, id string, concurrency int, heartbeat, p
 // context ends before they are told to stop and released. The default is 20s.
 func (r *Runner) WithShutdownTimeout(d time.Duration) *Runner {
 	r.shutdown = d
+	return r
+}
+
+// WithSettledNotifier sets a function called with the run id after a leg of
+// that run has been settled (completed in the database), so the orchestrator
+// can advance the run without waiting for its timer. Call it before Run.
+func (r *Runner) WithSettledNotifier(f func(runID int64)) *Runner {
+	r.onSettled = f
 	return r
 }
 
@@ -263,6 +272,9 @@ func (r *Runner) runLeg(parent context.Context, claimed queue.Claimed) {
 		return
 	}
 	log.Info("leg settled", "state", outcome.State)
+	if r.onSettled != nil {
+		r.onSettled(leg.RunID)
+	}
 }
 
 // completeWithRetry retries a transient failure a few times; ErrLeaseLost is final.

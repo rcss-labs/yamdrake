@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -253,6 +254,11 @@ func (e *Engine) decideApproval(ctx context.Context, p auth.Principal, runID int
 // waiting for approval after the job's approval expiry. Any other run is left
 // alone. It is the system's doing, not a person's.
 func (e *Engine) Expire(ctx context.Context, runID int64) error {
+	return e.expire(ctx, runID, ApprovalExpiry)
+}
+
+// expire is Expire with the approval waiting time chosen by the caller.
+func (e *Engine) expire(ctx context.Context, runID int64, approvalAfter func(store.Run) time.Duration) error {
 	return e.inTx(ctx, runID, func(tx pgx.Tx, o *outcome) error {
 		run, err := store.LockRun(ctx, tx, runID)
 		if err != nil {
@@ -263,8 +269,8 @@ func (e *Engine) Expire(ctx context.Context, runID int64) error {
 		switch {
 		case run.State == "planned" && waited > plannedRunLifetime:
 			reason = "nobody started the plan within " + plannedRunLifetime.String()
-		case run.State == "waiting_approval" && waited > ApprovalExpiry(run):
-			reason = "nobody approved the plan within " + ApprovalExpiry(run).String()
+		case run.State == "waiting_approval" && waited > approvalAfter(run):
+			reason = "nobody approved the plan within " + approvalAfter(run).String()
 		default:
 			return nil
 		}

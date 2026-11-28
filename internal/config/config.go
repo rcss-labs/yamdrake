@@ -44,6 +44,11 @@ type Orchestrator struct {
 	// LogArchiveDir is the directory settled legs' logs are archived to. Empty
 	// means archiving is off (until object storage arrives in Plan 5).
 	LogArchiveDir string
+	// SweepInterval is how often the engine loop sweeps expired leases and
+	// advances every active run, whether or not a wake-up arrived.
+	SweepInterval time.Duration
+	// LimitPerEnvironment and LimitPerAccount cap the legs running at once.
+	LimitPerEnvironment, LimitPerAccount int
 
 	SyncSettings
 }
@@ -53,6 +58,9 @@ type Runner struct {
 	Common
 	HealthAddr string
 	RunnerID   string
+	// ValkeyKeyPrefix goes in front of the Valkey channels; it must equal the
+	// orchestrator's so that wake-ups reach each other.
+	ValkeyKeyPrefix string
 	// Env is "dev" or "prod". Fake steps are allowed only in dev.
 	Env string
 	// FakeSteps registers the fake step executors instead of real ones.
@@ -124,14 +132,14 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	}
 
 	cfg.PublicURL = l.publicURL("YUMDRAKE_PUBLIC_URL")
-	cfg.ValkeyKeyPrefix = l.getenv("YUMDRAKE_VALKEY_KEY_PREFIX")
-	if !keyPrefixPattern.MatchString(cfg.ValkeyKeyPrefix) {
-		l.fail("YUMDRAKE_VALKEY_KEY_PREFIX", "must be at most 64 letters, digits, '-', '_' or ':'")
-	}
+	cfg.ValkeyKeyPrefix = l.keyPrefix()
 	cfg.LogArchiveDir = l.getenv("YUMDRAKE_LOG_ARCHIVE_DIR")
 	if cfg.LogArchiveDir != "" && !filepath.IsAbs(cfg.LogArchiveDir) {
 		l.fail("YUMDRAKE_LOG_ARCHIVE_DIR", "must be an absolute path")
 	}
+	cfg.SweepInterval = l.duration("YUMDRAKE_SWEEP_INTERVAL", "2s")
+	cfg.LimitPerEnvironment = l.positiveInt("YUMDRAKE_LIMIT_PER_ENVIRONMENT", "10")
+	cfg.LimitPerAccount = l.positiveInt("YUMDRAKE_LIMIT_PER_ACCOUNT", "20")
 	cfg.SyncSettings = l.loadSyncSettings()
 
 	if err := l.err(); err != nil {
@@ -146,6 +154,7 @@ func LoadRunner(getenv func(string) string) (Runner, error) {
 	var cfg Runner
 	cfg.Common = l.loadCommon()
 	cfg.HealthAddr = l.hostPort("YUMDRAKE_HEALTH_ADDR", "127.0.0.1:8081")
+	cfg.ValkeyKeyPrefix = l.keyPrefix()
 
 	cfg.RunnerID = getenv("YUMDRAKE_RUNNER_ID")
 	if cfg.RunnerID == "" {
@@ -245,6 +254,15 @@ func (l *loader) duration(variable, fallback string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// keyPrefix reads YUMDRAKE_VALKEY_KEY_PREFIX, shared by both services.
+func (l *loader) keyPrefix() string {
+	prefix := l.getenv("YUMDRAKE_VALKEY_KEY_PREFIX")
+	if !keyPrefixPattern.MatchString(prefix) {
+		l.fail("YUMDRAKE_VALKEY_KEY_PREFIX", "must be at most 64 letters, digits, '-', '_' or ':'")
+	}
+	return prefix
 }
 
 func (l *loader) positiveInt(variable, fallback string) int {

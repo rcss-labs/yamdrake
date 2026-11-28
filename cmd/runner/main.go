@@ -15,17 +15,27 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/app"
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
+	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner"
 	"github.com/rcss-labs/yamdrake/internal/steps/fake"
 	"github.com/rcss-labs/yamdrake/internal/version"
+	"github.com/rcss-labs/yamdrake/internal/wake"
 )
 
 const (
 	serviceName       = "yumdrake-runner"
 	healthAddrVar     = "YUMDRAKE_HEALTH_ADDR"
 	defaultHealthAddr = "127.0.0.1:8081"
+
+	// The log writer stores a leg's lines every logFlushEvery or whenever
+	// logMaxBatch of them are waiting.
+	logFlushEvery   = 500 * time.Millisecond
+	logMaxBatch     = 100
+	logCloseTimeout = 10 * time.Second
 )
+
+var _ runner.LineSink = (*logs.Writer)(nil)
 
 func main() {
 	ctx, stop := app.SignalContext(context.Background())
@@ -65,12 +75,22 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 		Common: cfg.Common,
 		Addr:   cfg.HealthAddr,
 		Fields: []any{"runner_id", cfg.RunnerID, "env", cfg.Env, "fake_steps", cfg.FakeSteps},
-		Extend: func(_ context.Context, log *slog.Logger, pool *pgxpool.Pool, _ valkey.Client) (app.Extension, error) {
-			r := newRunner(cfg, pool, log)
+		Extend: func(_ context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (app.Extension, error) {
+			bus := wake.New(client, log, wake.WithKeyPrefix(cfg.ValkeyKeyPrefix))
+			sink := logs.NewWriter(pool, logFlushEvery, logMaxBatch, time.Now, func(runID int64) {
+				bus.Publish(context.Background(), wake.TopicLogs, runID)
+			}, log)
+			r := newRunner(cfg, pool, sink, bus, log)
 			return app.Extension{Background: []func(context.Context){
 				func(ctx context.Context) {
-					if err := r.Run(ctx, nil); err != nil {
+					if err := r.Run(ctx, legWakeups(ctx, bus)); err != nil {
 						log.Error("runner stopped with an error", "error", err.Error())
+					}
+					// Every leg has settled or been released: store what is left of their logs.
+					closeCtx, cancel := context.WithTimeout(context.Background(), logCloseTimeout)
+					defer cancel()
+					if err := sink.Close(closeCtx); err != nil {
+						log.Error("could not store the last log lines", "error", err.Error())
 					}
 				},
 			}}, nil
@@ -82,25 +102,37 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 	}, stdout)
 }
 
-// newRunner builds the worker pool. The fake steps are registered only when
+// legWakeups turns "legs" wake-ups into the signal Runner.Run waits on. The
+// runner claims by id-less poll, so the run id does not matter.
+func legWakeups(ctx context.Context, bus *wake.Bus) <-chan struct{} {
+	out := make(chan struct{}, 1)
+	ids := bus.Subscribe(ctx, wake.TopicLegs)
+	go func() {
+		for range ids {
+			select {
+			case out <- struct{}{}:
+			default: // one pending signal is enough
+			}
+		}
+	}()
+	return out
+}
+
+// newRunner builds the worker pool. Lines go to sink; after each settled leg
+// the runner announces its run on the "runs" topic so the orchestrator
+// advances it at once. The fake steps are registered only when
 // the configuration allows them (YUMDRAKE_ENV=dev and YUMDRAKE_FAKE_STEPS=true;
 // config.LoadRunner refuses fakes anywhere else). The real executors arrive
 // with plans 5 and 6, so until then a runner without fakes fails every leg it
 // claims with "no executor for this step".
-func newRunner(cfg config.Runner, pool *pgxpool.Pool, log *slog.Logger) *runner.Runner {
+func newRunner(cfg config.Runner, pool *pgxpool.Pool, sink runner.LineSink, bus *wake.Bus, log *slog.Logger) *runner.Runner {
 	q := queue.New(pool, cfg.Lease, nil) // nil: the database clock, shared by every runner and orchestrator
-	r := runner.New(q, discardSink{}, cfg.RunnerID, cfg.Concurrency, cfg.Heartbeat, cfg.Poll, log).
-		WithShutdownTimeout(cfg.ShutdownTimeout)
+	r := runner.New(q, sink, cfg.RunnerID, cfg.Concurrency, cfg.Heartbeat, cfg.Poll, log).
+		WithShutdownTimeout(cfg.ShutdownTimeout).
+		WithSettledNotifier(func(runID int64) { bus.Publish(context.Background(), wake.TopicRuns, runID) })
 	if cfg.FakeSteps && cfg.Env == "dev" {
 		fake.Register(r, fake.Options{StepTime: 2 * time.Second, SlowFor: 30 * time.Second})
 		log.Warn("fake steps are registered; nothing real will be changed")
 	}
 	return r
 }
-
-// discardSink drops log lines. It stands in until the log writer is wired in
-// (plan 4, task 8); legs run and settle normally without stored lines.
-type discardSink struct{}
-
-func (discardSink) Write(_, _, _ int64, _, _ string)   {}
-func (discardSink) Flush(context.Context, int64) error { return nil }

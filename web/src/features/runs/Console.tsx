@@ -139,6 +139,14 @@ export function Console({ run, live, scope }: { run: RunDetail; live: RunLive; s
           </div>
         )}
       </div>
+      {live.error && (
+        <div className="con-strip con-strip-error" role="alert">
+          {active ? `Live updates stopped: ${live.error.message}. ` : `The log could not be read completely: ${live.error.message}. `}
+          <button type="button" className="con-strip-btn" onClick={live.retry}>
+            Retry
+          </button>
+        </div>
+      )}
       {live.connection === 'reconnecting' && (
         <div className="con-strip" role="status">
           Reconnecting
@@ -169,7 +177,7 @@ export function Console({ run, live, scope }: { run: RunDetail; live: RunLive; s
           {view.rows.map((row) => (
             <ConsoleRowView key={row.key} row={row} />
           ))}
-          {!noAccess && view.rows.length === 0 && (
+          {!noAccess && !live.error && view.rows.length === 0 && (
             <div className="con-empty">{view.total > 0 && filtering ? 'No lines match' : 'No log lines yet'}</div>
           )}
         </div>

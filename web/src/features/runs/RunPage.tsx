@@ -5,7 +5,8 @@ import { useCan } from '../../api/hooks'
 import type { Target } from '../../auth/permissions'
 import { ApiError } from '../../api/error'
 import type { RunDetail } from '../../api/types'
-import { Card, ErrorState, Loading, PageHeader, StatusPill, Time } from '../../ui'
+import { isFinalRunState } from '../../api/types'
+import { Card, ErrorState, Loading, Note, PageHeader, StatusPill, Time } from '../../ui'
 import { FreezeBanner } from '../freezes/FreezeBanner'
 import { Console } from './Console'
 import { PlanPanel } from './PlanPanel'
@@ -154,6 +155,11 @@ function RunView({ id }: { id: number }) {
         }
         lead={<span data-testid="run-lead">{stateSentence(run)}</span>}
       />
+      {live.error && !isFinalRunState(run.state) && (
+        <Note tone="warning" data-testid="live-stopped">
+          Live updates stopped: {live.error.message}. The state shown is the last known state, and it may be out of date.
+        </Note>
+      )}
       <RunActions run={run} reload={live.reload} />
       <RunFacts run={run} />
       {planningStates.includes(run.state) && <FreezeBanner environment={run.environment} label={run.label} />}

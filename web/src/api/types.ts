@@ -803,6 +803,8 @@ export interface RunLive {
   error: ApiError | undefined
   /** Fetches the run again and replaces it (lines are kept). Call it after a 409 to show what changed. */
   reload(): void
+  /** Starts again after `error`: reads the run and its log again, or reopens the stream. */
+  retry(): void
 }
 
 /** POST /api/v1/jobs/{id}/runs. */

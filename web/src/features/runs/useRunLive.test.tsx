@@ -105,6 +105,19 @@ describe('useRunLive on a finished run', () => {
     const { result } = renderHook(() => useRunLive(9999, { logs: true }), { wrapper })
     await waitFor(() => expect(result.current.error?.status).toBe(404))
   })
+
+  it('keeps the run when a log page fails, and retry reads the whole log again and clears the error', async () => {
+    mockState().logs[runIds.succeeded] = [line(0, 1, 'created'), line(0, 2, 'done')]
+    failNext('GET', `/api/v1/runs/${runIds.succeeded}/log`, 500, 'internal', 'log store down')
+    const { result } = renderHook(() => useRunLive(runIds.succeeded, { logs: true }), { wrapper })
+    await waitFor(() => expect(result.current.error?.message).toBe('log store down'))
+    expect(result.current.run?.id).toBe(runIds.succeeded)
+    expect(result.current.lines).toHaveLength(0)
+    act(() => result.current.retry())
+    await waitFor(() => expect(result.current.lines).toHaveLength(2))
+    expect(result.current.error).toBeUndefined()
+    expect(result.current.run?.id).toBe(runIds.succeeded)
+  })
 })
 
 describe('useRunLive on an active run', () => {

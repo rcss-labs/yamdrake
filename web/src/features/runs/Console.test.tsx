@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '../../api/error'
 import type { ApiLogLine, LogGap, LogLevel, LogLine, RunDetail, RunLive } from '../../api/types'
 import { failNext, mockState, requests, runIds } from '../../test/server'
 import { Console } from './Console'
@@ -35,6 +36,7 @@ const liveOf = (run: RunDetail, lines: LogLine[], extra: Partial<RunLive> = {}):
   truncated: false,
   error: undefined,
   reload: () => {},
+  retry: () => {},
   ...extra,
 })
 
@@ -140,6 +142,29 @@ describe('Console connection and notices', () => {
   it('says nothing about the connection while live', () => {
     render(<Console run={run} live={liveOf(run, [], { connection: 'live' })} scope={wholeRun} />)
     expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('says the log could not be read completely, with the reason and a retry, instead of "No log lines yet"', async () => {
+    const finished = runOf(runIds.succeeded)
+    const retry = vi.fn()
+    const error = new ApiError(500, 'internal', 'log store down')
+    render(<Console run={finished} live={liveOf(finished, [line(0, 1, 'only the first page')], { error, retry })} scope={wholeRun} />)
+    expect(screen.getByRole('alert')).toHaveTextContent('The log could not be read completely: log store down')
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retry).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not say "No log lines yet" when reading the log failed with no lines held', () => {
+    const finished = runOf(runIds.succeeded)
+    const error = new ApiError(500, 'internal', 'log store down')
+    render(<Console run={finished} live={liveOf(finished, [], { error })} scope={wholeRun} />)
+    expect(screen.queryByText('No log lines yet')).not.toBeInTheDocument()
+  })
+
+  it('says live updates stopped, with the reason, for a run that is still active', () => {
+    const error = new ApiError(403, 'forbidden', 'You may not view this run')
+    render(<Console run={run} live={liveOf(run, [], { error })} scope={wholeRun} />)
+    expect(screen.getByRole('alert')).toHaveTextContent('Live updates stopped: You may not view this run')
   })
 
   it('shows "Reconnecting" while the connection retries', () => {

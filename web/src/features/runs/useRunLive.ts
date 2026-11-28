@@ -6,7 +6,7 @@
 // breaks the browser reconnects by itself with Last-Event-ID; if it gives up (readyState CLOSED) this hook
 // opens a new stream after a pause, from the last cursor it saw. A line already held (same leg and seq) is
 // never added twice, so a resent batch changes nothing.
-import { useCallback, useEffect, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { api, nullListsToEmpty } from '../../api/client'
 import { ApiError } from '../../api/error'
 import type {
@@ -41,7 +41,8 @@ interface State {
 }
 
 type Action =
-  | { type: 'reset' }
+  // `keepRun`: a retry starts over without blanking the page.
+  | { type: 'reset'; keepRun: boolean }
   | { type: 'loaded'; run: RunDetail }
   // A refetched run: `detailOnly` keeps the streamed fields and takes the rest (approval, selection, ...).
   | { type: 'detail'; run: RunDetail; detailOnly: boolean }
@@ -76,7 +77,7 @@ function mergeLines(existing: LogLine[], added: LogLine[]): { lines: LogLine[]; 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'reset':
-      return initial
+      return action.keepRun ? { ...initial, run: state.run } : initial
     case 'loaded':
       return { ...state, run: action.run }
     case 'detail': {
@@ -140,6 +141,8 @@ export function useRunLive(runId: number, opts: { logs: boolean }): RunLive {
   const [state, dispatch] = useReducer(reducer, initial)
   const wantLogs = opts.logs
   const reloadRef = useRef<(() => void) | undefined>(undefined)
+  // Bumped by retry(): the effect below runs again and starts over.
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -148,7 +151,7 @@ export function useRunLive(runId: number, opts: { logs: boolean }): RunLive {
     // (legId, seq) of every line taken so far, also of lines the 20,000 cap dropped.
     const seen = new Set<string>()
     let cursor = ''
-    dispatch({ type: 'reset' })
+    dispatch({ type: 'reset', keepRun: attempt > 0 })
 
     const takeLines = (page: LogPage) => {
       const fresh: LogLine[] = []
@@ -333,9 +336,10 @@ export function useRunLive(runId: number, opts: { logs: boolean }): RunLive {
       if (reopenTimer) clearTimeout(reopenTimer)
       source?.close()
     }
-  }, [runId, wantLogs])
+  }, [runId, wantLogs, attempt])
 
   const reload = useCallback(() => reloadRef.current?.(), [])
+  const retry = useCallback(() => setAttempt((count) => count + 1), [])
 
   return {
     run: state.run,
@@ -345,5 +349,6 @@ export function useRunLive(runId: number, opts: { logs: boolean }): RunLive {
     truncated: state.truncated,
     error: state.error,
     reload,
+    retry,
   }
 }

@@ -25,7 +25,7 @@ async function shots(page: Page, name: string) {
 
 const problems: string[] = []
 
-test.afterEach(async ({}, testInfo) => {
+test.afterEach(async (_fixtures, testInfo) => {
   if (testInfo.status !== testInfo.expectedStatus && problems.length > 0) {
     await testInfo.attach('browser-problems', { body: problems.join('\n'), contentType: 'text/plain' })
   }
@@ -83,19 +83,30 @@ test('a run with a failing service is planned, started, watched and read, and a 
   const failingRunUrl = page.url()
   await expect(page.getByTestId('run-lead')).toHaveText('Review the plan, then start')
   await shots(page, 'run-planned')
-  await page.getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
 
   // The state changes by itself, without a reload: planned -> running -> a final state.
   await expect(page.getByTestId('run-lead')).not.toHaveText('Review the plan, then start')
+  // Lines arrive while the page stays open: a marker set on the window survives only if nothing reloaded.
+  await page.evaluate(() => { (window as unknown as { __noReload: boolean }).__noReload = true })
+  const consoleRegion = page.getByRole('region', { name: 'Console' })
+  const logLines = consoleRegion.getByRole('log', { name: 'Log lines' })
+  await expect(consoleRegion.getByText(/[1-9]\d* of [1-9]\d* lines/)).toBeVisible({ timeout: 60_000 })
+  await expect(logLines).not.toContainText('No log lines yet')
+  const tree = page.getByRole('navigation', { name: 'Steps and services' })
+  await expect(tree.getByRole('button', { name: /backend-api/ }).first()).toBeVisible()
   await shots(page, 'run-running')
-  // CONSOLE_LIVE_PLACEHOLDER
 
-  await expect(page.getByRole('heading', { name: /^Run #\d+/ }).getByText('Failed')).toBeVisible({ timeout: 90_000 })
+  await expect(page.getByRole('heading', { name: /^Run #\d+/ }).getByText('Partly succeeded')).toBeVisible({ timeout: 90_000 })
   const failed = page.getByRole('region', { name: 'What failed' })
   await expect(failed).toContainText('backend-api')
-  await expect(failed).toContainText('health checks failed')
+  await expect(failed).toContainText('the new tasks did not become healthy')
   await shots(page, 'run-failed')
-  // CONSOLE_SCOPE_PLACEHOLDER
+  expect(await page.evaluate(() => (window as unknown as { __noReload?: boolean }).__noReload), 'the page was reloaded').toBe(true)
+  await failed.getByRole('button', { name: 'Show its log' }).click()
+  await expect(page).toHaveURL(/service=backend-api/)
+  await expect(consoleRegion.getByText(/[1-9]\d* error lines?/)).toBeVisible()
+  await expect(logLines).toContainText('tasks started but the target group reports unhealthy')
 
   // ---- Second run: a slow version, cancelled from the run page ----
   await page.goto(jobUrl)
@@ -103,7 +114,7 @@ test('a run with a failing service is planned, started, watched and read, and a 
   await planButton.click()
   await expect(page).toHaveURL(/\/runs\/\d+$/)
   const slowRunUrl = page.url()
-  await page.getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible({ timeout: 30_000 })
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Cancel this run?' })
@@ -121,7 +132,7 @@ test('a run with a failing service is planned, started, watched and read, and a 
   const runNumber = (url: string) => url.split('/').pop() ?? ''
   await expect(runsTable.getByRole('link', { name: `#${runNumber(failingRunUrl)}` })).toBeVisible()
   await expect(runsTable.getByRole('link', { name: `#${runNumber(slowRunUrl)}` })).toBeVisible()
-  await expect(runsTable).toContainText('Failed')
+  await expect(runsTable).toContainText('Partly succeeded')
   await expect(runsTable).toContainText('Cancelled')
   await shots(page, 'runs-list')
 

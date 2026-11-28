@@ -34,13 +34,18 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/rcss-labs/yamdrake/test/awstest"
 	"github.com/rcss-labs/yamdrake/test/e2e/fakegithub"
 )
 
 const (
 	usage = `usage: webstack [--binary bin/yumdrake-orchestrator] [--runner-binary web/.e2e-bin/webrunner] [--fixture internal/spec/testdata/valid]
+                [--aws-endpoint http://localhost:4577 [--aws-runner-binary bin/yumdrake-runner]]
 
 Needs YUMDRAKE_TEST_DATABASE_URL and YUMDRAKE_TEST_VALKEY_ADDR (see make dev-up).
+With --aws-endpoint the stack runs the production runner with real steps against
+that Floci instead of the fake steps: it seeds two random AWS accounts there and
+adds two people (a deployer and an approver) to the printed JSON.
 Exit codes: 0 stopped normally, 1 failure, 2 usage.
 `
 
@@ -61,6 +66,23 @@ type ready struct {
 	Password string `json:"password"`
 	// RunnerPID lets the browser test pause and resume the runner process.
 	RunnerPID int `json:"runner_pid"`
+	// AWS is set only with --aws-endpoint: the seeded world and the two other people.
+	AWS *awsReady `json:"aws,omitempty"`
+}
+
+// awsReady is what the browser test needs to drive the Floci stack.
+type awsReady struct {
+	Endpoint        string `json:"endpoint"`
+	Suffix          string `json:"suffix"`
+	DevAccount      string `json:"dev_account"`
+	ProdAccount     string `json:"prod_account"`
+	PlatformAccount string `json:"platform_account"`
+	DeployerEmail   string `json:"deployer_email"`
+	DeployerName    string `json:"deployer_name"`
+	DeployerPass    string `json:"deployer_password"`
+	ApproverEmail   string `json:"approver_email"`
+	ApproverName    string `json:"approver_name"`
+	ApproverPass    string `json:"approver_password"`
 }
 
 func main() {
@@ -77,6 +99,8 @@ func run() int {
 	binary := flags.String("binary", "bin/yumdrake-orchestrator", "path to the orchestrator binary built by make build")
 	runnerBinary := flags.String("runner-binary", "web/.e2e-bin/webrunner", "path to the test runner (test/e2e/webrunner), which runs only fake steps; not the production bin/yumdrake-runner, which wires the real resolve and revalidate")
 	fixture := flags.String("fixture", "internal/spec/testdata/valid", "directory committed to the fake GitHub repository")
+	awsEndpoint := flags.String("aws-endpoint", "", "URL of a Floci to run real steps against (instead of the fake steps and the fixture)")
+	awsRunnerBinary := flags.String("aws-runner-binary", "bin/yumdrake-runner", "the production runner, used with --aws-endpoint")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -106,7 +130,11 @@ func run() int {
 	cleanup := &cleaner{}
 	defer cleanup.run()
 
-	out, err := bringUp(ctx, cleanup, *binary, *runnerBinary, *fixture, adminURL, valkeyAddr)
+	mode := stackMode{runnerBinary: *runnerBinary, fixture: *fixture}
+	if *awsEndpoint != "" {
+		mode = stackMode{runnerBinary: *awsRunnerBinary, awsEndpoint: *awsEndpoint}
+	}
+	out, err := bringUp(ctx, cleanup, *binary, mode, adminURL, valkeyAddr)
 	if err != nil {
 		logf("%v", err)
 		return 1
@@ -162,7 +190,16 @@ func freeAddr() (string, error) {
 	return ln.Addr().String(), nil
 }
 
-func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixture, adminURL, valkeyAddr string) (ready, error) {
+// stackMode says what the runner is. With awsEndpoint empty it is the fake-step test runner and the fixture
+// directory is the inventory; with it, the production runner and an inventory generated for a seeded Floci.
+type stackMode struct {
+	runnerBinary string
+	fixture      string
+	awsEndpoint  string
+}
+
+func bringUp(ctx context.Context, cleanup *cleaner, binary string, mode stackMode, adminURL, valkeyAddr string) (ready, error) {
+	runnerBinary, fixture := mode.runnerBinary, mode.fixture
 	suffix, err := randomHex(6)
 	if err != nil {
 		return ready{}, err
@@ -191,10 +228,20 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 
 	gh := fakegithub.New(githubToken)
 	cleanup.add(gh.Close)
-	if err := gh.LoadDir(repo, commit, fixture); err != nil {
-		return ready{}, fmt.Errorf("load fixture %s: %w", fixture, err)
+	var world *awsWorld
+	if mode.awsEndpoint != "" {
+		if world, err = seedAWS(mode.awsEndpoint, cleanup); err != nil {
+			return ready{}, err
+		}
+		if err := loadAWSFixture(gh, world); err != nil {
+			return ready{}, err
+		}
+	} else {
+		if err := gh.LoadDir(repo, commit, fixture); err != nil {
+			return ready{}, fmt.Errorf("load fixture %s: %w", fixture, err)
+		}
+		gh.SetHead(repo, branch, commit)
 	}
-	gh.SetHead(repo, branch, commit)
 
 	httpAddr, err := freeAddr()
 	if err != nil {
@@ -223,6 +270,18 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 		// The visibility spec stops the runner and expects System health to say so within seconds.
 		"YUMDRAKE_RUNNER_GONE_AFTER=5s",
 	)
+	if world != nil {
+		// Real AWS calls go to Floci, with the platform account as the process's own identity (the runner writes
+		// the run's artifacts with it), as the Go end-to-end tests set it up.
+		env = append(env,
+			"YUMDRAKE_AWS_ENDPOINT_URL="+world.endpoint,
+			"AWS_ACCESS_KEY_ID="+world.stack.PlatformAccount,
+			"AWS_SECRET_ACCESS_KEY="+awsKeyPassword,
+			"AWS_REGION="+awstest.Region,
+			"AWS_PROFILE=",
+			"AWS_EC2_METADATA_DISABLED=true",
+		)
+	}
 
 	// The service migrates the empty database on start.
 	svc := exec.Command(binary) //nolint:gosec // the binary path is an operator-given flag
@@ -256,6 +315,17 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 		"YUMDRAKE_RUNNER_ID=web-e2e-runner",
 		"YUMDRAKE_RUNNER_POLL=500ms",
 	)
+	if world != nil {
+		// The production runner: real steps, no fake. It needs the artifact bucket of the platform account.
+		runnerEnv = append(append([]string{}, env...),
+			"YUMDRAKE_HEALTH_ADDR="+runnerHealthAddr,
+			"YUMDRAKE_ARTIFACT_BUCKET="+world.stack.ArtifactBucket,
+			"YUMDRAKE_RUNNER_ID=web-e2e-aws-runner",
+			"YUMDRAKE_RUNNER_POLL=500ms",
+			"YUMDRAKE_ROLLOUT_POLL=1s",
+			"YUMDRAKE_ROLLOUT_TIMEOUT=3m",
+		)
+	}
 	runnerCmd := exec.Command(runnerBinary) //nolint:gosec // the binary path is an operator-given flag
 	runnerCmd.Env = runnerEnv
 	runnerCmd.Stdout, runnerCmd.Stderr = os.Stderr, os.Stderr
@@ -290,15 +360,27 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 	// A run is refused unless the AWS account of its environment (hetzner-01, in the fixture) is connected.
 	// Creating the account makes no AWS call, and the fake steps never use the keys, which are not real.
 	fakeKey := map[string]any{"method": "key", "access_key_id": "AKIAWEBE2EFAKEKEY00", "secret_access_key": "web-e2e-fake-secret-key"} //nolint:gosec // a made-up key for the fake steps; no AWS call is ever made with it
-	steps := []struct {
+	type step struct {
 		method, path string
 		body         any
 		out          any
-	}{
-		{http.MethodPost, "/api/v1/admin/aws-accounts", map[string]any{"name": "web-e2e-dev", "account_id": "111111111111", "discovery": fakeKey, "deploy": fakeKey}, nil},
-		{http.MethodPost, "/api/v1/admin/github-connections", map[string]any{"owner": "acme", "method": "token", "token": githubToken}, nil},
-		{http.MethodPut, "/api/v1/admin/inventory-source", map[string]any{"repo": repo, "branch": branch}, nil},
 	}
+	accountSteps := []step{{http.MethodPost, "/api/v1/admin/aws-accounts", map[string]any{"name": "web-e2e-dev", "account_id": "111111111111", "discovery": fakeKey, "deploy": fakeKey}, nil}}
+	wantCommit, wantEnvironments, jobFile, folderName := commit, 5, jobPath, "Backend"
+	if world != nil {
+		// The seeded accounts, with keys Floci accepts: the account id is the access key id.
+		accountSteps = nil
+		for _, name := range []string{awstest.DevEnvironment, awstest.ProdEnvironment} {
+			e := world.environment(name)
+			accountSteps = append(accountSteps, step{http.MethodPost, "/api/v1/admin/aws-accounts",
+				map[string]any{"name": "web-e2e-" + name, "account_id": e.Account, "discovery": awsKey(e.Account), "deploy": awsKey(e.Account)}, nil})
+		}
+		wantCommit, wantEnvironments, jobFile, folderName = awsCommit, 2, awsJobPath, "Everything"
+	}
+	steps := append(accountSteps,
+		step{http.MethodPost, "/api/v1/admin/github-connections", map[string]any{"owner": "acme", "method": "token", "token": githubToken}, nil},
+		step{http.MethodPut, "/api/v1/admin/inventory-source", map[string]any{"repo": repo, "branch": branch}, nil},
+	)
 	for _, s := range steps {
 		if err := api.call(s.method, s.path, s.body, s.out); err != nil {
 			return ready{}, err
@@ -307,7 +389,7 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 	var folder struct {
 		ID int64 `json:"id"`
 	}
-	if err := api.call(http.MethodPost, "/api/v1/folders", map[string]any{"name": "Backend"}, &folder); err != nil {
+	if err := api.call(http.MethodPost, "/api/v1/folders", map[string]any{"name": folderName}, &folder); err != nil {
 		return ready{}, err
 	}
 	var job struct {
@@ -315,7 +397,7 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 		Runnable bool  `json:"runnable"`
 	}
 	if err := api.call(http.MethodPost, "/api/v1/jobs", map[string]any{
-		"folder_id": folder.ID, "repo": repo, "branch": branch, "path": jobPath}, &job); err != nil {
+		"folder_id": folder.ID, "repo": repo, "branch": branch, "path": jobFile}, &job); err != nil {
 		return ready{}, err
 	}
 
@@ -333,11 +415,62 @@ func bringUp(ctx context.Context, cleanup *cleaner, binary, runnerBinary, fixtur
 		if err := api.call(http.MethodGet, "/api/v1/inventory", nil, &inv); err != nil {
 			return false, err
 		}
-		return j.Runnable && inv.Commit == commit && len(inv.Environments) == 5, nil
+		return j.Runnable && inv.Commit == wantCommit && len(inv.Environments) == wantEnvironments, nil
 	}); err != nil {
 		return ready{}, err
 	}
-	return ready{BaseURL: base, Email: adminEmail, Password: password, RunnerPID: runnerCmd.Process.Pid}, nil
+	out := ready{BaseURL: base, Email: adminEmail, Password: password, RunnerPID: runnerCmd.Process.Pid}
+	if world != nil {
+		if out.AWS, err = addPeople(api, world); err != nil {
+			return ready{}, err
+		}
+	}
+	return out, nil
+}
+
+// addPeople creates the two people of the Floci flow: a deployer who may run in dev and prod, and an approver who
+// may approve in prod. A run needing approval is approved by a person other than the one who asked for it.
+func addPeople(api *caller, world *awsWorld) (*awsReady, error) {
+	out := &awsReady{
+		Endpoint: world.endpoint, Suffix: world.stack.Suffix,
+		DevAccount: world.opts.DevAccount, ProdAccount: world.opts.ProdAccount, PlatformAccount: world.opts.PlatformAccount,
+		DeployerEmail: "deployer@web-e2e.example.test", DeployerName: "Dana Deployer",
+		ApproverEmail: "approver@web-e2e.example.test", ApproverName: "Alex Approver",
+	}
+	var err error
+	if out.DeployerPass, err = randomHex(12); err != nil {
+		return nil, err
+	}
+	if out.ApproverPass, err = randomHex(12); err != nil {
+		return nil, err
+	}
+	people := []struct {
+		email, name, pass, group string
+		grants                   [][2]string
+	}{
+		{out.DeployerEmail, out.DeployerName, out.DeployerPass, "Deployers", [][2]string{{"run", "dev"}, {"run", "prod"}, {"restore", "dev"}, {"view_logs", "dev"}, {"view_logs", "prod"}}},
+		{out.ApproverEmail, out.ApproverName, out.ApproverPass, "Approvers", [][2]string{{"approve", "prod"}}},
+	}
+	for _, p := range people {
+		var group, user struct {
+			ID int64 `json:"id"`
+		}
+		if err := api.call(http.MethodPost, "/api/v1/admin/groups", map[string]any{"name": p.group}, &group); err != nil {
+			return nil, err
+		}
+		for _, grant := range p.grants {
+			if err := api.call(http.MethodPost, "/api/v1/admin/grants", map[string]any{"group_id": group.ID, "action": grant[0], "label": grant[1]}, nil); err != nil {
+				return nil, err
+			}
+		}
+		if err := api.call(http.MethodPost, "/api/v1/admin/users", map[string]any{"email": p.email, "name": p.name, "source": "local", "password": p.pass}, &user); err != nil {
+			return nil, err
+		}
+		if err := api.call(http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%d", user.ID), map[string]any{"group_ids": []int64{group.ID}}, nil); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func createDatabase(ctx context.Context, cleanup *cleaner, adminURL, name string) (string, error) {

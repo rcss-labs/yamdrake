@@ -29,6 +29,18 @@ describe('api', () => {
     expect(body.users[0]).toEqual({ groups: [], last_sign_in_at: null })
   })
 
+  it('turns the null lists of runs, plans, logs, approvals and freezes into empty ones', async () => {
+    const lists = [
+      'legs', 'locks', 'failures', 'lines', 'gaps', 'runs', 'checks', 'config', 'common',
+      'added', 'removed', 'changed', 'approvals', 'active', 'ended', 'services', 'steps',
+    ]
+    server.use(http.get('/api/v1/me', () => HttpResponse.json({ nested: Object.fromEntries(lists.map((name) => [name, null])) })))
+    const body = await api<{ nested: Record<string, unknown> }>('GET', '/api/v1/me')
+    for (const name of lists) {
+      expect(body.nested[name], name).toEqual([])
+    }
+  })
+
   it('sends a JSON body with a JSON content type', async () => {
     await api('POST', '/api/v1/folders', { name: 'Tools' })
     const sent = requests.find((request) => request.method === 'POST' && request.path === '/api/v1/folders')
@@ -44,6 +56,18 @@ describe('api', () => {
     const error = await api('GET', '/api/v1/folders').catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(ApiError)
     expect(error).toMatchObject({ status: 403, code: 'forbidden', message: 'You may not see folders' })
+  })
+
+  it('keeps the problems of a 422 answer on the ApiError, and has none for other errors', async () => {
+    const problems = [{ file: 'jobs/a.yaml', line: 6, message: 'group "a" needs a version' }]
+    server.use(
+      http.post('/api/v1/jobs/1/runs', () => HttpResponse.json({ error: { code: 'invalid', message: 'the selection cannot be planned', problems } }, { status: 422 })),
+    )
+    const error = await api('POST', '/api/v1/jobs/1/runs', {}).catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ status: 422, code: 'invalid', problems })
+    failNext('GET', '/api/v1/folders', 500, 'internal', 'Down')
+    const other = await api('GET', '/api/v1/folders').catch((caught: unknown) => caught)
+    expect((other as ApiError).problems).toEqual([])
   })
 
   it('falls back to http_<status> when the error body is not the API format', async () => {

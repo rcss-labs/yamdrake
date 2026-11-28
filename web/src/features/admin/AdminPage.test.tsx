@@ -26,21 +26,23 @@ describe('the admin page', () => {
       'Users',
       'Groups and permissions',
       'Single sign-on',
+      'Freezes',
       'AWS accounts',
       'GitHub',
       'Git sources',
+      'Slack',
       'Audit log',
     ])
   })
 
   it('shows only the access sections to an access manager', async () => {
     const { names } = await tabNames(accessManagerMe)
-    expect(names).toEqual(['Users', 'Groups and permissions', 'Single sign-on'])
+    expect(names).toEqual(['Users', 'Groups and permissions', 'Single sign-on', 'Freezes'])
   })
 
   it('shows only the connection sections to a connections manager', async () => {
     const { names } = await tabNames(connectionsManagerMe, '/admin/aws')
-    expect(names).toEqual(['AWS accounts', 'GitHub', 'Git sources'])
+    expect(names).toEqual(['AWS accounts', 'GitHub', 'Git sources', 'Slack'])
   })
 
   it('shows only the audit log to an auditor', async () => {

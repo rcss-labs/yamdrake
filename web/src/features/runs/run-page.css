@@ -1,0 +1,115 @@
+.run-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.run-actions-area {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+.run-actions-area:empty {
+  display: none;
+}
+.run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.run-work {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+.run-fail {
+  border: 1px solid #e7b9af;
+  border-radius: 12px;
+  background: Canvas;
+  overflow: hidden;
+}
+.run-fail-title {
+  margin: 0;
+  padding: 12px 16px;
+  background: var(--bad-b);
+  color: var(--bad-t);
+  font-size: 14px;
+  font-weight: 500;
+}
+.run-fail-scroll {
+  overflow-x: auto;
+}
+.run-fail table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.run-fail th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink3);
+  padding: 8px 16px;
+}
+.run-fail td {
+  vertical-align: top;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+.run-fail-what {
+  font-weight: 500;
+}
+.run-fail-sub {
+  color: var(--ink3);
+  font-size: 13px;
+}
+.run-fail-why {
+  min-width: 300px;
+}
+.run-fail-skipped {
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--ink3);
+  font-size: 13px;
+}
+.run-fact-sub {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ink3);
+}
+/* On a phone each failure becomes a short card: the cells stack and say what they are, so nothing needs a sideways scroll. */
+@media (max-width: 640px) {
+  .run-fail thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .run-fail table,
+  .run-fail tbody,
+  .run-fail tr,
+  .run-fail td {
+    display: block;
+  }
+  .run-fail tr {
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .run-fail td {
+    padding: 4px 0;
+    border-top: 0;
+    overflow-wrap: anywhere;
+  }
+  .run-fail td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--ink3);
+  }
+  .run-fail-why {
+    min-width: 0;
+  }
+}

@@ -1,0 +1,35 @@
+.approvals-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.approvals-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.approvals-title {
+  font-weight: 500;
+}
+.approvals-sub {
+  font-size: 13px;
+  color: var(--ink3);
+}
+.approvals-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.approvals-actions a {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+.approvals-empty {
+  color: var(--ink3);
+  text-align: center;
+}

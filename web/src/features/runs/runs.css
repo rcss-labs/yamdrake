@@ -1,0 +1,37 @@
+.runs-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.runs-quiet {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ink3);
+}
+.runs-nowrap {
+  white-space: nowrap;
+}
+.runs-services {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.runs-failed-cell {
+  min-width: 200px;
+}
+.runs-fail {
+  font-size: 13px;
+  line-height: 20px;
+}
+.runs-more {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+.runs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}

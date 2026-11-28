@@ -1,8 +1,11 @@
 import { Route, Routes } from 'react-router-dom'
 import { AdminPage } from './features/admin/AdminPage'
+import { ApprovalsPage } from './features/approvals/ApprovalsPage'
 import { InventoryPage } from './features/inventory/InventoryPage'
 import { JobPage } from './features/jobs/JobPage'
 import { JobsPage } from './features/jobs/JobsPage'
+import { RunPage } from './features/runs/RunPage'
+import { RunsPage } from './features/runs/RunsPage'
 import { ConfirmDevicePage } from './features/tokens/ConfirmDevicePage'
 import { TokensPage } from './features/tokens/TokensPage'
 import { NotFound } from './shell/NotFound'
@@ -33,8 +36,9 @@ export function AppRoutes() {
       <Route path="/" element={<OverviewPage />} />
       <Route path="/jobs" element={<JobsPage />} />
       <Route path="/jobs/:id" element={<JobPage />} />
-      <Route path="/runs" element={<ComingPage title="Runs" />} />
-      <Route path="/approvals" element={<ComingPage title="Approvals" />} />
+      <Route path="/runs" element={<RunsPage />} />
+      <Route path="/runs/:id" element={<RunPage />} />
+      <Route path="/approvals" element={<ApprovalsPage />} />
       <Route path="/versions" element={<ComingPage title="Versions" />} />
       <Route path="/inventory" element={<InventoryPage />} />
       <Route path="/cli" element={<TokensPage />} />

@@ -673,7 +673,7 @@ func TestRunnerKilledMidLegIsResumedByTheOther(t *testing.T) {
 	if takenOver.RunnerID == killed.id || takenOver.LeaseExpiries != 1 {
 		t.Errorf("leg finished on runner %q after %d lease expiries, want the other runner after 1", takenOver.RunnerID, takenOver.LeaseExpiries)
 	}
-	want := fmt.Sprintf("attempt 2: a previous attempt by runner %s did not finish; continuing from its last checkpoint", killed.id)
+	want := fmt.Sprintf("attempt 2: a previous attempt by runner %s did not finish; continuing from its last checkpoint. Log lines of the previous attempt may be missing.", killed.id)
 	if got := countLines(s.fullLog(id), victim.ID, want); got != 1 {
 		t.Errorf("the leg's log has the continuation line %d times, want once: %q", got, want)
 	}

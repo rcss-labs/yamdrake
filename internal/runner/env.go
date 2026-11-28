@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -70,6 +71,16 @@ type Env interface {
 	// by a "check again" and calls Do with the same key, in which case choose a
 	// new key (for example with a counter) for a deliberate second try.
 	//
+	// If fn succeeded but recording its result fails, Do retries the record a
+	// few times while the lease is held; when it still cannot record, it
+	// returns an error wrapping ErrMaybeApplied (the change is in place, the
+	// operation stays intended).
+	//
+	// Executors must map ErrMaybeApplied, and an ErrAmbiguous they cannot
+	// resolve by looking at the real system, to an "unknown" outcome, never
+	// to "failed": a failed leg releases the run's locks, an unknown one
+	// keeps them until a person reconciles.
+	//
 	// Do must not be called concurrently with the same key. The recorded intent
 	// must be enough for a later attempt to reconcile.
 	Do(ctx context.Context, name, key string, intent any, fn func() (result any, err error)) (store.Op, error)
@@ -97,6 +108,11 @@ type legEnv struct {
 	log   *slog.Logger
 	mu    sync.Mutex
 	resum []byte // last checkpoint, kept current by Checkpoint
+
+	// onLogFailure is called once, with the sink's error, the first time a log
+	// line is refused for good. The runner uses it to stop the leg.
+	logFailure   sync.Once
+	onLogFailure func(err error)
 }
 
 func newLegEnv(q *queue.Queue, sink LineSink, leg store.Leg, log *slog.Logger) *legEnv {
@@ -104,7 +120,16 @@ func newLegEnv(q *queue.Queue, sink LineSink, leg store.Leg, log *slog.Logger) *
 }
 
 func (e *legEnv) Log(level, text string) {
-	e.sink.Write(e.leg.RunID, e.leg.ID, e.leg.Generation, level, text)
+	if err := e.sink.Write(e.leg.RunID, e.leg.ID, e.leg.Generation, level, text); err != nil {
+		// The line is lost and more will be: stop the leg (once) rather than let
+		// memory grow while PostgreSQL is unreachable.
+		e.logFailure.Do(func() {
+			e.log.Error("log lines are being refused; stopping the leg", "leg_id", e.leg.ID, "error", err.Error())
+			if e.onLogFailure != nil {
+				e.onLogFailure(err)
+			}
+		})
+	}
 }
 
 func (e *legEnv) Resume(v any) (bool, error) {
@@ -198,7 +223,7 @@ func (e *legEnv) Do(ctx context.Context, name, key string, intent any, fn func()
 	}
 	if fnErr != nil {
 		failure, _ := json.Marshal(map[string]string{"error": fnErr.Error()})
-		if err := e.q.Finish(recordCtx, e.leg.ID, e.leg.Generation, op.ID, false, failure); err != nil {
+		if err := e.finishWithRetry(recordCtx, op.ID, false, failure); err != nil {
 			return op, fmt.Errorf("do %q: %w (change failed with: %s)", key, err, fnErr.Error())
 		}
 		op.State = "failed"
@@ -206,13 +231,43 @@ func (e *legEnv) Do(ctx context.Context, name, key string, intent any, fn func()
 	}
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
-		return op, fmt.Errorf("do %q: encode result: %w", key, err)
+		// fn succeeded: the change is in place and its result cannot be recorded.
+		return op, fmt.Errorf("do %q: encode result: %w: %w", key, ErrMaybeApplied, err)
 	}
-	if err := e.q.Finish(recordCtx, e.leg.ID, e.leg.Generation, op.ID, true, resultJSON); err != nil {
-		return op, fmt.Errorf("do %q: %w", key, err)
+	if err := e.finishWithRetry(recordCtx, op.ID, true, resultJSON); err != nil {
+		// The change was made but nothing says so. Reporting a plain error would
+		// let the executor call the leg failed and release the run's locks over
+		// an applied change; ErrMaybeApplied makes it an unknown outcome, and the
+		// operation stays intended so the next attempt reconciles it.
+		return op, fmt.Errorf("do %q: the change was made but its result could not be recorded: %w: %w", key, ErrMaybeApplied, err)
 	}
 	op.State, op.Result = "done", resultJSON
 	return op, nil
+}
+
+const finishTries = 4
+
+// finishRetryWait is the pause before the first retry of a failed record; it
+// doubles each time. A variable so tests need not wait.
+var finishRetryWait = 100 * time.Millisecond
+
+// finishWithRetry records an operation's outcome, retrying a failure a few
+// times with a short backoff while the lease is still held. A lost lease is
+// final: nothing can be recorded any more.
+func (e *legEnv) finishWithRetry(ctx context.Context, opID int64, ok bool, result []byte) error {
+	var err error
+	wait := finishRetryWait
+	for try := 0; try < finishTries; try++ {
+		if try > 0 {
+			time.Sleep(wait)
+			wait *= 2
+		}
+		if err = e.q.Finish(ctx, e.leg.ID, e.leg.Generation, opID, ok, result); err == nil || errors.Is(err, queue.ErrLeaseLost) {
+			return err
+		}
+		e.log.Warn("could not record an operation's outcome", "leg_id", e.leg.ID, "operation_id", opID, "try", try+1, "error", err.Error())
+	}
+	return err
 }
 
 // ErrMaybeApplied is for Do's fn to wrap when its call may have taken effect

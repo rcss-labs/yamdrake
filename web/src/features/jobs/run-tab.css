@@ -1,0 +1,71 @@
+.run-layout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px;
+}
+.run-main {
+  flex: 3 1 480px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.run-summary {
+  flex: 2 1 300px;
+}
+.run-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.run-env {
+  max-width: 320px;
+}
+.run-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.run-group-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+}
+.run-group-name {
+  font-weight: 500;
+  font-size: 15px;
+}
+.run-version {
+  flex-direction: row;
+  align-items: center;
+}
+.run-services {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  gap: 4px 24px;
+}
+.run-services li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.run-plan-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.run-override {
+  display: block;
+  color: var(--ink3);
+  font-size: 13px;
+}

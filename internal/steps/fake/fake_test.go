@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -248,5 +249,22 @@ func TestWorldIsSafeForConcurrentUse(t *testing.T) {
 	wg.Wait()
 	if world.Count("k") != 50 || world.Count("other") != 0 {
 		t.Errorf("counts = %d, %d", world.Count("k"), world.Count("other"))
+	}
+}
+
+// maybeAppliedEnv answers every Do as a change that was made but could not be
+// recorded, which Env.Do reports by wrapping runner.ErrMaybeApplied.
+type maybeAppliedEnv struct{ *recordingEnv }
+
+func (e *maybeAppliedEnv) Do(_ context.Context, name, key string, _ any, fn func() (any, error)) (store.Op, error) {
+	_, _ = fn() // the change is applied; only recording it failed
+	return store.Op{Name: name, Key: key, State: "intended"}, fmt.Errorf("do %q: %w", key, runner.ErrMaybeApplied)
+}
+
+func TestEcsDeployReportsUnknownNotFailedWhenTheChangeMayHaveApplied(t *testing.T) {
+	exec := registered(t, Options{World: NewWorld()})["ecs-deploy"]
+	out := exec.Execute(context.Background(), &maybeAppliedEnv{recordingEnv: newRecordingEnv()}, stepClaim("ecs-deploy", "1.0"))
+	if out.State != "unknown" {
+		t.Fatalf("outcome = %+v, want unknown: the change was applied but not recorded", out)
 	}
 }

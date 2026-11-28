@@ -126,6 +126,8 @@ var legMoves = map[string][]string{
 // cancelled; queued to cancelled; unknown to succeeded, failed or queued. It is
 // conditional on the leg's current state, so it cannot overwrite a runner that
 // claimed the leg meanwhile: then nothing changes and it returns ErrLegMoved.
+// A queued leg with an intended operation is never moved (its outcome is
+// uncertain and a runner must reconcile it), also ErrLegMoved.
 // ErrNotFound for an unknown leg, ErrInvalid for a target not in the list.
 //
 // Moving to queued sets queued_at and clears runner, lease and finish time (an
@@ -141,7 +143,9 @@ func SetLegState(ctx context.Context, tx DBTX, legID int64, state string, at tim
 			runner_id   = CASE WHEN $2 = 'queued' THEN '' ELSE runner_id END,
 			lease_until = CASE WHEN $2 = 'queued' THEN NULL ELSE lease_until END,
 			finished_at = CASE WHEN $2 = 'queued' THEN NULL ELSE coalesce(finished_at, $3) END
-		 WHERE id = $1 AND state = ANY($4)`, legID, state, dbTime(at), from)
+		 WHERE id = $1 AND state = ANY($4)
+		   AND NOT (state = 'queued' AND EXISTS (
+		       SELECT 1 FROM operations o WHERE o.leg_id = legs.id AND o.state = 'intended'))`, legID, state, dbTime(at), from)
 	if err != nil {
 		return fmt.Errorf("set leg state: %w", mapError(err))
 	}
@@ -231,4 +235,29 @@ func scanOp(r rowScanner) (Op, error) {
 	var o Op
 	err := r.Scan(&o.ID, &o.LegID, &o.Seq, &o.Name, &o.Key, &o.Intent, &o.Result, &o.State, &o.At)
 	return o, err
+}
+
+// LegsWithIntendedOperation returns the ids of the run's legs that have an
+// operation still in the intended state: the external change may have been made
+// and nobody has recorded the outcome.
+func LegsWithIntendedOperation(ctx context.Context, db DBTX, runID int64) (map[int64]bool, error) {
+	rows, err := db.Query(ctx,
+		`SELECT DISTINCT o.leg_id FROM operations o JOIN legs l ON l.id = o.leg_id
+		 WHERE l.run_id = $1 AND o.state = 'intended'`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("legs with intended operations: %w", mapError(err))
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("legs with intended operations: %w", mapError(err))
+		}
+		out[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("legs with intended operations: %w", mapError(err))
+	}
+	return out, nil
 }

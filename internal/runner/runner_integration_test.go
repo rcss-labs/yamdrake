@@ -49,12 +49,18 @@ type recordingSink struct {
 	mu      sync.Mutex
 	events  []sinkEvent
 	onFlush func(legID int64)
+	// failAfter, when above zero, makes Write refuse lines once that many events are recorded.
+	failAfter int
 }
 
-func (s *recordingSink) Write(_, legID, generation int64, level, text string) {
+func (s *recordingSink) Write(_, legID, generation int64, level, text string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failAfter > 0 && len(s.events) >= s.failAfter {
+		return errors.New("log buffer is full")
+	}
 	s.events = append(s.events, sinkEvent{kind: "write", legID: legID, gen: generation, level: level, text: text})
+	return nil
 }
 
 func (s *recordingSink) Flush(_ context.Context, legID int64) error {
@@ -200,6 +206,25 @@ type runnerOptions struct {
 	executors       map[string]Executor
 	sink            LineSink
 	onSettled       func(runID int64)
+	logTo           io.Writer // the runner's own (service) log; default discarded
+}
+
+// lockedBuilder is a strings.Builder that logging goroutines may write to.
+type lockedBuilder struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuilder) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuilder) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 type runningRunner struct {
@@ -240,7 +265,11 @@ func (h *harness) startRunner(q *queue.Queue, o runnerOptions) *runningRunner {
 	if o.sink == nil {
 		o.sink = &recordingSink{}
 	}
-	r := New(q, o.sink, o.id, o.concurrency, o.heartbeat, o.poll, slog.New(slog.NewTextHandler(io.Discard, nil))).
+	logTo := o.logTo
+	if logTo == nil {
+		logTo = io.Discard
+	}
+	r := New(q, o.sink, o.id, o.concurrency, o.heartbeat, o.poll, slog.New(slog.NewTextHandler(logTo, nil))).
 		WithShutdownTimeout(o.shutdown).WithSettledNotifier(o.onSettled)
 	for kind, e := range o.executors {
 		r.Register(kind, e)
@@ -715,19 +744,29 @@ func TestPanicInExecutorCompletesUnknown(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	leg := h.addLeg("billing")
-	rr := h.startRunner(h.q, runnerOptions{poll: 20 * time.Millisecond, executors: map[string]Executor{
+	sink := &recordingSink{}
+	serviceLog := &lockedBuilder{}
+	rr := h.startRunner(h.q, runnerOptions{poll: 20 * time.Millisecond, sink: sink, logTo: serviceLog, executors: map[string]Executor{
 		"ecs-deploy": execFunc(func(context.Context, Env, queue.Claimed) queue.Outcome {
 			panic("kaboom in the executor")
 		}),
 	}})
 	waitFor(t, "leg to settle", func() bool { return h.leg(leg.ID).State == "unknown" })
 	got := h.leg(leg.ID)
-	text := got.FailureShort + "\n" + got.FailureDetail
-	if !strings.Contains(text, "kaboom in the executor") {
-		t.Errorf("failure %q does not carry the panic message", text)
+	// Everyone who can see the run reads the leg's log and failure fields, so the
+	// panic text (which may carry secrets or internals) stays out of them.
+	visible := got.FailureShort + "\n" + got.FailureDetail
+	for _, e := range sink.snapshot() {
+		visible += "\n" + e.text
 	}
-	if strings.Contains(text, "goroutine") || strings.Contains(text, ".go:") {
-		t.Errorf("failure %q looks like it carries a stack trace", text)
+	if strings.Contains(visible, "kaboom") {
+		t.Errorf("leg-visible text %q carries the panic message", visible)
+	}
+	if !strings.Contains(got.FailureDetail, "the step crashed; see the service log") {
+		t.Errorf("failure detail = %q, want the generic crash text", got.FailureDetail)
+	}
+	if !strings.Contains(serviceLog.String(), "kaboom in the executor") {
+		t.Errorf("service log %q lacks the panic text", serviceLog.String())
 	}
 	// the runner survives and keeps serving
 	next := h.addLeg("search")
@@ -816,7 +855,7 @@ func TestSecondAttemptWritesContinuationLine(t *testing.T) {
 			warnings = append(warnings, e.text)
 		}
 	}
-	const want = "attempt 2: a previous attempt by runner gone did not finish; continuing from its last checkpoint"
+	const want = "attempt 2: a previous attempt by runner gone did not finish; continuing from its last checkpoint. Log lines of the previous attempt may be missing."
 	if len(warnings) != 1 || warnings[0] != want {
 		t.Errorf("warn lines = %q, want exactly %q", warnings, want)
 	}
@@ -1002,5 +1041,239 @@ func TestLegCancelledBeforeStartIsNotExecuted(t *testing.T) {
 	}
 	if n := executed.Load(); n != 0 {
 		t.Errorf("the executor ran %d times for a leg cancelled before it started, want 0", n)
+	}
+}
+
+// "Check again" after a cancel request must run the executor: the leg was
+// attempted, its operation is still intended, and settling it as "cancelled
+// before it started" would hide an uncertain change and release the run's locks.
+// The executor runs with CancelRequested true, reconciles through ErrAmbiguous
+// and settles the leg with what it found.
+func TestCheckAgainAfterCancelRunsTheExecutorToReconcile(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	ctx := context.Background()
+	leg := h.addLeg("billing")
+	h.abandonedAttempt(func(c *queue.Claimed) {
+		if _, err := h.q.Intend(ctx, c.Leg.ID, c.Leg.Generation, "deploy", "deploy-1", []byte(`{"image":"app:1"}`)); err != nil {
+			t.Fatalf("Intend: %v", err)
+		}
+	})
+	// The leg ended unknown, a person cancelled the run, then asked to check again.
+	if _, err := h.pool.Exec(ctx, `UPDATE legs SET state = 'unknown', finished_at = now() WHERE id = $1`, leg.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FlagLegCancel(ctx, h.pool, leg.ID); err != nil {
+		t.Fatalf("FlagLegCancel: %v", err)
+	}
+	if err := store.SetLegState(ctx, h.pool, leg.ID, "queued", h.clock.Now()); err != nil {
+		t.Fatalf("check again: %v", err)
+	}
+
+	var executed atomic.Int32
+	var sawCancel, sawAmbiguous atomic.Bool
+	rr := h.startRunner(h.q, runnerOptions{id: "checker", executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			executed.Add(1)
+			sawCancel.Store(env.CancelRequested(ctx))
+			_, err := env.Do(ctx, "deploy", "deploy-1", nil, func() (any, error) { return nil, nil })
+			sawAmbiguous.Store(errors.Is(err, ErrAmbiguous))
+			return succeed(`{}`) // the executor looked at the real system and found the change in place
+		}),
+	}})
+	waitFor(t, "the leg to settle", func() bool {
+		return h.leg(leg.ID).State != "queued" && h.leg(leg.ID).State != "claimed" && h.leg(leg.ID).State != "running"
+	})
+	if err := rr.stop(t); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if got := h.leg(leg.ID); got.State != "succeeded" {
+		t.Fatalf("leg = %s (%s), want succeeded after reconciling, not cancelled before it started", got.State, got.FailureShort)
+	}
+	if executed.Load() != 1 || !sawCancel.Load() || !sawAmbiguous.Load() {
+		t.Errorf("executed %d times, saw cancel %v, saw ambiguous %v; want once, true, true", executed.Load(), sawCancel.Load(), sawAmbiguous.Load())
+	}
+}
+
+// failRecordingOperationResults makes the database refuse to record an
+// operation's result: the first `times` updates of an operation fail, then they
+// work again. times < 0 means every update fails.
+func failRecordingOperationResults(t *testing.T, h *harness, times int) {
+	t.Helper()
+	limit := times
+	if times < 0 {
+		limit = 1 << 30
+	}
+	for _, stmt := range []string{
+		`CREATE SEQUENCE finish_refusals`,
+		`CREATE FUNCTION refuse_finish() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN
+				IF nextval('finish_refusals') <= ` + fmt.Sprint(limit) + ` THEN RAISE EXCEPTION 'recording refused'; END IF;
+				RETURN NEW;
+			END $$`,
+		`CREATE TRIGGER refuse_finish BEFORE UPDATE ON operations FOR EACH ROW EXECUTE FUNCTION refuse_finish()`,
+	} {
+		if _, err := h.pool.Exec(context.Background(), stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+}
+
+// If fn applied the change but recording its result keeps failing, Do must not
+// report a plain error (the executor would call the leg failed and the run would
+// release its locks over a change that is in place): it wraps ErrMaybeApplied
+// and leaves the operation intended.
+func TestDoReportsMaybeAppliedWhenRecordingTheResultKeepsFailing(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	failRecordingOperationResults(t, h, -1)
+	leg := h.addLeg("billing")
+	var doErr atomic.Value
+	var fnCalls atomic.Int32
+	rr := h.startRunner(h.q, runnerOptions{executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			_, err := env.Do(ctx, "deploy", "k", nil, func() (any, error) { fnCalls.Add(1); return map[string]string{"ok": "yes"}, nil })
+			doErr.Store(doResult{err: err})
+			return queue.Outcome{State: "unknown", FailureShort: "maybe applied"}
+		}),
+	}})
+	waitFor(t, "leg to settle", func() bool { return h.leg(leg.ID).State == "unknown" })
+	_ = rr.stop(t)
+	if r, _ := doErr.Load().(doResult); !errors.Is(r.err, ErrMaybeApplied) {
+		t.Errorf("Do error = %v, want it to wrap ErrMaybeApplied", r.err)
+	}
+	if fnCalls.Load() != 1 {
+		t.Errorf("fn ran %d times, want once", fnCalls.Load())
+	}
+	ops, err := store.OpsOfLeg(context.Background(), h.pool, leg.ID)
+	if err != nil || len(ops) != 1 || ops[0].State != "intended" {
+		t.Errorf("ops = %+v, %v; want one operation still intended", ops, err)
+	}
+}
+
+// A brief failure to record is retried while the lease is held: Do succeeds and
+// the operation ends done, and fn is not run again.
+func TestDoRetriesRecordingTheResultAfterATransientFailure(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	failRecordingOperationResults(t, h, 2)
+	leg := h.addLeg("billing")
+	var doErr atomic.Value
+	var fnCalls atomic.Int32
+	rr := h.startRunner(h.q, runnerOptions{executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			_, err := env.Do(ctx, "deploy", "k", nil, func() (any, error) { fnCalls.Add(1); return map[string]string{"ok": "yes"}, nil })
+			doErr.Store(doResult{err: err})
+			return succeed(`{}`)
+		}),
+	}})
+	waitFor(t, "leg to succeed", func() bool { return h.leg(leg.ID).State == "succeeded" })
+	_ = rr.stop(t)
+	if r, _ := doErr.Load().(doResult); r.err != nil {
+		t.Errorf("Do error = %v, want nil after the retry recorded the result", r.err)
+	}
+	if fnCalls.Load() != 1 {
+		t.Errorf("fn ran %d times, want once", fnCalls.Load())
+	}
+	ops, err := store.OpsOfLeg(context.Background(), h.pool, leg.ID)
+	if err != nil || len(ops) != 1 || ops[0].State != "done" {
+		t.Errorf("ops = %+v, %v; want one done operation", ops, err)
+	}
+}
+
+// When the log writer refuses lines (its queue is full because PostgreSQL is
+// unreachable) the executor is stopped and the leg ends failed with a clear
+// reason, instead of the runner buffering without limit.
+func TestLegFailsWithAClearReasonWhenItsLogCannotBeStored(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	leg := h.addLeg("billing")
+	sink := &recordingSink{failAfter: 3}
+	var stopped atomic.Bool
+	rr := h.startRunner(h.q, runnerOptions{sink: sink, executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			for i := 0; ; i++ {
+				select {
+				case <-ctx.Done():
+					stopped.Store(true)
+					return queue.Outcome{State: "cancelled"}
+				case <-time.After(time.Millisecond):
+					env.Log("info", fmt.Sprintf("line %d", i))
+				}
+			}
+		}),
+	}})
+	waitFor(t, "the leg to settle", func() bool { return h.leg(leg.ID).State == "failed" })
+	_ = rr.stop(t)
+	got := h.leg(leg.ID)
+	if !stopped.Load() {
+		t.Errorf("the executor's context was not cancelled")
+	}
+	if got.FailureShort != "log storage unavailable" || !strings.Contains(got.FailureDetail, "log") {
+		t.Errorf("failure = %q / %q, want a clear log-storage reason", got.FailureShort, got.FailureDetail)
+	}
+}
+
+// A leg that an earlier runner claimed and released, or died on before its first
+// operation, has changed nothing: with a cancel requested it is settled as
+// cancelled without calling the executor, whatever its attempt count.
+func TestReleasedLegWithNoIntendedOperationIsNotExecutedAfterCancel(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	ctx := context.Background()
+	leg := h.addLeg("billing")
+	c, err := h.q.Claim(ctx, "gone")
+	if err != nil || c == nil {
+		t.Fatalf("Claim = %v, %v", c, err)
+	}
+	if err := h.q.Release(ctx, c.Leg.ID, c.Leg.Generation); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if err := store.FlagLegCancel(ctx, h.pool, leg.ID); err != nil {
+		t.Fatalf("FlagLegCancel: %v", err)
+	}
+	var executed atomic.Int32
+	rr := h.startRunner(h.q, runnerOptions{executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(context.Context, Env, queue.Claimed) queue.Outcome {
+			executed.Add(1)
+			return succeed(`{}`)
+		}),
+	}})
+	waitFor(t, "the leg to settle", func() bool { return h.leg(leg.ID).State == "cancelled" })
+	if err := rr.stop(t); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if n := executed.Load(); n != 0 {
+		t.Errorf("the executor ran %d times for a leg with no intended operation, want 0", n)
+	}
+}
+
+// When the log sink refuses lines the leg is stopped, but an executor that
+// answers unknown (it may have changed something) must not be downgraded to
+// failed: failed would release the run's locks over an uncertain change.
+func TestLogStorageFailureNeverDowngradesAnUnknownOutcome(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	leg := h.addLeg("billing")
+	sink := &recordingSink{failAfter: 3}
+	rr := h.startRunner(h.q, runnerOptions{sink: sink, executors: map[string]Executor{
+		"ecs-deploy": execFunc(func(ctx context.Context, env Env, _ queue.Claimed) queue.Outcome {
+			for i := 0; ; i++ {
+				select {
+				case <-ctx.Done():
+					return queue.Outcome{State: "unknown", FailureShort: "change may have been applied"}
+				case <-time.After(time.Millisecond):
+					env.Log("info", fmt.Sprintf("line %d", i))
+				}
+			}
+		}),
+	}})
+	waitFor(t, "the leg to settle", func() bool {
+		s := h.leg(leg.ID).State
+		return s != "queued" && s != "claimed" && s != "running"
+	})
+	_ = rr.stop(t)
+	if got := h.leg(leg.ID); got.State != "unknown" {
+		t.Fatalf("leg = %s (%s), want unknown: the executor said unknown and the log failure must not downgrade it", got.State, got.FailureShort)
 	}
 }

@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { stubApprovals, stubFreezes } from './stubs'
 
 const baseURL = process.env.YUMDRAKE_E2E_BASE_URL ?? ''
 const email = process.env.YUMDRAKE_E2E_EMAIL ?? ''
@@ -68,6 +69,8 @@ test('a person signs in, reads jobs and inventory, manages access and signs out'
     }
   })
   page.on('pageerror', (error) => problems.push(`page error: ${error.message}`))
+  await stubApprovals(page)
+  await stubFreezes(page)
 
   // Sign in. The session cookie is Secure; Chromium accepts it for http://127.0.0.1.
   await page.goto(`${baseURL}/jobs`)

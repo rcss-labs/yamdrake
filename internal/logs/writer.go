@@ -46,6 +46,9 @@ type legBuffer struct {
 	// Guarded by Writer.mu.
 	runID int64
 	queue []pendingLine
+	// refusing is set after the first ErrBufferFull: later Writes fail at once
+	// until the queue has room again.
+	refusing bool
 
 	// Guarded by flushMu.
 	numbered   bool  // next and generation are valid
@@ -70,9 +73,11 @@ type Writer struct {
 	beforeInsert func() error
 	afterCommit  func() error
 
-	mu     sync.Mutex
-	legs   map[int64]*legBuffer
-	closed bool
+	mu        sync.Mutex
+	legs      map[int64]*legBuffer
+	closed    bool
+	maxQueued int           // most lines one leg may have waiting
+	fullWait  time.Duration // how long Write waits for room before refusing
 
 	kick chan struct{}
 	stop chan struct{}
@@ -98,6 +103,7 @@ func NewWriter(pool *pgxpool.Pool, flushEvery time.Duration, maxBatch int, now f
 	}
 	w := &Writer{
 		pool: pool, flushEvery: flushEvery, maxBatch: maxBatch, now: now, notify: notify, log: log,
+		maxQueued: DefaultMaxQueuedLines, fullWait: defaultFullWait,
 		legs: make(map[int64]*legBuffer),
 		kick: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 	}
@@ -107,20 +113,55 @@ func NewWriter(pool *pgxpool.Pool, flushEvery time.Duration, maxBatch int, now f
 
 // Write queues one line of a leg. generation is the one the runner was given
 // when it claimed the leg; lines of a stale generation are refused at insert.
-// It never blocks on the database.
-func (w *Writer) Write(runID, legID, generation int64, level, text string) {
+// It does not wait for the database, except when the leg's queue is full (see
+// WithQueueLimit): then it waits briefly and returns ErrBufferFull.
+func (w *Writer) Write(runID, legID, generation int64, level, text string) error {
 	line := pendingLine{at: w.now(), level: normalizeLevel(level), text: cutText(text), generation: generation}
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
 		w.log.Warn("log line written after the writer was closed; dropped", "run", runID, "leg", legID)
-		return
+		return nil
 	}
 	lb := w.legs[legID]
 	if lb == nil {
 		lb = &legBuffer{runID: runID}
 		w.legs[legID] = lb
 	}
+	// A leg's queue is capped: with PostgreSQL unreachable it would otherwise
+	// grow until the runner runs out of memory. Wait briefly for room, then refuse.
+	if len(lb.queue) >= w.maxQueued && lb.refusing {
+		w.mu.Unlock()
+		return ErrBufferFull
+	}
+	if len(lb.queue) >= w.maxQueued {
+		deadline := time.Now().Add(w.fullWait)
+		for len(lb.queue) >= w.maxQueued {
+			w.mu.Unlock()
+			select {
+			case w.kick <- struct{}{}:
+			default:
+			}
+			if !time.Now().Before(deadline) {
+				w.log.Error("log queue of a leg is full and PostgreSQL is not taking lines; line refused",
+					"run", runID, "leg", legID, "queued", w.maxQueued)
+				w.mu.Lock()
+				if cur := w.legs[legID]; cur != nil {
+					cur.refusing = true
+				}
+				w.mu.Unlock()
+				return ErrBufferFull
+			}
+			time.Sleep(fullPollInterval)
+			w.mu.Lock()
+			// The leg may have been forgotten and recreated while unlocked.
+			if lb = w.legs[legID]; lb == nil {
+				lb = &legBuffer{runID: runID}
+				w.legs[legID] = lb
+			}
+		}
+	}
+	lb.refusing = false
 	lb.queue = append(lb.queue, line)
 	full := len(lb.queue) >= w.maxBatch
 	w.mu.Unlock()
@@ -130,6 +171,32 @@ func (w *Writer) Write(runID, legID, generation int64, level, text string) {
 		default:
 		}
 	}
+	return nil
+}
+
+// ErrBufferFull is returned by Write when a leg's queue is at its limit and
+// PostgreSQL did not take lines within the wait. The line is not stored.
+var ErrBufferFull = errors.New("log buffer is full and the database is not taking lines")
+
+const (
+	// DefaultMaxQueuedLines is how many lines one leg may have waiting.
+	DefaultMaxQueuedLines = 10000
+	// defaultFullWait is how long Write blocks the executor when the queue is full.
+	defaultFullWait  = 5 * time.Second
+	fullPollInterval = 10 * time.Millisecond
+)
+
+// WithQueueLimit sets the most lines one leg may have waiting (default 10,000)
+// and how long Write waits for room when the queue is full (default 5s) before
+// it refuses the line. Call it before the writer is used.
+func (w *Writer) WithQueueLimit(maxLines int, wait time.Duration) *Writer {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if maxLines > 0 {
+		w.maxQueued = maxLines
+	}
+	w.fullWait = wait
+	return w
 }
 
 // Flush stores everything queued for the leg before the call, retrying a

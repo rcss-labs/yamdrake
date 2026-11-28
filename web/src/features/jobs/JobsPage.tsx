@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { errorMessage } from '../../api/client'
-import type { Folder, JobSummary } from '../../api/types'
+import type { Folder, JobSummary, RunSummary } from '../../api/types'
 import { can, canSomewhere } from '../../auth/permissions'
 import { useMe } from '../../auth/session'
-import { Button, Card, DataTable, EmptyState, ErrorState, Icon, Loading, PageHeader, SearchBox, Select, StatusPill, Tag } from '../../ui'
+import { Button, Card, DataTable, EmptyState, ErrorState, Icon, Loading, PageHeader, SearchBox, Select, StatusPill, Tag, Time } from '../../ui'
 import type { DataColumn } from '../../ui'
 import { AddJobForm } from './AddJobForm'
 import { NewFolderForm } from './NewFolderForm'
+import { useRuns } from '../runs/queries'
 import { useFolders, useJobs, useMoveJob } from './queries'
 import './jobs.css'
 
@@ -45,6 +46,26 @@ function State({ job }: { job: JobSummary }) {
   return <StatusPill status="unknown" label={job.problem_count > 0 ? `Has problems (${job.problem_count})` : 'Has problems'} />
 }
 
+// The most the server returns for one request.
+const LAST_RUNS_LIMIT = 100
+
+function LastRun({ run, runsQuery }: { run: RunSummary | undefined; runsQuery: ReturnType<typeof useRuns> }) {
+  if (run) {
+    return (
+      <>
+        <StatusPill status={run.state} />
+        <div className="jobs-quiet">
+          <Time iso={run.started_at ?? run.created_at} />
+        </div>
+      </>
+    )
+  }
+  if (runsQuery.isError) return <span className="jobs-quiet">Not available</span>
+  if (!runsQuery.data) return <span className="jobs-quiet">—</span>
+  // A full page means older runs exist that this page did not reach.
+  return <span className="jobs-quiet">{runsQuery.data.next_before === null ? 'No runs yet' : 'No recent runs'}</span>
+}
+
 export function JobsPage() {
   const me = useMe()
   const navigate = useNavigate()
@@ -55,6 +76,13 @@ export function JobsPage() {
   const [folderFilter, setFolderFilter] = useState(ALL_FOLDERS)
   const [openForm, setOpenForm] = useState<'job' | 'folder' | null>(null)
   const [moveFailures, setMoveFailures] = useState<Record<number, string>>({})
+
+  // One request for the newest runs of every job; the list is newest first, so the first run seen per job is its last.
+  const runsQuery = useRuns({ limit: LAST_RUNS_LIMIT })
+  const newestRunByJob = new Map<number, RunSummary>()
+  for (const run of runsQuery.data?.runs ?? []) {
+    if (!newestRunByJob.has(run.job_source_id)) newestRunByJob.set(run.job_source_id, run)
+  }
 
   const allJobs = jobsQuery.data?.jobs
   const folders = foldersQuery.data?.folders
@@ -166,7 +194,7 @@ export function JobsPage() {
     { key: 'deploys', header: 'Deploys', render: (row) => (row.kind === 'job' ? <Deploys job={row.job} /> : null) },
     { key: 'approval', header: 'Approval', render: (row) => (row.kind === 'job' ? <Approval job={row.job} /> : null) },
     { key: 'state', header: 'State', render: (row) => (row.kind === 'job' ? <State job={row.job} /> : null) },
-    { key: 'last', header: 'Last run', render: (row) => (row.kind === 'job' ? <span className="jobs-quiet">No runs yet</span> : null) },
+    { key: 'last', header: 'Last run', render: (row) => (row.kind === 'job' ? <LastRun run={newestRunByJob.get(row.job.id)} runsQuery={runsQuery} /> : null) },
   ]
   if (canManage) {
     columns.push({

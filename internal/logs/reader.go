@@ -156,6 +156,34 @@ type candidate struct {
 // start), ordered by time, then leg, then sequence, and the gaps found in the
 // legs it covered. Archived legs are merged in.
 func (r *Reader) Read(ctx context.Context, runID int64, f Filter, after Cursor, limit int) (Page, error) {
+	return r.read(ctx, runID, f, after, limit, nil)
+}
+
+// archiveCache holds decoded archived legs, by leg id, between the pages of one
+// read sequence. A nil cache decodes afresh every time.
+type archiveCache map[int64][]archivedLine
+
+// Session reads one run's log page after page for one consumer, such as an
+// event stream. It remembers each archived leg it has decoded until the cursor
+// has passed the leg's last line, so a read of the whole log decompresses every
+// archived leg once. A Session is not safe for concurrent use.
+type Session struct {
+	r     *Reader
+	runID int64
+	cache archiveCache
+}
+
+// NewSession starts a paged read of the run's log.
+func (r *Reader) NewSession(runID int64) *Session {
+	return &Session{r: r, runID: runID, cache: archiveCache{}}
+}
+
+// Read is Reader.Read for the session's run.
+func (s *Session) Read(ctx context.Context, f Filter, after Cursor, limit int) (Page, error) {
+	return s.r.read(ctx, s.runID, f, after, limit, s.cache)
+}
+
+func (r *Reader) read(ctx context.Context, runID int64, f Filter, after Cursor, limit int, cache archiveCache) (Page, error) {
 	cursor, err := decodeCursor(after)
 	if err != nil {
 		return Page{}, err
@@ -185,7 +213,7 @@ func (r *Reader) Read(ctx context.Context, runID int64, f Filter, after Cursor, 
 	}
 	archiveGaps := map[int64][]Gap{} // per archived leg, every gap after the cursor
 	if len(archived) > 0 {
-		archCands, gaps, err := r.readArchived(ctx, tx, runID, f, cursor, archived)
+		archCands, gaps, err := r.readArchived(ctx, tx, runID, f, cursor, archived, limit, cache, cands)
 		if err != nil {
 			return Page{}, err
 		}
@@ -222,6 +250,12 @@ func (r *Reader) Read(ctx context.Context, runID int64, f Filter, after Cursor, 
 	if page.Next, err = encodeCursor(next); err != nil {
 		return Page{}, err
 	}
+	// Forget archived legs the cursor has read to the end.
+	for leg := range cache {
+		if ref, ok := archived[leg]; !ok || next[leg] >= ref.LastSeq {
+			delete(cache, leg)
+		}
+	}
 
 	if page.Gaps, err = r.gaps(ctx, tx, runID, cursor, covered, archived, archiveGaps); err != nil {
 		return Page{}, err
@@ -238,7 +272,34 @@ func (r *Reader) queryRows(ctx context.Context, q querier, runID int64, f Filter
 	for leg := range archived {
 		archivedIDs = append(archivedIDs, leg)
 	}
-	rows, err := q.Query(ctx, `
+	var rows pgx.Rows
+	var err error
+	if f == (Filter{}) {
+		// No filter: a page can only hold the first `limit` rows of each leg (a
+		// leg's rows leave in sequence order with a non-decreasing sort key), so
+		// read just those per leg. Reading all the rows after the cursor would
+		// make a paged read of N lines cost O(N) per page.
+		rows, err = q.Query(ctx, `
+WITH leg_ids AS (
+    SELECT id AS leg_id FROM legs WHERE run_id = $1
+    UNION SELECT 0
+),
+after AS (
+    SELECT t.leg_id, t.seq, t.at, t.level, t.text,
+           max(t.at) OVER (PARTITION BY t.leg_id ORDER BY t.seq) AS ord
+    FROM leg_ids g
+    LEFT JOIN unnest($2::bigint[], $3::bigint[]) AS c(leg_id, seq) ON c.leg_id = g.leg_id
+    CROSS JOIN LATERAL (
+        SELECT l.leg_id, l.seq, l.at, l.level, l.text FROM log_lines l
+        WHERE l.run_id = $1 AND l.leg_id = g.leg_id AND l.seq > coalesce(c.seq, 0)
+        ORDER BY l.seq LIMIT $4
+    ) t
+    WHERE g.leg_id <> ALL($5::bigint[])
+)
+SELECT leg_id, seq, at, level, text, ord FROM after ORDER BY ord, leg_id, seq LIMIT $4`,
+			runID, legIDs, seqs, limit, archivedIDs)
+	} else {
+		rows, err = q.Query(ctx, `
 WITH after AS (
     SELECT l.leg_id, l.seq, l.at, l.level, l.text,
            max(l.at) OVER (PARTITION BY l.leg_id ORDER BY l.seq) AS ord
@@ -255,7 +316,8 @@ WHERE ($4::bigint IS NULL OR g.step_id = $4)
   AND ($7 = '' OR strpos(lower(a.text), lower($7)) > 0)
 ORDER BY a.ord, a.leg_id, a.seq
 LIMIT $8`,
-		runID, legIDs, seqs, f.StepID, f.Service, f.Level, f.Query, limit, archivedIDs)
+			runID, legIDs, seqs, f.StepID, f.Service, f.Level, f.Query, limit, archivedIDs)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read log lines: %w", err)
 	}

@@ -176,7 +176,11 @@ func (e *Engine) advanceLocked(ctx context.Context, tx pgx.Tx, run store.Run, o 
 	if err != nil {
 		return err
 	}
-	view := View{Run: run, Steps: steps, Legs: legs, LocksHeld: len(locks) > 0, Limits: e.limits}
+	intended, err := store.LegsWithIntendedOperation(ctx, tx, run.ID)
+	if err != nil {
+		return err
+	}
+	view := View{Run: run, Steps: steps, Legs: legs, LocksHeld: len(locks) > 0, IntendedLegs: intended, Limits: e.limits}
 	if run.State == "running" {
 		view.RunningInEnv, view.RunningInAccount, err = store.ActiveLegsOfOtherRuns(ctx, tx, run.ID, run.Environment, run.AWSAccount)
 		if err != nil {
@@ -253,7 +257,7 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 		o.legsQueued = true
 	}
 
-	if d.NewState != "" || d.WaitReason != "" {
+	if d.NewState != "" || d.WaitReason != "" || d.ClearWaitReason {
 		// A run leaves resolving only with its plan stored. A result that cannot
 		// be used ends the run instead of leaving it stuck.
 		if run.State == "resolving" && d.NewState != "" {

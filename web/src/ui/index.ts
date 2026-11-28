@@ -32,3 +32,6 @@ export {
 export { Tabs, type TabItem, type TabsProps } from './Tabs'
 export { Tag } from './Tag'
 export { TextInput, type TextInputProps } from './TextInput'
+export { ConfirmDialog, type ConfirmDialogProps } from './Dialog'
+export { Time, type TimeProps } from './TimeLabel'
+export { exactTime, formatDuration, relativeTime } from './time'

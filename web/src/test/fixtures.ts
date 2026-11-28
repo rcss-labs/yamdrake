@@ -6,17 +6,26 @@ import type {
   AdminUser,
   ApiToken,
   AuditEntry,
+  ApiLogGap,
+  ApiLogLine,
   AwsAccount,
   Folder,
+  Freeze,
   GithubConnection,
   IdpMapping,
   Inventory,
   JobDetail,
   JobDefinition,
   Me,
+  Plan,
+  RunDetail,
   Service,
+  SlackSettings,
   SsoSettings,
 } from '../api/types'
+import { logsFixture, plansFixture, runsFixtureList } from './runFixtures'
+
+export * from './runFixtures'
 
 /** The password every preset person signs in with on the mock server. */
 export const knownPassword = 'correct-horse-battery'
@@ -510,6 +519,36 @@ export const tokensFixture: Record<number, ApiToken[]> = {
   ],
 }
 
+// ---- Freezes and Slack (Plan 7) ----------------------------------------------------------------
+
+/** One active freeze (every prod run) and one that has ended (a database migration in preprod-01). */
+export const freezesFixture: Freeze[] = [
+  {
+    id: 1,
+    label: 'prod',
+    environment: '',
+    reason: 'Quarter-end change freeze',
+    created_by_name: 'Dana Levi',
+    created_at: t('2026-11-26T09:00:00Z'),
+    expires_at: t('2026-11-30T18:00:00Z'),
+    ended_at: null,
+    ended_by_name: '',
+  },
+  {
+    id: 2,
+    label: '',
+    environment: 'preprod-01',
+    reason: 'Database migration',
+    created_by_name: 'Ron Shapira',
+    created_at: t('2026-11-25T08:00:00Z'),
+    expires_at: t('2026-11-25T20:00:00Z'),
+    ended_at: t('2026-11-25T14:30:00Z'),
+    ended_by_name: 'Ron Shapira',
+  },
+]
+
+export const slackFixture: SlackSettings = { token_set: true, set_at: t('2026-11-20T10:00:00Z'), set_by_name: 'Dana Levi' }
+
 // ---- The mutable state of the mock server ------------------------------------------
 
 export interface PendingDevice {
@@ -535,6 +574,16 @@ export interface MockState {
   awsAccounts: AwsAccount[]
   sso: SsoSettings
   tokens: Record<number, ApiToken[]>
+  /** Every run in full; the list and the stream views are derived from these. */
+  runs: RunDetail[]
+  /** The redacted manifest of each run, by run id; a run without one answers 404 on /plan. */
+  plans: Record<number, Plan>
+  /** The log of each run, by run id (any order; the mock sorts by time, leg and seq when it serves them). */
+  logs: Record<number, ApiLogLine[]>
+  /** Holes the mock reports in a run's log, by run id. */
+  logGaps: Record<number, ApiLogGap[]>
+  freezes: Freeze[]
+  slack: SlackSettings
   devices: Record<string, PendingDevice>
   nextId: Record<string, number>
 }
@@ -556,7 +605,13 @@ export function createMockState(): MockState {
     awsAccounts: awsAccountsFixture,
     sso: ssoFixture,
     tokens: tokensFixture,
+    runs: runsFixtureList,
+    plans: plansFixture,
+    logs: logsFixture,
+    logGaps: {},
+    freezes: freezesFixture,
+    slack: slackFixture,
     devices: {},
-    nextId: { folder: 4, job: 5, user: 10, group: 3, grant: 4, audit: 6, connection: 3, aws: 3, token: 2 },
+    nextId: { folder: 4, job: 5, user: 10, group: 3, grant: 4, audit: 6, connection: 3, aws: 3, token: 2, run: 110, freeze: 3 },
   })
 }

@@ -44,9 +44,21 @@ describe('the job page', () => {
     expect(screen.getByText('deploy-backend')).toBeInTheDocument()
     expect(screen.getByText('Deploys 3 services')).toBeInTheDocument()
     expect(screen.getByText('Needs approval in prod')).toBeInTheDocument()
-    const run = screen.getByRole('button', { name: 'Run this job' })
-    expect(run).toBeDisabled()
-    expect(screen.getByText('Running jobs arrives with the run screens')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run this job' })).toBeEnabled()
+  })
+
+  it('opens the Run tab from the Run this job button', async () => {
+    const view = renderJob('/jobs/1')
+    await definitionPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Run this job' }))
+    expect(view.location().search).toBe('?tab=run')
+    expect(await screen.findByRole('tabpanel', { name: 'Run' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Run' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('cannot run a job that was never read successfully', async () => {
+    renderJob('/jobs/4')
+    expect(await screen.findByRole('button', { name: 'Run this job' })).toBeDisabled()
   })
 
   it('says no approval is needed when the definition has none', async () => {
@@ -178,7 +190,7 @@ describe('the job page', () => {
     await definitionPanel()
     await userEvent.click(screen.getByRole('tab', { name: 'History' }))
     expect(view.location().search).toBe('?tab=history')
-    expect(screen.getByRole('tabpanel', { name: 'History' })).toHaveTextContent('run screens')
+    expect(screen.getByRole('tabpanel', { name: 'History' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('tab', { name: 'Run' }))
     expect(view.location().search).toBe('?tab=run')
   })

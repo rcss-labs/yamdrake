@@ -1,0 +1,27 @@
+.ui-dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  background: Canvas;
+  color: var(--ink);
+  box-shadow: 0 12px 40px rgba(23, 26, 31, 0.18);
+}
+.ui-dialog::backdrop {
+  background: rgba(23, 26, 31, 0.4);
+}
+.ui-dialog-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+}
+.ui-dialog-body {
+  margin: 0 0 20px;
+  color: var(--ink2);
+}
+.ui-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}

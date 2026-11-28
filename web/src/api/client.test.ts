@@ -29,6 +29,18 @@ describe('api', () => {
     expect(body.users[0]).toEqual({ groups: [], last_sign_in_at: null })
   })
 
+  it('turns the null lists of runs, plans, logs, approvals and freezes into empty ones', async () => {
+    const lists = [
+      'legs', 'locks', 'failures', 'lines', 'gaps', 'runs', 'checks', 'config', 'common',
+      'added', 'removed', 'changed', 'approvals', 'active', 'ended', 'services', 'steps',
+    ]
+    server.use(http.get('/api/v1/me', () => HttpResponse.json({ nested: Object.fromEntries(lists.map((name) => [name, null])) })))
+    const body = await api<{ nested: Record<string, unknown> }>('GET', '/api/v1/me')
+    for (const name of lists) {
+      expect(body.nested[name], name).toEqual([])
+    }
+  })
+
   it('sends a JSON body with a JSON content type', async () => {
     await api('POST', '/api/v1/folders', { name: 'Tools' })
     const sent = requests.find((request) => request.method === 'POST' && request.path === '/api/v1/folders')

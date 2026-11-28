@@ -7,3 +7,4 @@ export const server = setupServer(...handlers)
 export { delayNext, failNext, mockState, requests, resetMockApi, signInAs, signOut } from './handlers'
 export type { SeenRequest } from './handlers'
 export * from './fixtures'
+export { eventSources, FakeEventSource } from './eventSource'

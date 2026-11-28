@@ -4,6 +4,8 @@ import type { JobDetail } from '../../api/types'
 import { useCan } from '../../api/hooks'
 import { Button, Card, ErrorState, Loading, PageHeader, Tabs, type TabItem } from '../../ui'
 import { DefinitionTab } from './DefinitionTab'
+import { HistoryTab } from './HistoryTab'
+import { RunTab } from './RunTab'
 import { useJob } from './jobQueries'
 import './job-page.css'
 
@@ -78,13 +80,12 @@ export function JobPage() {
           )
         }
         actions={
+          // The button only opens the Run tab, which says what the person may do there.
           <div className="job-run">
-            <Button variant="primary" disabled aria-describedby="job-run-hint">
+            <Button variant="primary" disabled={!job.runnable} onClick={() => setSearchParams({ tab: 'run' }, { replace: true })}>
               Run this job
             </Button>
-            <span id="job-run-hint" className="job-sub">
-              Running jobs arrives with the run screens
-            </span>
+            {!job.runnable && <span className="job-sub">This job has no definition that can be run yet</span>}
           </div>
         }
       />
@@ -96,8 +97,8 @@ export function JobPage() {
         onChange={(tab) => setSearchParams({ tab }, { replace: true })}
       />
       <div role="tabpanel" id={panelId(active)} aria-label={activeLabel} className="job-panel">
-        {active === 'history' && <Card>The history of this job&apos;s runs arrives with the run screens.</Card>}
-        {active === 'run' && <Card>Starting a run of this job arrives with the run screens.</Card>}
+        {active === 'history' && <HistoryTab job={job} />}
+        {active === 'run' && <RunTab job={job} />}
         {active === 'definition' && (
           <DefinitionTab job={job} routeId={id} canSync={canDo('manage_jobs', { folderId: job.folder_id })} />
         )}

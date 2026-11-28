@@ -18,20 +18,33 @@ import type {
   Action,
   AdminGroup,
   AdminUser,
+  ApiLogLine,
+  Approval,
+  ApprovalItem,
   AuditEntry,
   AwsAccount,
   AwsCredentialInput,
   AwsCredentialView,
   CreatedToken,
   ErrorBody,
+  Freeze,
   GithubConnection,
+  ImageVersion,
   Inventory,
   JobDetail,
   JobSummary,
+  JobVersions,
   Me,
+  Problem,
+  RunDetail,
+  RunLeg,
+  RunState,
+  Selection,
 } from '../api/types'
 import { buildJobDefinition, createMockState, knownPassword, mePresets } from './fixtures'
 import type { MockState, StoredJob } from './fixtures'
+import { buildPlan, buildRun, fakeHash, runRow, standardLegs, summarizeLegs } from './runFixtures'
+import type { RunJob } from './runFixtures'
 
 // ---- State, request log, injected failures and delays ------------------------------
 
@@ -163,6 +176,7 @@ interface Params {
   id: string
   name: string
   idpGroup: string
+  leg: string
 }
 
 interface Context {
@@ -209,7 +223,7 @@ function route(method: keyof typeof factories, path: string, guard: Guard, resol
     const me = state.session
     const context: Context = {
       me,
-      params: { id: String(params.id ?? ''), name: String(params.name ?? ''), idpGroup: String(params.idpGroup ?? '') },
+      params: { id: String(params.id ?? ''), name: String(params.name ?? ''), idpGroup: String(params.idpGroup ?? ''), leg: String(params.leg ?? '') },
       url,
       body,
     }
@@ -300,6 +314,310 @@ function syncInventoryNow(): Inventory {
 
 const ownerPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
 const validRepo = (repo: string) => /^[^\s/]+\/[^\s/]+$/.test(repo)
+
+// ---- Runs, approvals, freezes and Slack (helpers) -------------------------------------------------
+
+const forbiddenResponse = () => errorResponse(403, 'forbidden', 'You do not have permission to do this')
+
+const runStateNames: RunState[] = [
+  'resolving',
+  'planned',
+  'waiting_approval',
+  'queued',
+  'running',
+  'cancelling',
+  'needs_reconciliation',
+  'succeeded',
+  'partially_succeeded',
+  'failed',
+  'cancelled',
+  'rejected',
+  'expired',
+  'invalidated',
+]
+
+const runTarget = (run: RunDetail): Target => ({ label: run.label, environment: run.environment, folderId: run.folder_id })
+
+function findRun(idText: string): RunDetail | undefined {
+  return state.runs.find((run) => String(run.id) === idText)
+}
+
+/** The run as the signed-in person sees it: the approval says whether this person may decide it. */
+function runView(run: RunDetail, me: Me | null): RunDetail {
+  const view = structuredClone(run)
+  if (view.approval && me) {
+    const ability = view.approval.decision === 'pending' ? approvalAbility(me, run) : { can: false, reason: '' }
+    view.approval.can_approve = ability.can
+    view.approval.cannot_approve_reason = ability.reason
+  }
+  // Go sends null for a run that holds no locks (the list is a nil slice there); the client turns it into [].
+  if (view.locks.length === 0) {
+    ;(view as unknown as { locks: null }).locks = null
+  }
+  return view
+}
+
+/** Who may approve: the grant in the run's label, and not the person who started it (an admin may). */
+function approvalAbility(me: Me, run: RunDetail): { can: boolean; reason: string } {
+  if (!can(me, 'approve', runTarget(run))) {
+    return { can: false, reason: `You do not have permission to approve in ${run.label}.` }
+  }
+  if (run.requested_by === me.id && !me.admin) {
+    return { can: false, reason: 'You started this run, so someone else has to approve it.' }
+  }
+  return { can: true, reason: '' }
+}
+
+function wrongState(action: string, run: RunDetail, extra = ''): Response {
+  return conflict(`${action} run ${run.id}: run is not in a state that allows this: it is ${run.state}${extra}`)
+}
+
+function appendRunLine(run: RunDetail, level: ApiLogLine['level'], text: string): void {
+  const lines = (state.logs[run.id] ??= [])
+  const seq = lines.filter((line) => line.leg_id === 0).length + 1
+  lines.push({ leg_id: 0, seq, at: now(), level, text })
+}
+
+const finalStates: RunState[] = ['succeeded', 'partially_succeeded', 'failed', 'cancelled', 'rejected', 'expired', 'invalidated']
+
+function moveRun(run: RunDetail, next: RunState, reason: string): void {
+  run.state = next
+  run.state_changed_at = now()
+  if (finalStates.includes(next)) {
+    run.wait_reason = ''
+    run.end_reason = reason
+    run.finished_at = now()
+  } else {
+    run.wait_reason = reason
+    run.end_reason = ''
+  }
+}
+
+function refreshSummary(run: RunDetail): void {
+  run.summary = summarizeLegs(run.legs)
+}
+
+function runJobInfo(job: StoredJob): RunJob {
+  return {
+    sourceId: job.id,
+    jobId: job.job_id,
+    title: job.title,
+    folderId: job.folder_id,
+    groups: (job.definition?.groups ?? []).map((group) => ({ id: group.id, services: group.services ?? [] })),
+    approvalLabels: job.definition?.approval?.labels ?? [],
+  }
+}
+
+function approvalFor(requestedBy: string, expiresInMs: number): Approval {
+  return {
+    requested_by_name: requestedBy,
+    requested_at: now(),
+    expires_at: new Date(Date.parse(now()) + expiresInMs).toISOString(),
+    decision: 'pending',
+    decided_by_name: null,
+    decided_at: null,
+    comment: '',
+    can_approve: false,
+    cannot_approve_reason: '',
+  }
+}
+
+/** Moves a planned run on the way Start does: to approval when the job needs it, otherwise to the queue. */
+function startRun(run: RunDetail, me: Me): void {
+  if (run.approval_required) {
+    const job = state.jobs.find((candidate) => candidate.id === run.job_source_id)
+    const expires = job?.definition?.approval?.expires ? job.definition.approval.expires / 1e6 : 4 * 3600 * 1000
+    run.approval = approvalFor(me.name, expires)
+    moveRun(run, 'waiting_approval', 'Waiting for someone with approval rights in ' + run.label)
+  } else {
+    moveRun(run, 'queued', 'Waiting for its turn')
+  }
+  appendRunLine(run, 'info', `Started by ${me.name}`)
+}
+
+interface NewRunInput {
+  job: StoredJob
+  environment: string
+  services: Record<string, string>
+  stepNames?: { name: string; use: string }[]
+  kind?: 'deploy' | 'restore'
+  restoreOf?: number
+  selection?: Selection
+  me: Me
+}
+
+/** Creates a planned run (the mock skips "resolving": the plan is ready at once) and stores its plan and log. */
+function createPlannedRun({ job, environment, services, stepNames, kind, restoreOf, selection, me }: NewRunInput): RunDetail {
+  const id = takeId('run')
+  const names = (stepNames ?? job.definition?.steps?.map((step) => ({ name: step.name, use: step.use })) ?? [{ name: 'deploy', use: 'deploy-ecs' }]).map(
+    (step) => step.name,
+  )
+  const run = buildRun({
+    id,
+    job: job.id,
+    jobInfo: runJobInfo(job),
+    environment,
+    state: 'planned',
+    kind,
+    restoreOf,
+    services,
+    steps: stepNames ?? job.definition?.steps?.map((step) => ({ name: step.name, use: step.use })),
+    legs: standardLegs(Object.keys(services), {}, names),
+    requestedBy: { id: me.id, name: me.name },
+    createdAt: now(),
+    waitReason: 'Planned. Nothing runs until someone starts it.',
+    selection,
+  })
+  state.runs.push(run)
+  state.plans[id] = buildPlan(
+    run,
+    Object.entries(services).map(([name, version]) => ({ name, version, previous: '' })),
+  )
+  state.logs[id] = []
+  appendRunLine(run, 'info', `Run #${id} created by ${me.name}`)
+  return run
+}
+
+function selectionProblems(job: StoredJob, environment: string, selection: Fields): Problem[] {
+  const problems: Problem[] = []
+  const known = state.inventory.environments.some((candidate) => candidate.name === environment)
+  if (!known) {
+    problems.push({ file: job.path, line: 0, message: `environment "${environment}" is not in the inventory` })
+  }
+  const groups = job.definition?.groups ?? []
+  for (const group of groups) {
+    const choice = fields(selection[group.id])
+    if (text(choice.version).trim() === '') {
+      problems.push({ file: job.path, line: group.line, message: `group "${group.id}" needs a version` })
+      continue
+    }
+    for (const service of group.services ?? []) {
+      const summary = state.inventory.services.find((candidate) => candidate.name === service)
+      if (known && !summary?.environments.includes(environment)) {
+        problems.push({ file: job.path, line: group.line, message: `service "${service}" has no block for environment "${environment}"` })
+      }
+    }
+  }
+  for (const name of Object.keys(selection)) {
+    if (!groups.some((group) => group.id === name)) {
+      problems.push({ file: job.path, line: 0, message: `the job has no group "${name}"` })
+    }
+  }
+  return problems
+}
+
+/** service -> version for a selection that passed selectionProblems. */
+function servicesOfSelection(job: StoredJob, selection: Fields): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const group of job.definition?.groups ?? []) {
+    const choice = fields(selection[group.id])
+    const overrides = fields(choice.services)
+    for (const service of group.services ?? []) {
+      result[service] = text(overrides[service]) || text(choice.version)
+    }
+  }
+  return result
+}
+
+/** The selection that would plan these services again: one entry per group, overrides where versions differ. */
+function selectionOfServices(job: StoredJob, services: Record<string, string>): Selection {
+  const selection: Selection = {}
+  for (const group of job.definition?.groups ?? []) {
+    const mine = (group.services ?? []).filter((service) => service in services)
+    const first = mine[0]
+    if (first === undefined) continue
+    const base = services[first] ?? ''
+    const overrides = Object.fromEntries(mine.filter((service) => services[service] !== base).map((service) => [service, services[service] ?? '']))
+    selection[group.id] = Object.keys(overrides).length > 0 ? { version: base, services: overrides } : { version: base }
+  }
+  return selection
+}
+
+function serviceVersionsOf(run: RunDetail): Record<string, string> {
+  return Object.fromEntries(run.legs.filter((leg) => leg.kind === 'step').map((leg) => [leg.service, leg.version]))
+}
+
+/** Services whose step legs ended in a way that changed something. */
+function changedServices(run: RunDetail): string[] {
+  return [...new Set(run.legs.filter((leg) => leg.kind === 'step' && leg.state === 'succeeded').map((leg) => leg.service))]
+}
+
+function unknownLeg(run: RunDetail, legIdText: string): RunLeg | undefined {
+  return run.legs.find((leg) => String(leg.id) === legIdText)
+}
+
+/** What is left to say about a run once every unknown leg has been decided. */
+function settleReconciledRun(run: RunDetail): void {
+  if (run.legs.some((leg) => leg.state === 'unknown')) {
+    return
+  }
+  for (const leg of run.legs) {
+    if (leg.state === 'pending' || leg.state === 'queued') {
+      leg.state = 'skipped'
+    }
+  }
+  const failed = run.legs.some((leg) => leg.state === 'failed')
+  const succeeded = run.legs.some((leg) => leg.kind === 'step' && leg.state === 'succeeded')
+  if (!failed) {
+    moveRun(run, 'succeeded', '')
+  } else {
+    moveRun(run, succeeded ? 'partially_succeeded' : 'failed', 'Decided by hand')
+  }
+  run.locks = []
+}
+
+/** A run-scoped route: 404 for an unknown run first, then 403 (like the server), then the resolver. */
+function runRoute(
+  method: keyof typeof factories,
+  path: string,
+  action: Action,
+  resolver: (ctx: Context, run: RunDetail, me: Me) => Response | Promise<Response>,
+): HttpHandler {
+  return route(method, path, 'session', (ctx) => {
+    const run = findRun(ctx.params.id)
+    if (!run) {
+      return notFound('run')
+    }
+    const me = ctx.me as Me
+    if (!can(me, action, runTarget(run))) {
+      return forbiddenResponse()
+    }
+    return resolver(ctx, run, me)
+  })
+}
+
+function imageVersions(service: string): ImageVersion[] {
+  const tags: Record<string, string[]> = { 'backend-api': ['1.9.4', '1.9.3', '1.9.2', '1.9.1'], billing: ['2.4.0', '2.3.9', '2.3.8'] }
+  return (tags[service] ?? ['1.0.0']).map((tag, index) => ({
+    tag,
+    digest: `sha256:${fakeHash(tag.length * 7 + index + service.length)}`,
+    pushed_at: new Date(Date.parse(now()) - (index + 1) * 86_400_000).toISOString(),
+  }))
+}
+
+function versionsOfJob(job: StoredJob, environment: string): JobVersions {
+  const environmentServices = new Set(
+    state.inventory.services.filter((service) => service.environments.includes(environment)).map((service) => service.name),
+  )
+  const groups: JobVersions['groups'] = {}
+  for (const group of job.definition?.groups ?? []) {
+    const names = group.services ?? []
+    const present = names.filter((name) => environmentServices.has(name))
+    const lists = Object.fromEntries(present.map((name) => [name, imageVersions(name)]))
+    const first = present[0]
+    const common = first === undefined ? [] : (lists[first] ?? []).map((v) => v.tag).filter((tag) => present.every((name) => (lists[name] ?? []).some((v) => v.tag === tag)))
+    groups[group.id] = {
+      common,
+      services: lists,
+      unavailable: Object.fromEntries(names.filter((name) => !environmentServices.has(name)).map((name) => [name, 'not in this environment'])),
+    }
+  }
+  return { groups }
+}
+
+function isActiveFreeze(freeze: Freeze): boolean {
+  return freeze.ended_at === null && Date.parse(freeze.expires_at) > Date.parse(now())
+}
 
 // ---- The handlers --------------------------------------------------------------------------
 
@@ -878,5 +1196,425 @@ export const handlers: HttpHandler[] = [
     const owner = device.confirmedBy.id
     state.tokens[owner] = [...(state.tokens[owner] ?? []), { id, name: 'yumdrake CLI', created_at: now(), expires_at: expiresAt, last_used_at: null }]
     return json({ status: 'complete', token: `ymd_mockcli${String(id).padStart(4, '0')}abcdefghijklmnopqrstuvwxyz0123456789`, token_id: id, expires_at: expiresAt })
+  }),
+
+  // ---- Runs ----
+
+  route('GET', '/api/v1/runs', view, ({ me, url }) => {
+    const params = url.searchParams
+    const wanted = params.getAll('state')
+    const unknown = wanted.find((name) => !runStateNames.includes(name as RunState))
+    if (unknown) {
+      return invalid(`unknown state "${unknown}"`)
+    }
+    const number = (name: string): number | undefined => {
+      const raw = params.get(name)
+      return raw === null || raw === '' ? undefined : Number(raw)
+    }
+    const job = number('job')
+    const before = number('before')
+    const limit = Math.min(number('limit') ?? 50, 200)
+    if ([job, before, limit].some((value) => value !== undefined && (!Number.isInteger(value) || value < 1))) {
+      return invalid('job, before and limit must be integers of at least 1')
+    }
+    const environment = params.get('environment') ?? ''
+    const query = (params.get('q') ?? '').trim().toLowerCase()
+    const matching = state.runs
+      .filter((run) => job === undefined || run.job_source_id === job)
+      .filter((run) => environment === '' || run.environment === environment)
+      .filter((run) => wanted.length === 0 || wanted.includes(run.state))
+      .filter((run) => before === undefined || run.id < before)
+      .filter(
+        (run) =>
+          query === '' ||
+          [String(run.id), run.job_id, run.job_name ?? '', run.environment, run.requested_by_name ?? ''].some((part) => part.toLowerCase().includes(query)),
+      )
+      .sort((a, b) => b.id - a.id)
+      .slice(0, limit)
+    void me
+    const last = matching[matching.length - 1]
+    const nextBefore = matching.length === limit && last ? last.id : null
+    return json({ runs: matching.map(runRow), next_before: nextBefore })
+  }),
+
+  route('POST', '/api/v1/jobs/:id/runs', 'session', ({ me, params, body }) => {
+    const job = findJob(params.id)
+    if (!job) {
+      return notFound('job')
+    }
+    const request = fields(body)
+    const environment = text(request.environment)
+    const known = state.inventory.environments.find((candidate) => candidate.name === environment)
+    if (known && !can(me as Me, 'run', { label: known.label, environment, folderId: job.folder_id })) {
+      return forbiddenResponse()
+    }
+    if (!job.definition) {
+      return conflict('the job has no definition that can be run')
+    }
+    const selection = fields(request.selection)
+    const problems = selectionProblems(job, environment, selection)
+    if (problems.length > 0) {
+      return json({ error: { code: 'invalid', message: 'the selection cannot be planned', problems } }, 422)
+    }
+    const run = createPlannedRun({
+      job,
+      environment,
+      services: servicesOfSelection(job, selection),
+      selection: request.selection as Selection,
+      me: me as Me,
+    })
+    recordAudit('run.create', 'run', run.id, { environment })
+    if (request.start === true) {
+      run.auto_start = true
+      startRun(run, me as Me)
+    }
+    return json(runView(run, me), 201)
+  }),
+
+  runRoute('GET', '/api/v1/runs/:id', 'view', (_ctx, run, me) => json(runView(run, me))),
+
+  runRoute('GET', '/api/v1/runs/:id/plan', 'view', (_ctx, run) => {
+    const plan = state.plans[run.id]
+    return plan ? json(plan) : notFound('plan')
+  }),
+
+  runRoute('GET', '/api/v1/runs/:id/log', 'view_logs', ({ url }, run) => {
+    const params = url.searchParams
+    const level = params.get('level') ?? ''
+    if (level !== '' && !['info', 'ok', 'warn', 'error'].includes(level)) {
+      return invalid(`unknown level "${level}"`)
+    }
+    const step = params.get('step') ?? ''
+    if (step !== '' && !run.steps.some((candidate) => candidate.name === step)) {
+      return invalid(`the run has no step "${step}"`)
+    }
+    const raw = params.get('limit')
+    const requested = raw === null || raw === '' ? 200 : Number(raw)
+    if (!Number.isInteger(requested) || requested < 1) {
+      return invalid('limit must be an integer of at least 1')
+    }
+    const limit = Math.min(requested, 1000)
+    const after = params.get('after') ?? ''
+    const match = /^c(\d+)$/.exec(after)
+    if (after !== '' && !match) {
+      return invalid('the after cursor is not one this log produced')
+    }
+    const start = match ? Number(match[1]) : 0
+    const service = params.get('service') ?? ''
+    const query = (params.get('q') ?? '').toLowerCase()
+    const legOf = new Map(run.legs.map((leg) => [leg.id, leg]))
+    const all = [...(state.logs[run.id] ?? [])]
+      .sort((a, b) => a.at.localeCompare(b.at) || a.leg_id - b.leg_id || a.seq - b.seq)
+      .filter((line) => {
+        const leg = legOf.get(line.leg_id)
+        if (step !== '' && leg?.step !== step) return false
+        if (service !== '' && leg?.service !== service) return false
+        if (level !== '' && line.level !== level) return false
+        return query === '' || line.text.toLowerCase().includes(query)
+      })
+    const page = all.slice(start, start + limit)
+    return json({ lines: page, next: page.length > 0 ? `c${start + page.length}` : after, gaps: state.logGaps[run.id] ?? [] })
+  }),
+
+  runRoute('POST', '/api/v1/runs/:id/start', 'run', (_ctx, run, me) => {
+    if (run.state !== 'planned') {
+      return wrongState('start', run)
+    }
+    startRun(run, me)
+    recordAudit('run.start', 'run', run.id, { manifest_id: run.manifest_id, next_state: run.state })
+    return json(runView(run, me))
+  }),
+
+  runRoute('POST', '/api/v1/runs/:id/cancel', 'cancel', (_ctx, run, me) => {
+    if (finalStates.includes(run.state)) {
+      return wrongState('cancel', run)
+    }
+    const wasState = run.state
+    run.cancel_requested = true
+    appendRunLine(run, 'warn', `Cancel requested by ${me.name} while ${wasState}.`)
+    if (wasState === 'running' || wasState === 'cancelling') {
+      moveRun(run, 'cancelling', 'Waiting for the services already rolling to finish')
+    } else {
+      for (const leg of run.legs) {
+        if (leg.state === 'pending' || leg.state === 'queued') leg.state = 'cancelled'
+      }
+      run.locks = []
+      moveRun(run, 'cancelled', `Cancelled by ${me.name}`)
+    }
+    refreshSummary(run)
+    recordAudit('run.cancel', 'run', run.id, { state: wasState })
+    return json(runView(run, me))
+  }),
+
+  runRoute('POST', '/api/v1/runs/:id/legs/:leg/reconcile', 'restore', ({ params, body }, run, me) => {
+    const outcome = text(fields(body).outcome)
+    if (outcome !== 'succeeded' && outcome !== 'failed') {
+      return invalid('outcome must be "succeeded" or "failed"')
+    }
+    const leg = unknownLeg(run, params.leg)
+    if (run.state !== 'needs_reconciliation') {
+      return conflict(`run is not in a state that allows this: it is ${run.state}`)
+    }
+    if (!leg) {
+      return notFound('run or leg')
+    }
+    if (leg.state !== 'unknown') {
+      return conflict(`run is not in a state that allows this: the leg is ${leg.state}, not unknown`)
+    }
+    leg.state = outcome
+    leg.finished_at = now()
+    appendRunLine(run, outcome === 'succeeded' ? 'ok' : 'warn', `${me.name} marked ${leg.step} for ${leg.service} as ${outcome}.`)
+    settleReconciledRun(run)
+    refreshSummary(run)
+    recordAudit('run.reconcile', 'run', run.id, { leg: leg.id, outcome })
+    return json(runView(run, me))
+  }),
+
+  runRoute('POST', '/api/v1/runs/:id/legs/:leg/check-again', 'restore', ({ params }, run, me) => {
+    const leg = unknownLeg(run, params.leg)
+    if (run.state !== 'needs_reconciliation') {
+      return conflict(`run is not in a state that allows this: it is ${run.state}`)
+    }
+    if (!leg) {
+      return notFound('run or leg')
+    }
+    if (leg.state !== 'unknown') {
+      return conflict(`run is not in a state that allows this: the leg is ${leg.state}, not unknown`)
+    }
+    leg.state = 'queued'
+    leg.attempt += 1
+    refreshSummary(run)
+    appendRunLine(run, 'info', `${me.name} asked to check ${leg.step} for ${leg.service} again.`)
+    recordAudit('run.check_again', 'run', run.id, { leg: leg.id })
+    return json(runView(run, me))
+  }),
+
+  // The route needs manage_access; the engine then wants an administrator.
+  route('POST', '/api/v1/admin/runs/:id/release-locks', manageAccess, ({ me, params }) => {
+    const run = findRun(params.id)
+    if (!run) {
+      return notFound('run')
+    }
+    if (!me?.admin) {
+      return forbiddenResponse()
+    }
+    if (run.state !== 'needs_reconciliation') {
+      return wrongState('release locks of', run)
+    }
+    const active = run.legs.find((leg) => ['queued', 'claimed', 'running'].includes(leg.state))
+    if (active) {
+      return wrongState('release locks of', run, `: a leg is still ${active.state}`)
+    }
+    run.locks = []
+    moveRun(run, 'failed', `locks released by ${me.name} without reconciliation`)
+    appendRunLine(run, 'warn', `Locks released by ${me.name} without reconciliation.`)
+    recordAudit('run.release_locks', 'run', run.id)
+    return json(runView(run, me))
+  }),
+
+  runRoute('POST', '/api/v1/runs/:id/restore', 'restore', ({ body }, run, me) => {
+    const changed = changedServices(run)
+    if (!state.plans[run.id] || changed.length === 0 || !finalStates.includes(run.state)) {
+      return wrongState('restore', run, ': nothing in it can be restored')
+    }
+    const asked = fields(body).services
+    const services = Array.isArray(asked) && asked.length > 0 ? asked.map(text) : changed
+    const stranger = services.find((service) => !changed.includes(service))
+    if (stranger) {
+      return invalid(`the run did not change service "${stranger}"`)
+    }
+    const job = state.jobs.find((candidate) => candidate.id === run.job_source_id)
+    if (!job) {
+      return notFound('job')
+    }
+    const restore = createPlannedRun({
+      job,
+      environment: run.environment,
+      services: Object.fromEntries(services.map((service) => [service, serviceVersionsOf(run)[service] ?? ''])),
+      stepNames: [
+        { name: 'restore-config', use: 'copy-config' },
+        { name: 'restore-deploy', use: 'ecs-deploy' },
+      ],
+      kind: 'restore',
+      restoreOf: run.id,
+      me,
+    })
+    recordAudit('run.restore', 'run', restore.id, { source: run.id })
+    return json(runView(restore, me), 201)
+  }),
+
+  runRoute('POST', '/api/v1/runs/:id/rerun-failed', 'run', (_ctx, run, me) => {
+    const broken = [...new Set(run.legs.filter((leg) => leg.kind === 'step' && ['failed', 'unknown', 'skipped', 'cancelled'].includes(leg.state)).map((leg) => leg.service))]
+    const job = state.jobs.find((candidate) => candidate.id === run.job_source_id)
+    if (broken.length === 0) {
+      return wrongState('rerun', run, ': no service failed, was skipped or was cancelled')
+    }
+    if (!job) {
+      return notFound('job')
+    }
+    const versions = serviceVersionsOf(run)
+    const services = Object.fromEntries(broken.map((service) => [service, versions[service] ?? '']))
+    const rerun = createPlannedRun({ job, environment: run.environment, services, selection: selectionOfServices(job, services), me })
+    recordAudit('run.rerun_failed', 'run', rerun.id, { source: run.id })
+    return json(runView(rerun, me), 201)
+  }),
+
+  runRoute('POST', '/api/v1/runs/:id/approve', 'approve', ({ body }, run, me) => {
+    if (!approvalAbility(me, run).can) {
+      return forbiddenResponse()
+    }
+    if (run.state !== 'waiting_approval' || run.approval?.decision !== 'pending') {
+      return conflict('This run was already decided.')
+    }
+    const request = fields(body)
+    if (text(request.manifest_id) !== run.manifest_id) {
+      return conflict('The plan changed. Reload and review it again.')
+    }
+    run.approval = { ...run.approval, decision: 'approved', decided_by_name: me.name, decided_at: now(), comment: text(request.comment) }
+    moveRun(run, 'queued', 'Waiting for its turn')
+    appendRunLine(run, 'ok', `Approved by ${me.name}.`)
+    recordAudit('run.approve', 'run', run.id, { manifest_id: run.manifest_id })
+    return json(runView(run, me))
+  }),
+
+  runRoute('POST', '/api/v1/runs/:id/reject', 'approve', ({ body }, run, me) => {
+    if (!approvalAbility(me, run).can) {
+      return forbiddenResponse()
+    }
+    if (run.state !== 'waiting_approval' || run.approval?.decision !== 'pending') {
+      return conflict('This run was already decided.')
+    }
+    run.approval = { ...run.approval, decision: 'rejected', decided_by_name: me.name, decided_at: now(), comment: text(fields(body).comment) }
+    moveRun(run, 'rejected', `Rejected by ${me.name}`)
+    appendRunLine(run, 'warn', `Rejected by ${me.name}.`)
+    recordAudit('run.reject', 'run', run.id)
+    return json(runView(run, me))
+  }),
+
+  route('GET', '/api/v1/approvals', view, ({ me }) => {
+    const approvals: ApprovalItem[] = state.runs
+      .filter((run) => run.state === 'waiting_approval' && run.approval)
+      .sort((a, b) => b.id - a.id)
+      .map((run) => {
+        const ability = approvalAbility(me as Me, run)
+        return {
+          run_id: run.id,
+          job_source_id: run.job_source_id,
+          job_id: run.job_id,
+          job_name: run.job_name ?? run.job_id,
+          environment: run.environment,
+          label: run.label,
+          manifest_id: run.manifest_id,
+          requested_by_name: run.approval?.requested_by_name ?? run.requested_by_name ?? '',
+          requested_at: run.approval?.requested_at ?? run.created_at,
+          expires_at: run.approval?.expires_at ?? '',
+          services: Object.entries(serviceVersionsOf(run)).map(([service, version]) => ({ service, version })),
+          can_approve: ability.can,
+          cannot_approve_reason: ability.reason,
+        }
+      })
+    return json({ approvals })
+  }),
+
+  // Versions of the images a job's services can be deployed at, for one environment.
+  route('GET', '/api/v1/jobs/:id/versions', view, ({ params, url }) => {
+    const job = findJob(params.id)
+    if (!job) {
+      return notFound('job')
+    }
+    if (!job.definition) {
+      return conflict('the job has no definition that can be run')
+    }
+    const environment = url.searchParams.get('environment') ?? ''
+    if (!state.inventory.environments.some((candidate) => candidate.name === environment)) {
+      return notFound('environment')
+    }
+    return json(versionsOfJob(job, environment))
+  }),
+
+  // ---- Freezes ----
+
+  route('GET', '/api/v1/freezes', view, () => {
+    const active = state.freezes.filter(isActiveFreeze)
+    const ended = state.freezes
+      .filter((freeze) => !isActiveFreeze(freeze))
+      .sort((a, b) => (b.ended_at ?? b.expires_at).localeCompare(a.ended_at ?? a.expires_at))
+    return json({ active, ended })
+  }),
+
+  route('POST', '/api/v1/admin/freezes', manageAccess, ({ me, body }) => {
+    const request = fields(body)
+    const label = text(request.label).trim()
+    const environment = text(request.environment).trim()
+    const reason = text(request.reason).trim()
+    if (reason === '') {
+      return invalid('reason is required')
+    }
+    if ((label === '') === (environment === '')) {
+      return invalid('give a label or an environment, not both and not neither')
+    }
+    if (environment !== '' && !state.inventory.environments.some((candidate) => candidate.name === environment)) {
+      return invalid(`environment "${environment}" is not in the inventory`)
+    }
+    const expires = Date.parse(text(request.expires_at))
+    if (Number.isNaN(expires) || expires <= Date.parse(now())) {
+      return invalid('expires_at must be a time in the future')
+    }
+    if (expires > Date.parse(now()) + 30 * 86_400_000) {
+      return invalid('a freeze lasts at most 30 days')
+    }
+    const freeze: Freeze = {
+      id: takeId('freeze'),
+      label,
+      environment,
+      reason,
+      created_by_name: me?.name ?? '',
+      created_at: now(),
+      expires_at: new Date(expires).toISOString(),
+      ended_at: null,
+      ended_by_name: '',
+    }
+    state.freezes.push(freeze)
+    recordAudit('freeze.create', 'freeze', freeze.id, { label, environment, reason })
+    return json(freeze, 201)
+  }),
+
+  route('DELETE', '/api/v1/admin/freezes/:id', manageAccess, ({ me, params }) => {
+    const freeze = state.freezes.find((candidate) => String(candidate.id) === params.id)
+    if (!freeze) {
+      return notFound('freeze')
+    }
+    if (!isActiveFreeze(freeze)) {
+      return conflict('The freeze has already ended.')
+    }
+    freeze.ended_at = now()
+    freeze.ended_by_name = me?.name ?? ''
+    recordAudit('freeze.delete', 'freeze', freeze.id)
+    return noContent()
+  }),
+
+  // ---- Slack ----
+
+  route('GET', '/api/v1/admin/slack', manageConnections, () => json(state.slack)),
+
+  route('PUT', '/api/v1/admin/slack', manageConnections, ({ me, body }) => {
+    if (text(fields(body).token).trim() === '') {
+      return invalid('token is required')
+    }
+    state.slack = { token_set: true, set_at: now(), set_by_name: me?.name ?? '' }
+    recordAudit('slack.update', 'slack', '')
+    return json(state.slack)
+  }),
+
+  // A channel whose name contains "missing" answers like Slack's channel_not_found.
+  route('POST', '/api/v1/admin/slack/test', manageConnections, ({ body }) => {
+    const channel = text(fields(body).channel).trim()
+    if (channel === '') {
+      return invalid('channel is required')
+    }
+    if (!state.slack.token_set) {
+      return json({ ok: false, code: 'not_configured' })
+    }
+    return json(channel.includes('missing') ? { ok: false, code: 'channel_not_found' } : { ok: true, code: '' })
   }),
 ]

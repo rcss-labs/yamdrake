@@ -1,3 +1,5 @@
+import type { ApiError } from './error'
+
 // Request and response shapes for every route of the API contract.
 // Field names follow the Go structs in internal/api and internal/spec (they win over plan text);
 // where the plans give none (access administration, tokens, CLI sign-in, SSO, AWS accounts)
@@ -537,4 +539,457 @@ export type DeviceLoginPollResponse =
 /** The body of every error response. */
 export interface ErrorBody {
   error: { code: string; message: string }
+}
+
+// ---- Runs (Plan 4, internal/api/runs.go and events.go) -------------------------------------
+// The Go structs win over plan text. Lists are never null after the client's normaliser has run.
+// Fields marked "assumed" are not served by Go yet; they are optional so a screen shows "Not available"
+// (never crashes) until the server sends them.
+
+export type RunKind = 'deploy' | 'restore'
+
+export type RunState =
+  | 'resolving'
+  | 'planned'
+  | 'waiting_approval'
+  | 'queued'
+  | 'running'
+  | 'cancelling'
+  | 'needs_reconciliation'
+  | 'succeeded'
+  | 'partially_succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'rejected'
+  | 'expired'
+  | 'invalidated'
+
+/** The states a run never leaves. */
+export const FINAL_RUN_STATES: readonly RunState[] = [
+  'succeeded',
+  'partially_succeeded',
+  'failed',
+  'cancelled',
+  'rejected',
+  'expired',
+  'invalidated',
+]
+
+export const isFinalRunState = (state: RunState): boolean => FINAL_RUN_STATES.includes(state)
+
+export type LegState =
+  | 'pending'
+  | 'queued'
+  | 'claimed'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled'
+  | 'unknown'
+
+export type LegKind = 'resolve' | 'revalidate' | 'step'
+
+export interface RunStep {
+  id: number
+  name: string
+  use: string
+  group: string
+  position: number
+  max_parallel: number
+}
+
+export interface RunLeg {
+  id: number
+  /** null for the resolve and revalidate legs. */
+  step_id: number | null
+  /** "" when step_id is null. */
+  step: string
+  kind: LegKind
+  service: string
+  version: string
+  state: LegState
+  attempt: number
+  cancel_requested: boolean
+  failure_short: string
+  failure_detail: string
+  queued_at: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface RunFailure {
+  leg_id: number
+  service: string
+  step: string
+  kind: LegKind
+  /** "failed" or "unknown". */
+  state: LegState
+  short: string
+  detail: string
+}
+
+export interface RunSummaryCounts {
+  /** Has an entry for every leg state, zero included. */
+  counts: Record<LegState, number>
+  failures: RunFailure[]
+}
+
+/** One service of a run row (assumed: only on list rows). */
+export interface RunServiceChip {
+  service: string
+  version: string
+  state: LegState
+}
+
+/** GET /api/v1/runs rows. */
+export interface RunSummary {
+  id: number
+  kind: RunKind
+  job_source_id: number
+  job_id: string
+  environment: string
+  label: string
+  state: RunState
+  wait_reason: string
+  end_reason: string
+  manifest_id: string
+  requested_by: number
+  via: string
+  created_at: string
+  state_changed_at: string
+  started_at: string | null
+  finished_at: string | null
+  /** Assumed: the job's title. */
+  job_name?: string
+  /** Assumed: who asked. */
+  requested_by_name?: string
+  /** Assumed: for a restore run, the run it undoes. */
+  restore_of?: number | null
+  /** Assumed (list rows only): the services the run changes and where each stands. */
+  services?: RunServiceChip[]
+  /** Assumed (list rows only): the same shape as the detail's summary. */
+  summary?: RunSummaryCounts
+}
+
+/** The group choice of a run: the same shape as the body of POST /jobs/{id}/runs. */
+export interface GroupSelection {
+  version: string
+  /** Per-service overrides of the group's version. */
+  services?: Record<string, string>
+}
+export type Selection = Record<string, GroupSelection>
+
+export type ApprovalDecision = 'pending' | 'approved' | 'rejected' | 'expired'
+
+/** Assumed: the open or last approval of a run (Plan 7 Task 2). */
+export interface Approval {
+  requested_by_name: string
+  requested_at: string
+  expires_at: string
+  decision: ApprovalDecision
+  decided_by_name: string | null
+  decided_at: string | null
+  comment: string
+  can_approve: boolean
+  cannot_approve_reason: string
+}
+
+/** GET /api/v1/runs/{id}, and the answer of every run action. */
+export interface RunDetail extends RunSummary {
+  aws_account: string
+  folder_id: number
+  inventory_commit: string
+  job_commit: string
+  approval_required: boolean
+  auto_start: boolean
+  steps: RunStep[]
+  cancel_requested: boolean
+  legs: RunLeg[]
+  /** Names of the locks the run holds. */
+  locks: string[]
+  summary: RunSummaryCounts
+  /** Assumed: what was chosen, so Plan again and Re-run can repeat it. */
+  selection?: Selection
+  /** Assumed: null or absent when the run never asked for approval. */
+  approval?: Approval | null
+}
+
+export interface RunsResponse {
+  runs: RunSummary[]
+  next_before: number | null
+}
+
+/** Filters of GET /api/v1/runs; `state` may repeat. */
+export interface RunsFilter {
+  job?: number
+  environment?: string
+  q?: string
+  state?: RunState[]
+  before?: number
+  limit?: number
+}
+
+/** The body of the stream's `state` event: the changing part of a RunDetail (no steps). */
+export interface RunStateEvent {
+  id: number
+  state: RunState
+  wait_reason: string
+  end_reason: string
+  state_changed_at: string
+  started_at: string | null
+  finished_at: string | null
+  cancel_requested: boolean
+  legs: RunLeg[]
+  locks: string[]
+  summary: RunSummaryCounts
+}
+
+export type LogLevel = 'info' | 'ok' | 'warn' | 'error'
+
+/** A line as the API sends it; leg_id 0 is a run-level line. */
+export interface ApiLogLine {
+  leg_id: number
+  seq: number
+  at: string
+  level: LogLevel
+  text: string
+}
+
+export interface ApiLogGap {
+  leg_id: number
+  from_seq: number
+  to_seq: number
+}
+
+/** GET /api/v1/runs/{id}/log, and the data of a stream `log` event. */
+export interface LogPage {
+  lines: ApiLogLine[]
+  next: string
+  gaps: ApiLogGap[]
+}
+
+/** A log line as the screens use it (mapped once from ApiLogLine). legId 0 is a run-level line. */
+export interface LogLine {
+  runId: number
+  legId: number
+  seq: number
+  at: string
+  level: LogLevel
+  text: string
+}
+
+export interface LogGap {
+  legId: number
+  fromSeq: number
+  toSeq: number
+}
+
+export type RunConnection = 'live' | 'reconnecting' | 'finished' | 'no-access'
+
+export interface RunLive {
+  /** Steps, legs, summary, wait reason, approval, locks. */
+  run: RunDetail | undefined
+  /** Ordered by time, then leg, then seq. */
+  lines: LogLine[]
+  gaps: LogGap[]
+  connection: RunConnection
+  /** True when more than 20,000 lines arrived and the oldest were dropped. */
+  truncated: boolean
+  error: ApiError | undefined
+}
+
+/** POST /api/v1/jobs/{id}/runs. */
+export interface CreateRunRequest {
+  environment: string
+  selection: Selection
+  start: boolean
+}
+
+/** The body of the 422 answer for a selection that cannot be planned. */
+export interface SelectionProblemsBody {
+  error: { code: string; message: string; problems: Problem[] }
+}
+
+export interface ReconcileRequest {
+  outcome: 'succeeded' | 'failed'
+}
+
+/** POST /runs/{id}/start sends the manifest the person looked at (Plan 7 contract; Go ignores it today). */
+export interface StartRunRequest {
+  manifest_id: string
+}
+
+export interface RestoreRequest {
+  /** Left out or empty: every service the run changed. */
+  services?: string[]
+}
+
+export interface ApproveRequest {
+  manifest_id: string
+  comment?: string
+}
+
+export interface RejectRequest {
+  comment?: string
+}
+
+// ---- Versions (Plan 5 Task 4, assumed) -------------------------------------------------
+
+export interface ImageVersion {
+  tag: string
+  digest: string
+  pushed_at: string
+}
+
+export interface GroupVersions {
+  /** Tags present for every service, in the order of the first service's list. */
+  common: string[]
+  /** service -> its versions, newest first. */
+  services: Record<string, ImageVersion[]>
+  /** service -> why its versions could not be listed (not in this environment, or an AWS error code). */
+  unavailable: Record<string, string>
+}
+
+/** GET /api/v1/jobs/{id}/versions?environment= */
+export interface JobVersions {
+  groups: Record<string, GroupVersions>
+}
+
+// ---- The plan (Plan 5 Tasks 6 and 9, assumed) ---------------------------------------------
+
+export type ConfigChange = 'new' | 'changed' | 'unchanged'
+
+/** Key names only; a value never travels. */
+export interface KeyDiff {
+  added: string[]
+  removed: string[]
+  changed: string[]
+}
+
+export interface ConfigItem {
+  kind: 'env' | 'toml'
+  name: string
+  source: string
+  destination: string
+  /** env only. */
+  branch?: string
+  commit?: string
+  /** env only: the dev branch was used because the version's branch does not exist. */
+  fallback?: boolean
+  source_version_id?: string
+  sha256: string
+  size: number
+  previous_exists: boolean
+  previous_sha256?: string
+  change: ConfigChange
+  /** env only, when changed. */
+  keys?: KeyDiff | null
+  /** Plan 6 (restore): why this item is left alone; "" or absent otherwise. */
+  not_restored?: string
+}
+
+export interface PlanService {
+  name: string
+  group: string
+  version: string
+  image_digest: string
+  ecs_service: string
+  ecr_repository: string
+  previous_task_definition: string
+  /** "" when unknown. */
+  previous_version: string
+  /** Plan 6 (restore). */
+  target_task_definition?: string
+  config: ConfigItem[]
+}
+
+export type CheckStatus = 'passed' | 'failed' | 'not_verified'
+
+export interface Check {
+  name: string
+  service: string
+  status: CheckStatus
+  detail: string
+}
+
+/** GET /api/v1/runs/{id}/plan: the redacted manifest. */
+export interface Plan {
+  id: string
+  run_id: number
+  environment: string
+  label: string
+  aws_account: string
+  inventory_commit: string
+  job_commit: string
+  services: PlanService[]
+  checks: Check[]
+  /** Plan 6: the run this restore undoes. */
+  restore_of?: number
+}
+
+// ---- Approvals (Plan 7 Task 2, assumed) -----------------------------------------------------
+
+export interface ApprovalItem {
+  run_id: number
+  job_source_id: number
+  job_id: string
+  job_name: string
+  environment: string
+  label: string
+  manifest_id: string
+  requested_by_name: string
+  requested_at: string
+  expires_at: string
+  services: { service: string; version: string }[]
+  can_approve: boolean
+  cannot_approve_reason: string
+}
+
+export interface ApprovalsResponse {
+  approvals: ApprovalItem[]
+}
+
+// ---- Freezes (Plan 7 Task 3, assumed) --------------------------------------------------------
+
+export interface Freeze {
+  id: number
+  /** "" when the freeze is for an environment. */
+  label: string
+  /** "" when the freeze is for a label. */
+  environment: string
+  reason: string
+  created_by_name: string
+  created_at: string
+  expires_at: string
+  /** Set on an ended freeze: when and by whom it was lifted ("" when it simply expired). */
+  ended_at: string | null
+  ended_by_name: string
+}
+
+export interface FreezesResponse {
+  active: Freeze[]
+  ended: Freeze[]
+}
+
+export interface CreateFreezeRequest {
+  label?: string
+  environment?: string
+  reason: string
+  /** ISO 8601, at most 30 days ahead. */
+  expires_at: string
+}
+
+// ---- Slack (Plan 7 Task 5, assumed) ------------------------------------------------------------
+
+export interface SlackSettings {
+  token_set: boolean
+  set_at: string | null
+  set_by_name: string
+}
+
+export interface SlackTestResult {
+  ok: boolean
+  /** Slack's error code when ok is false (for example "channel_not_found"); "" otherwise. */
+  code: string
 }

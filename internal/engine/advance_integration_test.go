@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/wake"
 )
@@ -1089,5 +1090,80 @@ func TestCancelOfAClaimedLegFlagsItInsteadOfFailing(t *testing.T) {
 	got := h.legByKind(run.ID, "revalidate")
 	if got.State != "claimed" || !got.CancelRequested {
 		t.Fatalf("leg = %+v, want still claimed and flagged", got)
+	}
+}
+
+// TestCancelReconcilesALegThatWasAttemptedBefore reproduces the review's
+// scenario: a runner claims a leg and records an intent (the change may have
+// happened), then dies; the sweep requeues the leg; a person cancels. The
+// orchestrator must not settle the leg as cancelled: it flags it and leaves it
+// queued so a runner claims it and reconciles the intended operation. The run
+// stays cancelling and keeps its locks. A leg never attempted is still
+// cancelled directly.
+func TestCancelReconcilesALegThatWasAttemptedBefore(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	ctx := context.Background()
+	const lease = 30 * time.Second
+	q := queue.New(h.pool, lease, h.clock.Now)
+
+	run := h.running("s1", "s2")
+	h.pastRevalidation(run.ID) // config s1 and config s2 are queued
+
+	claimed, err := q.Claim(ctx, "runner-dead")
+	if err != nil || claimed == nil {
+		t.Fatalf("Claim: %v, %v", claimed, err)
+	}
+	attempted := claimed.Leg
+	if _, err := q.Intend(ctx, attempted.ID, attempted.Generation, "copy-config", "copy-config/"+attempted.Service, []byte(`{"service":"x"}`)); err != nil {
+		t.Fatalf("Intend: %v", err)
+	}
+	h.clock.Advance(lease + time.Second) // the runner died: its lease runs out
+	if requeued, _, err := q.Sweep(ctx); err != nil || requeued != 1 {
+		t.Fatalf("Sweep = %d requeued, %v; want 1", requeued, err)
+	}
+	if got := h.stepLeg(run.ID, "config", attempted.Service); got.State != "queued" || got.Attempt != 1 {
+		t.Fatalf("swept leg: %+v, want queued after one attempt", got)
+	}
+
+	if err := h.eng.Cancel(ctx, h.starter, run.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	h.advance(run.ID)
+
+	got := h.stepLeg(run.ID, "config", attempted.Service)
+	if got.State != "queued" || !got.CancelRequested {
+		t.Fatalf("attempted leg = %+v, want still queued and flagged so a runner reconciles it", got)
+	}
+	other := "s1"
+	if attempted.Service == "s1" {
+		other = "s2"
+	}
+	if got := h.stepLeg(run.ID, "config", other).State; got != "cancelled" {
+		t.Fatalf("never-attempted leg is %s, want cancelled directly", got)
+	}
+	h.expectState(run.ID, "cancelling")
+	if len(h.locks(run.ID)) == 0 {
+		t.Fatalf("locks released while an intended operation is unreconciled")
+	}
+	for i := 0; i < 3; i++ {
+		h.advance(run.ID)
+	}
+	h.expectState(run.ID, "cancelling")
+	if got := h.stepLeg(run.ID, "config", attempted.Service).State; got != "queued" {
+		t.Fatalf("leg is %s after more advances, want queued", got)
+	}
+
+	// A runner reconciles and the leg ends unknown: the run needs reconciliation, locks kept.
+	again, err := q.Claim(ctx, "runner-2")
+	if err != nil || again == nil || again.Leg.ID != attempted.ID {
+		t.Fatalf("second Claim = %+v, %v; want the attempted leg", again, err)
+	}
+	if err := q.Complete(ctx, again.Leg.ID, again.Leg.Generation, queue.Outcome{State: "unknown", FailureShort: "change not in place"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	h.advance(run.ID)
+	h.expectState(run.ID, "needs_reconciliation")
+	if len(h.locks(run.ID)) == 0 {
+		t.Fatalf("locks released although the leg is unknown")
 	}
 }

@@ -170,15 +170,30 @@ func anyUnknown(legs []store.Leg) bool {
 	return false
 }
 
-// stopLegs cancels every pending and queued leg and flags every claimed or
-// running leg that is not flagged yet. Nothing is queued.
+// stopLegs cancels every pending leg and every queued leg that was never
+// attempted, and flags every claimed or running leg, and every queued leg that
+// was attempted before, that is not flagged yet. Nothing is queued.
+//
+// A queued leg with attempt > 0 was claimed once and may have recorded an
+// intent whose outcome nobody knows (the runner died and the sweep requeued
+// it). Settling it as cancelled would end the run and release its locks with
+// the outcome still uncertain, so it stays queued, flagged: a runner claims it,
+// reconciles and settles it as succeeded, failed or unknown. The attempt count
+// is enough to tell, because an operation can only be recorded after a claim.
 func stopLegs(legs []store.Leg) Decision {
+	return stopLegsWith(legs, true)
+}
+
+// stopLegsWith is stopLegs; reconcileAttempted false cancels every queued leg
+// whatever its attempts, for a run that has not started running and so has made
+// no external change (its only leg is the read-only resolve).
+func stopLegsWith(legs []store.Leg, reconcileAttempted bool) Decision {
 	var d Decision
 	for _, l := range legs {
-		switch l.State {
-		case legPending, legQueued:
+		switch {
+		case l.State == legPending, l.State == legQueued && (l.Attempt == 0 || !reconcileAttempted):
 			d.CancelLegs = append(d.CancelLegs, l.ID)
-		case legClaimed, legRunning:
+		case l.State == legQueued, l.State == legClaimed, l.State == legRunning:
 			if !l.CancelRequested {
 				d.MarkCancelRequested = append(d.MarkCancelRequested, l.ID)
 			}
@@ -191,7 +206,7 @@ func stopLegs(legs []store.Leg) Decision {
 // run is cancelled and its legs are stopped. No locks are held yet, but the
 // release is requested if they somehow are.
 func cancelBeforeStart(v View) Decision {
-	d := stopLegs(v.Legs)
+	d := stopLegsWith(v.Legs, false)
 	d.NewState = "cancelled"
 	d.ReleaseLocks = v.LocksHeld
 	return d

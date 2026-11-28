@@ -564,3 +564,22 @@ func TestDecideDoesNotMutateItsInput(t *testing.T) {
 		t.Fatal("Decide changed its input")
 	}
 }
+
+func TestCancelFlagsAQueuedLegThatWasAttemptedInsteadOfCancellingIt(t *testing.T) {
+	attempted := stepLeg(10, 1, "s1", "queued")
+	attempted.Attempt = 1
+	fresh := stepLeg(11, 1, "s2", "queued")
+	legs := withRevalidated(attempted, fresh, stepLeg(12, 2, "s1", "pending"))
+
+	for _, state := range []string{"running", "cancelling"} {
+		d := Decide(View{Run: cancelled(run(state)), Legs: legs})
+		wantIDs(t, state+" CancelLegs", d.CancelLegs, 11, 12)
+		wantIDs(t, state+" MarkCancelRequested", d.MarkCancelRequested, 10)
+	}
+
+	// Before the run starts nothing external was changed: the legs are cancelled whatever their attempts.
+	resolve := leg(1, "resolve", "queued")
+	resolve.Attempt = 2
+	d := Decide(View{Run: cancelled(run("resolving")), Legs: []store.Leg{resolve}})
+	wantIDs(t, "resolving CancelLegs", d.CancelLegs, 1)
+}

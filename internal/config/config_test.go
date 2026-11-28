@@ -27,6 +27,40 @@ func requiredEnv() map[string]string {
 
 		"YUMDRAKE_LOCAL_SECRET_KEY": validSecretKey,
 		"YUMDRAKE_PUBLIC_URL":       "https://yumdrake.example.com",
+
+		"YUMDRAKE_ARTIFACT_BUCKET": "yumdrake-artifacts-test",
+	}
+}
+
+func TestLoadRunnerArtifactStore(t *testing.T) {
+	env := requiredEnv()
+	cfg, err := LoadRunner(envFrom(env))
+	if err != nil {
+		t.Fatalf("LoadRunner() error = %v", err)
+	}
+	if cfg.ArtifactBucket != "yumdrake-artifacts-test" || cfg.ArtifactKMSKeyID != "" {
+		t.Errorf("bucket, key = %q, %q", cfg.ArtifactBucket, cfg.ArtifactKMSKeyID)
+	}
+	env["YUMDRAKE_ARTIFACT_KMS_KEY_ID"] = "alias/yumdrake-artifacts"
+	cfg, err = LoadRunner(envFrom(env))
+	if err != nil || cfg.ArtifactKMSKeyID != "alias/yumdrake-artifacts" {
+		t.Errorf("kms key = %q, err = %v", cfg.ArtifactKMSKeyID, err)
+	}
+
+	delete(env, "YUMDRAKE_ARTIFACT_BUCKET")
+	if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_ARTIFACT_BUCKET") {
+		t.Errorf("missing bucket error = %v", err)
+	}
+	for _, bad := range []string{"ab", "Upper-Case", "has_underscore", "-leading", "trailing-", "a/b", "has space", "double..dot", strings.Repeat("a", 64)} {
+		env["YUMDRAKE_ARTIFACT_BUCKET"] = bad
+		if _, err := LoadRunner(envFrom(env)); err == nil {
+			t.Errorf("bucket %q accepted", bad)
+		}
+	}
+	env["YUMDRAKE_ARTIFACT_BUCKET"] = "yumdrake-artifacts-test"
+	env["YUMDRAKE_ARTIFACT_KMS_KEY_ID"] = "has space"
+	if _, err := LoadRunner(envFrom(env)); err == nil {
+		t.Error("kms key id with a space accepted")
 	}
 }
 

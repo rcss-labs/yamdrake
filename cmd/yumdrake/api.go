@@ -35,6 +35,9 @@ type session struct {
 	format cli.Format
 	stdout io.Writer
 	stderr io.Writer
+	// text is where progress and plan text go: standard output, or standard
+	// error under -o json, which keeps standard output for the one document.
+	text io.Writer
 }
 
 // openSession reads the configuration and makes a signed-in client. A usage
@@ -52,13 +55,21 @@ func (e env) openSession(f *apiFlags, stdout, stderr io.Writer) (*session, error
 	if err != nil {
 		return nil, err
 	}
-	return &session{e: e, ctx: e.context(), client: client, cfg: cfg, format: format, stdout: stdout, stderr: stderr}, nil
+	s := &session{e: e, ctx: e.context(), client: client, cfg: cfg, format: format, stdout: stdout, stderr: stderr, text: stdout}
+	if format == cli.FormatJSON {
+		s.text = stderr
+	}
+	return s, nil
 }
 
 func (s *session) json() bool { return s.format == cli.FormatJSON }
 
 func (s *session) printf(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.stdout, format, args...)
+}
+
+func (s *session) textf(format string, args ...any) {
+	_, _ = fmt.Fprintf(s.text, format, args...)
 }
 
 func (s *session) progressf(format string, args ...any) {

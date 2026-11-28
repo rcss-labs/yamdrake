@@ -185,3 +185,48 @@ type approvalItem struct {
 	CanApprove      bool            `json:"can_approve"`
 	Reason          string          `json:"reason"`
 }
+
+// manifest is the redacted manifest of GET /runs/{id}/plan (Plan 5 Task 6,
+// served by Task 9): the Go type's fields in snake_case.
+type manifest struct {
+	ID          string            `json:"id"`
+	RunID       int64             `json:"run_id"`
+	Environment string            `json:"environment"`
+	Label       string            `json:"label"`
+	Services    []manifestService `json:"services"`
+	Checks      []manifestCheck   `json:"checks"`
+}
+
+type manifestService struct {
+	Name                   string           `json:"name"`
+	Group                  string           `json:"group"`
+	Version                string           `json:"version"`
+	ImageDigest            string           `json:"image_digest"`
+	PreviousTaskDefinition string           `json:"previous_task_definition"`
+	PreviousVersion        string           `json:"previous_version"`
+	TargetTaskDefinition   string           `json:"target_task_definition"`
+	Config                 []manifestConfig `json:"config"`
+}
+
+type manifestConfig struct {
+	Kind        string   `json:"kind"`
+	Name        string   `json:"name"`
+	Branch      string   `json:"branch"`
+	Fallback    bool     `json:"fallback"`
+	Change      string   `json:"change"`
+	Keys        *keyDiff `json:"keys"`
+	NotRestored string   `json:"not_restored"`
+}
+
+type keyDiff struct {
+	Added   []string `json:"added"`
+	Removed []string `json:"removed"`
+	Changed []string `json:"changed"`
+}
+
+type manifestCheck struct {
+	Name    string `json:"name"`
+	Service string `json:"service"`
+	Status  string `json:"status"`
+	Detail  string `json:"detail"`
+}

@@ -58,7 +58,7 @@ func runsCmd(args []string, stdout, stderr io.Writer, e env) int {
 }
 
 func runsCommands() subcommands {
-	return subcommands{"list": runsList, "show": runsShow, "log": runsLog}
+	return subcommands{"list": runsList, "show": runsShow, "log": runsLog, "start": runsStart, "watch": runsWatch, "cancel": runsCancel}
 }
 
 const maxRunsPerPage = 100

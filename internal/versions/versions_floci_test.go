@@ -7,7 +7,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 
 	"github.com/rcss-labs/yamdrake/internal/awsx"
@@ -22,8 +21,8 @@ func TestListAgainstFloci(t *testing.T) {
 	acct := w.Account(accountID)
 	const region = "us-east-1"
 	name := "app-" + awstest.RandomSuffix()
-	uri, _ := acct.Repo(region, name, "1.4.1", "1.4.2", "latest")
-	ref, err := awsx.ParseECRRepository(uri)
+	uri, digest := acct.Repo(region, name, "1.4.1", "1.4.2", "latest")
+	ref, err := awsx.ParseECRRepository(uri, awsx.Options{EndpointURL: w.Endpoint})
 	if err != nil {
 		t.Fatalf("ParseECRRepository(%q): %v", uri, err)
 	}
@@ -34,23 +33,13 @@ func TestListAgainstFloci(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	// The digest of each tag, as the registry itself reports it. Floci answers
-	// with one entry per tag, which is why List has to group by digest.
-	described, err := client.DescribeImages(context.Background(), &ecr.DescribeImagesInput{RepositoryName: aws.String(name)})
-	if err != nil {
-		t.Fatalf("DescribeImages: %v", err)
-	}
-	digestOfTag := map[string]string{}
-	for _, detail := range described.ImageDetails {
-		for _, tag := range detail.ImageTags {
-			digestOfTag[tag] = aws.ToString(detail.ImageDigest)
-		}
-	}
 	var tags []string
 	for _, v := range got {
 		tags = append(tags, v.Tag)
-		if v.Digest == "" || v.Digest != digestOfTag[v.Tag] {
-			t.Errorf("version %s digest = %q, want %q", v.Tag, v.Digest, digestOfTag[v.Tag])
+		// Every tag was pushed from the one test image, so each shares the
+		// digest that Repo returned.
+		if v.Digest == "" || v.Digest != digest {
+			t.Errorf("version %s digest = %q, want %q", v.Tag, v.Digest, digest)
 		}
 		if v.PushedAt.IsZero() {
 			t.Errorf("version %s has no push time", v.Tag)

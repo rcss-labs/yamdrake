@@ -67,7 +67,7 @@ func TestSeedCreatesReadableWorld(t *testing.T) {
 	var repoURI, digest string
 	t.Run("repo tags share one digest", func(t *testing.T) {
 		repoURI, digest = acct.Repo(region, repoName, "v1", "v2")
-		ref, err := awsx.ParseECRRepository(repoURI)
+		ref, err := awsx.ParseECRRepository(repoURI, awsx.Options{EndpointURL: w.Endpoint})
 		if err != nil {
 			t.Fatalf("ParseECRRepository(%q): %v", repoURI, err)
 		}

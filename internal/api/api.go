@@ -24,6 +24,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
+	"github.com/rcss-labs/yamdrake/internal/versions"
 )
 
 // DefaultTokenSSOMaxAge is the default of Deps.TokenSSOMaxAge.
@@ -106,6 +107,12 @@ type Deps struct {
 	// Discovery. It may be empty when the service runs without AWS credentials;
 	// the connection test then reports a failure.
 	AWSConfig aws.Config
+	// AWSOptions are the deployment-wide AWS settings (the emulator endpoint
+	// in tests); zero for real AWS.
+	AWSOptions awsx.Options
+	// Versions lists the image versions of a job's services. Optional: New
+	// builds one from the default Discovery and Valkey.
+	Versions VersionLister
 }
 
 // valkeyTimeout bounds every Valkey call made for a request: against a dead
@@ -148,7 +155,15 @@ func New(deps Deps) http.Handler {
 		deps.DevicePollInterval = defaultDevicePollInterval
 	}
 	if deps.Discovery == nil {
-		deps.Discovery = discovery.New(deps.Pool, deps.Cipher, deps.AWSConfig, awsx.Options{})
+		deps.Discovery = discovery.New(deps.Pool, deps.Cipher, deps.AWSConfig, deps.AWSOptions)
+	}
+	if deps.Versions == nil {
+		// The cached provider is the one that builds version-list credentials;
+		// a Discovery that cannot (a test double) leaves the route unavailable.
+		if provider, ok := deps.Discovery.(versions.Discovery); ok {
+			deps.Versions = versions.New(versions.Config{
+				Discovery: provider, Valkey: deps.Valkey, KeyPrefix: deps.KeyPrefix, AWS: deps.AWSOptions})
+		}
 	}
 	dummy, err := dummyPasswordHash()
 	if err != nil {
@@ -272,6 +287,7 @@ func (s *server) routes() []routeDef {
 		{"GET /api/v1/jobs/{id}", auth.View, s.getJob},
 		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
 		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
+		{"GET /api/v1/jobs/{id}/versions", auth.View, s.getJobVersions},
 	}, s.accessRoutes()...)
 }
 

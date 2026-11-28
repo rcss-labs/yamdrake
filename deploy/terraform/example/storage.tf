@@ -98,6 +98,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "log_archive" {
     status = "Enabled"
     filter {}
 
+    # Same default as YUMDRAKE_LOG_ARCHIVE_RETENTION (365 days = 8760h), which ecs.tf derives from this variable.
     expiration {
       days = var.log_archive_retention_days
     }

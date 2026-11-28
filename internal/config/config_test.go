@@ -818,3 +818,25 @@ func TestSlackAndNotifySettings(t *testing.T) {
 		}
 	}
 }
+
+func TestOrchestratorLogArchiveRetention(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.LogArchiveRetention != 8760*time.Hour {
+		t.Fatalf("default = %v, %v; want 8760h", cfg.LogArchiveRetention, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_LOG_ARCHIVE_RETENTION"] = "0"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.LogArchiveRetention != 0 {
+		t.Fatalf("0 = %v, %v; want zero (keep forever)", cfg.LogArchiveRetention, err)
+	}
+	env["YUMDRAKE_LOG_ARCHIVE_RETENTION"] = "720h"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.LogArchiveRetention != 720*time.Hour {
+		t.Fatalf("720h = %v, %v", cfg.LogArchiveRetention, err)
+	}
+	for _, bad := range []string{"-1h", "soon"} {
+		env["YUMDRAKE_LOG_ARCHIVE_RETENTION"] = bad
+		if _, err := LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_LOG_ARCHIVE_RETENTION") {
+			t.Errorf("%q: error = %v, want one naming the variable", bad, err)
+		}
+	}
+}

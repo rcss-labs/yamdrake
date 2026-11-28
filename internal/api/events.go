@@ -223,7 +223,7 @@ func (e *eventStream) collect(ctx context.Context, out *bytes.Buffer, send func(
 			if err != nil {
 				return false, err
 			}
-			if len(page.Lines) == 0 {
+			if len(page.Lines) == 0 && len(page.Gaps) == 0 {
 				break
 			}
 			data, err := json.Marshal(shapeLogPage(page))

@@ -56,7 +56,9 @@ locals {
     { name = "YUMDRAKE_PUBLIC_URL", value = local.public_url },
     { name = "YUMDRAKE_HTTP_ADDR", value = ":8080" },
     { name = "YUMDRAKE_LOG_BUCKET", value = aws_s3_bucket.log_archive.id }, # read from plan 5 onward
-    { name = "YUMDRAKE_METRICS", value = var.metrics_mode },                # read from plan 11 (task 4) onward
+    # The same retention as the bucket's lifecycle rule (default 365 days = 8760h), so the index rows go when the objects do.
+    { name = "YUMDRAKE_LOG_ARCHIVE_RETENTION", value = "${var.log_archive_retention_days * 24}h" },
+    { name = "YUMDRAKE_METRICS", value = var.metrics_mode },              # read from plan 11 (task 4) onward
     # The dimensions the alarms and scaling expect on every metric (Name=value,Name=value; empty for none).
     { name = "YUMDRAKE_METRICS_DIMENSIONS", value = join(",", [for k, v in var.metric_dimensions : "${k}=${v}"]) },
   ])

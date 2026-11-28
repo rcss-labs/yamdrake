@@ -668,6 +668,8 @@ type gapView struct {
 	LegID   int64 `json:"leg_id"`
 	FromSeq int64 `json:"from_seq"`
 	ToSeq   int64 `json:"to_seq"`
+	// Note says why the lines are missing, when it is known (an expired archive).
+	Note string `json:"note,omitempty"`
 }
 
 type logPageView struct {
@@ -682,7 +684,7 @@ func shapeLogPage(page logs.Page) logPageView {
 		out.Lines = append(out.Lines, logLineView{LegID: l.LegID, Seq: l.Seq, At: l.At, Level: l.Level, Text: l.Text})
 	}
 	for _, g := range page.Gaps {
-		out.Gaps = append(out.Gaps, gapView{LegID: g.LegID, FromSeq: g.FromSeq, ToSeq: g.ToSeq})
+		out.Gaps = append(out.Gaps, gapView{LegID: g.LegID, FromSeq: g.FromSeq, ToSeq: g.ToSeq, Note: g.Note})
 	}
 	return out
 }

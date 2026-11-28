@@ -9,8 +9,16 @@ import (
 )
 
 type fakeArchiver struct {
-	calls atomic.Int32
-	fail  bool
+	calls, prunes atomic.Int32
+	fail          bool
+}
+
+func (f *fakeArchiver) PruneExpired(context.Context) (int, error) {
+	f.prunes.Add(1)
+	if f.fail {
+		return 0, errors.New("disk full")
+	}
+	return 1, nil
 }
 
 func (f *fakeArchiver) ArchiveSettledLegs(context.Context) (int, error) {
@@ -33,6 +41,9 @@ func TestArchiveLoopRunsOnATimerSurvivesErrorsAndStopsWithItsContext(t *testing.
 		}
 		if archiver.calls.Load() < 3 {
 			t.Fatalf("fail=%v: the loop called the archiver %d times, want it to keep going", fail, archiver.calls.Load())
+		}
+		if archiver.prunes.Load() < 3 {
+			t.Fatalf("fail=%v: the loop pruned %d times, want it to prune each round", fail, archiver.prunes.Load())
 		}
 		cancel()
 		select {

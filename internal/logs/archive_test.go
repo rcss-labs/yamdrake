@@ -3,6 +3,7 @@ package logs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,5 +125,15 @@ func TestASwappedArchiveFileIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), keyB) || !strings.Contains(err.Error(), "cannot decrypt") {
 		t.Errorf("error = %v, want one that says %s cannot be decrypted", err, keyB)
+	}
+}
+
+func TestDirArchiveMissingObjectIsNotFound(t *testing.T) {
+	a, err := NewDirArchive(t.TempDir(), archiveTestCipher(t, "0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewDirArchive: %v", err)
+	}
+	if _, err := a.Get(context.Background(), "runs/1/legs/2.ndjson.gz"); !errors.Is(err, ErrArchiveNotFound) {
+		t.Fatalf("Get of a missing key = %v, want ErrArchiveNotFound", err)
 	}
 }

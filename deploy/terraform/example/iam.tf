@@ -65,8 +65,8 @@ data "aws_iam_policy_document" "orchestrator_task" {
   }
 
   statement {
-    sid       = "ReadAndWriteLogArchive"
-    actions   = ["s3:GetObject", "s3:PutObject"]
+    sid       = "ReadWriteAndPruneLogArchive"                              # DeleteObject: the orchestrator removes an archive and its index row together at YUMDRAKE_LOG_ARCHIVE_RETENTION
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = ["${aws_s3_bucket.log_archive.arn}/*"] # every object in this one bucket: S3 object ARNs end in /*
   }
 

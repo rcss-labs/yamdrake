@@ -29,12 +29,19 @@ so the old runners that are still draining during the switch keep working.
 
 **Log archives are encrypted on the volume as of this release.** An archive
 directory written by an earlier build (plain gzip) cannot be read. When upgrading
-from a pre-release build, empty the log archive directory first:
+from a pre-release build, move the old archive files aside first. Do not delete
+them and do not empty the directory:
 
 ```sh
 docker compose stop orchestrator
-docker run --rm -v yumdrake-compose_log-archive:/v alpine:3.22.2 sh -c 'rm -rf /v/* /v/.[!.]*'
+docker run --rm -v yumdrake-compose_log-archive:/v alpine:3.22.2 sh -c 'mkdir -p /v/pre-encryption && mv /v/runs /v/pre-encryption/'
 ```
+
+The runs whose archives were moved aside show "older log lines for this step are
+no longer available" in place of those lines; their log route and live stream
+still answer normally. Archives are deleted together with their database rows
+after `YUMDRAKE_LOG_ARCHIVE_RETENTION` (default `8760h`); remove the
+`pre-encryption` directory yourself when you no longer need it.
 
 ### Upgrade check
 

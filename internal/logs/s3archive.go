@@ -3,6 +3,7 @@ package logs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -57,6 +58,10 @@ func (a *s3Archive) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	out, err := a.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(a.bucket), Key: aws.String(key)})
+	var noSuchKey *s3types.NoSuchKey
+	if errors.As(err, &noSuchKey) {
+		return nil, fmt.Errorf("log archive: read %s: %w", key, ErrArchiveNotFound)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("log archive: read %s: %w", key, err)
 	}
@@ -66,4 +71,15 @@ func (a *s3Archive) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("log archive: read %s: %w", key, err)
 	}
 	return data, nil
+}
+
+// Delete removes the object. S3 answers success for a missing key.
+func (a *s3Archive) Delete(ctx context.Context, key string) error {
+	if err := validateKey(key); err != nil {
+		return err
+	}
+	if _, err := a.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(a.bucket), Key: aws.String(key)}); err != nil {
+		return fmt.Errorf("log archive: delete %s: %w", key, err)
+	}
+	return nil
 }

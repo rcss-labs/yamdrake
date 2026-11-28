@@ -236,7 +236,7 @@ variable "kms_key_administrator_arns" {
 }
 
 variable "log_archive_retention_days" {
-  description = "Days an archived run log is kept in the log bucket before it expires."
+  description = "Days an archived run log is kept in the log bucket before it expires. Also sets YUMDRAKE_LOG_ARCHIVE_RETENTION so the orchestrator drops the index rows with the objects. The default matches the orchestrator's own default of 8760h."
   type        = number
   default     = 365
 }

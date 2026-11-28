@@ -6,11 +6,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -239,4 +241,35 @@ func TestPublishWithValkeyDownIsANoOp(t *testing.T) {
 		t.Errorf("received %d with Valkey down", id)
 	}
 	cancel()
+}
+
+// failingReceiveClient makes the first Receive calls fail, as a lost
+// connection does when the client library does not recover by itself.
+type failingReceiveClient struct {
+	valkey.Client
+	failures int32
+	calls    atomic.Int32
+}
+
+func (c *failingReceiveClient) Receive(ctx context.Context, subscribe valkey.Completed, fn func(valkey.PubSubMessage)) error {
+	if c.calls.Add(1) <= c.failures {
+		return errors.New("injected: connection lost")
+	}
+	return c.Client.Receive(ctx, subscribe, fn)
+}
+
+func TestSubscribeResubscribesAfterReceiveFails(t *testing.T) {
+	prefix := randomPrefix(t)
+	direct := openClient(t, valkeyAddr(t))
+	flaky := &failingReceiveClient{Client: direct, failures: 2}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := New(flaky, quietLog(), WithKeyPrefix(prefix)).Subscribe(ctx, TopicRuns)
+
+	if !publishUntilReceived(t, New(direct, quietLog(), WithKeyPrefix(prefix)), TopicRuns, 5, ch, 10*time.Second) {
+		t.Fatal("no wake-up after Receive failed twice")
+	}
+	if got := flaky.calls.Load(); got < 3 {
+		t.Errorf("Receive called %d times, want at least 3 (two failures, then a working subscription)", got)
+	}
 }

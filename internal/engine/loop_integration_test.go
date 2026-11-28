@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -167,7 +168,8 @@ func TestLoopSweepsExpiredLeasesAndExpiresApprovals(t *testing.T) {
 // connection would, and lets everything else through.
 type failingDB struct {
 	store.DBTX
-	failID int64
+	failID  int64
+	asPanic bool // panic instead of returning an error
 }
 
 func (f failingDB) Begin(ctx context.Context) (pgx.Tx, error) {
@@ -175,12 +177,13 @@ func (f failingDB) Begin(ctx context.Context) (pgx.Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return failingTx{Tx: tx, failID: f.failID}, nil
+	return failingTx{Tx: tx, failID: f.failID, asPanic: f.asPanic}, nil
 }
 
 type failingTx struct {
 	pgx.Tx
-	failID int64
+	failID  int64
+	asPanic bool
 }
 
 type failedRow struct{}
@@ -189,6 +192,9 @@ func (failedRow) Scan(...any) error { return errors.New("injected failure") }
 
 func (f failingTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if strings.Contains(sql, "FOR NO KEY UPDATE") && len(args) == 1 && args[0] == f.failID {
+		if f.asPanic {
+			panic("injected panic")
+		}
 		return failedRow{}
 	}
 	return f.Tx.QueryRow(ctx, sql, args...)
@@ -212,18 +218,20 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
+// setup creates a failing run (the lower id) and a good one, both resolved.
+func setup(t *testing.T, asPanic bool) (h *harness, bad, good store.Run, logs *lockedBuffer) {
+	h = newHarness(t, harnessOptions{})
+	bad = h.create(h.starter, false, "s1") // the lower id: a loop that gave up on the first error would never reach good
+	good = h.create(h.starter, false, "s2")
+	h.resolved(bad.ID)
+	h.resolved(good.ID)
+	logs = &lockedBuffer{}
+	h.eng = New(Deps{DB: failingDB{DBTX: h.pool, failID: bad.ID, asPanic: asPanic}, Now: h.clock.Now,
+		Log: slog.New(slog.NewTextHandler(logs, nil))})
+	return h, bad, good, logs
+}
+
 func TestOneFailingRunDoesNotBlockOthers(t *testing.T) {
-	setup := func(t *testing.T) (h *harness, bad, good store.Run, logs *lockedBuffer) {
-		h = newHarness(t, harnessOptions{})
-		bad = h.create(h.starter, false, "s1") // the lower id: a loop that gave up on the first error would never reach good
-		good = h.create(h.starter, false, "s2")
-		h.resolved(bad.ID)
-		h.resolved(good.ID)
-		logs = &lockedBuffer{}
-		h.eng = New(Deps{DB: failingDB{DBTX: h.pool, failID: bad.ID}, Now: h.clock.Now,
-			Log: slog.New(slog.NewTextHandler(logs, nil))})
-		return h, bad, good, logs
-	}
 	assertFailureLogged := func(t *testing.T, logs *lockedBuffer) {
 		t.Helper()
 		if out := logs.String(); !strings.Contains(out, "injected failure") {
@@ -232,7 +240,7 @@ func TestOneFailingRunDoesNotBlockOthers(t *testing.T) {
 	}
 
 	t.Run("on the timer", func(t *testing.T) {
-		h, bad, good, logs := setup(t)
+		h, bad, good, logs := setup(t, false)
 		h.startLoop(nil, 20*time.Millisecond, nil, nil)
 		h.waitRunState(good.ID, "planned")
 		h.expectState(bad.ID, "resolving")
@@ -240,7 +248,7 @@ func TestOneFailingRunDoesNotBlockOthers(t *testing.T) {
 	})
 
 	t.Run("on wake-ups", func(t *testing.T) {
-		h, bad, good, logs := setup(t)
+		h, bad, good, logs := setup(t, false)
 		wakes := make(chan int64, 2)
 		h.startLoop(wakes, time.Hour, nil, nil)
 		wakes <- bad.ID
@@ -249,4 +257,35 @@ func TestOneFailingRunDoesNotBlockOthers(t *testing.T) {
 		h.expectState(bad.ID, "resolving")
 		assertFailureLogged(t, logs)
 	})
+}
+
+// A panic while advancing one run (a bug, a corrupt row) must not take the
+// orchestrator down: it is logged with the run id and the loop carries on.
+func TestPanicInOneRunDoesNotStopTheLoop(t *testing.T) {
+	for name, wakeUp := range map[string]bool{"on the timer": false, "on wake-ups": true} {
+		t.Run(name, func(t *testing.T) {
+			h, bad, good, logs := setup(t, true)
+			every := 20 * time.Millisecond
+			var wakes chan int64
+			if wakeUp {
+				wakes = make(chan int64, 2)
+				every = time.Hour
+				wakes <- bad.ID
+				wakes <- good.ID
+			}
+			h.startLoop(wakes, every, nil, nil)
+			h.waitRunState(good.ID, "planned")
+			h.expectState(bad.ID, "resolving")
+			// The loop is still alive: a run resolved after the panic is advanced too.
+			later := h.create(h.starter, false, "s3")
+			h.resolved(later.ID)
+			if wakeUp {
+				wakes <- later.ID
+			}
+			h.waitRunState(later.ID, "planned")
+			if out := logs.String(); !strings.Contains(out, "injected panic") || !strings.Contains(out, fmt.Sprintf("run_id=%d", bad.ID)) {
+				t.Errorf("the panic was not logged with the run id; log:\n%s", out)
+			}
+		})
+	}
 }

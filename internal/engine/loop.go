@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/rcss-labs/yamdrake/internal/queue"
@@ -42,7 +44,24 @@ func (e *Engine) Loop(ctx context.Context, wakeRuns <-chan int64, sweepEvery tim
 	}
 }
 
+// guard runs fn and turns a panic into a log line (with the run id and the
+// stack), so one broken run or a bug cannot take the whole orchestrator down.
+// The stack goes to the local log only.
+func (e *Engine) guard(what string, runID int64, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.log.Error("panic recovered in the engine loop", "while", what, "run_id", runID,
+				"panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+		}
+	}()
+	fn()
+}
+
 func (e *Engine) advanceLogged(ctx context.Context, runID int64) {
+	e.guard("advancing", runID, func() { e.advanceOrLog(ctx, runID) })
+}
+
+func (e *Engine) advanceOrLog(ctx context.Context, runID int64) {
 	if err := e.Advance(ctx, runID); err != nil && ctx.Err() == nil {
 		e.log.Error("could not advance run", "run_id", runID, "error", err.Error())
 	}
@@ -50,6 +69,19 @@ func (e *Engine) advanceLogged(ctx context.Context, runID int64) {
 
 // sweepTick is one pass of the fallback timer.
 func (e *Engine) sweepTick(ctx context.Context, q *queue.Queue, approvalAfter func(store.Run) time.Duration) {
+	e.guard("sweeping leases", 0, func() { e.sweepLeases(ctx, q) })
+	var ids []int64
+	e.guard("listing active runs", 0, func() { ids = e.activeRunIDs(ctx) })
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return
+		}
+		e.guard("expiring", id, func() { e.expireIfDue(ctx, id, approvalAfter) })
+		e.advanceLogged(ctx, id)
+	}
+}
+
+func (e *Engine) sweepLeases(ctx context.Context, q *queue.Queue) {
 	if q != nil {
 		// Sweep touches legs only; advancing every active run below is what
 		// makes the run notice a requeued or unknown leg.
@@ -63,20 +95,14 @@ func (e *Engine) sweepTick(ctx context.Context, q *queue.Queue, approvalAfter fu
 			e.log.Warn("swept expired leases", "requeued", requeued, "unknown", unknown)
 		}
 	}
+}
+
+func (e *Engine) activeRunIDs(ctx context.Context) []int64 {
 	ids, err := store.ActiveRunIDs(ctx, e.db)
-	if err != nil {
-		if ctx.Err() == nil {
-			e.log.Error("could not list active runs", "error", err.Error())
-		}
-		return
+	if err != nil && ctx.Err() == nil {
+		e.log.Error("could not list active runs", "error", err.Error())
 	}
-	for _, id := range ids {
-		if ctx.Err() != nil {
-			return
-		}
-		e.expireIfDue(ctx, id, approvalAfter)
-		e.advanceLogged(ctx, id)
-	}
+	return ids
 }
 
 // expireIfDue expires a planned or approval-waiting run that has waited too long.

@@ -294,12 +294,15 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_SWEEP_INTERVAL` | orchestrator | `2s` | Go duration greater than zero. How often the run engine's fallback timer gives expired leases to another runner, expires waiting runs and advances every active run. Wake-ups through Valkey make runs move sooner; the timer alone is enough when Valkey is down. |
 | `YUMDRAKE_LIMIT_PER_ENVIRONMENT` | orchestrator | `10` | Positive integer. At most this many legs of other runs run at once in one environment. A soft limit: orchestrators advancing two runs at the same moment may overshoot it briefly. |
 | `YUMDRAKE_LIMIT_PER_ACCOUNT` | orchestrator | `20` | Positive integer. The same limit for one AWS account. |
-| `YUMDRAKE_LOG_ARCHIVE_DIR` | orchestrator | empty (no archiving) | Absolute path of a directory. When set, the logs of legs settled longer than `YUMDRAKE_LOG_ARCHIVE_AFTER` are moved there from PostgreSQL and are still served by the API. |
+| `YUMDRAKE_LOG_ARCHIVE_DIR` | orchestrator | empty (no archiving) | Absolute path of a directory. When set, the logs of legs settled longer than `YUMDRAKE_LOG_ARCHIVE_AFTER` are moved there from PostgreSQL and are still served by the API. The archive files are encrypted with `YUMDRAKE_LOCAL_SECRET_KEY`. |
 | `YUMDRAKE_LOG_ARCHIVE_INTERVAL` | orchestrator | `1m` | Go duration greater than zero. How often settled legs are archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
 | `YUMDRAKE_LOG_ARCHIVE_AFTER` | orchestrator | `1h` | Go duration. How long a leg must have been settled before its log is archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
 | `YUMDRAKE_SLACK_API_URL` | orchestrator | `https://slack.com/api` | An `http://` or `https://` URL with a host. The Slack Web API that notifications are posted to. Overridden in tests. |
 | `YUMDRAKE_NOTIFY_INTERVAL` | orchestrator | `5s` | Go duration greater than zero. How often the sender looks for notifications that are due. |
-| `YUMDRAKE_ENV` | runner | `prod` | `dev` or `prod`. Fake steps are allowed only with `dev`. |
+| `YUMDRAKE_ENV` | orchestrator, runner | `prod` | `dev` or `prod`. Fake steps and the public demo key of `YUMDRAKE_LOCAL_SECRET_KEY` are allowed only with `dev`, and `dev` is accepted only when `YUMDRAKE_PUBLIC_URL` is on `localhost` or `127.0.0.1` (the orchestrator refuses to start otherwise). |
+| `YUMDRAKE_ARTIFACT_DIR` | runner | empty | Absolute path of the directory for config copies (encrypted, deleted after 30 days). Compose sets it to the `artifacts` volume. |
+| `YUMDRAKE_METRICS` | orchestrator | empty (off) | `emf` writes CloudWatch embedded-metric-format lines to standard output every minute. Any other non-empty value is a config error. |
+| `YUMDRAKE_METRICS_DIMENSIONS` | orchestrator | empty | `Name=value,Name=value`: dimensions put on every metric (at most the number the config allows). Used with `YUMDRAKE_METRICS`. |
 | `YUMDRAKE_FAKE_STEPS` | runner | `false` | `true` or `false`. When `true` (only with `YUMDRAKE_ENV=dev`; the runner refuses to start otherwise) the runner executes pretend steps that change nothing real. See [Trying a run with fake steps](#trying-a-run-with-fake-steps). |
 | `YUMDRAKE_RUNNER_CONCURRENCY` | runner | `8` | Positive integer. How many legs one runner executes at once. |
 | `YUMDRAKE_LEASE` | runner | `30s` | Go duration. How long a claimed leg belongs to a runner without a heartbeat. After that another runner may take it (at most 5 times, then the leg becomes `unknown`). |

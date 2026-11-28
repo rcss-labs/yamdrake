@@ -35,6 +35,7 @@ locals {
       { name = "YUMDRAKE_LOG_LEVEL", value = var.log_level },
       { name = "YUMDRAKE_DATABASE_URL", value = local.database_url }, # no password: PGPASSWORD below
       { name = "YUMDRAKE_VALKEY_ADDR", value = local.valkey_addr },
+      { name = "YUMDRAKE_VALKEY_TLS", value = "true" },                  # read from plan 11 (task 7) onward; the cache has encryption in transit
       { name = "YUMDRAKE_SECRETS_MODE", value = "kms" },                 # read from plan 5 onward
       { name = "YUMDRAKE_KMS_KEY_ID", value = aws_kms_key.secrets.arn }, # read from plan 5 onward
     ],

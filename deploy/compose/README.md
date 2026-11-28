@@ -46,7 +46,9 @@ chmod 600 .env
 Edit `.env` and replace every `<placeholder>`:
 
 - `YUMDRAKE_PUBLIC_HOST` is the DNS name; `YUMDRAKE_PUBLIC_URL` is
-  `https://` plus the same name. They must match.
+  `https://` plus the same name. They must match. If `YUMDRAKE_HTTPS_PORT` is
+  not 443, the URL must include the port (`https://<host>:8443`), or sign-in
+  fails with an origin error.
 - `YUMDRAKE_VERSION` is the release tag to run (for example `v1.0.0`).
 - Generate each secret and paste it in:
   - `openssl rand -hex 24` for `YUMDRAKE_DATABASE_PASSWORD` and again for
@@ -95,8 +97,8 @@ application:
 
 ## Storage
 
-Everything Yumdrake keeps is on named volumes (project name `yumdrake`, so
-`yumdrake_<volume>`). The directories inside the containers are fixed.
+Everything Yumdrake keeps is on named volumes (project name `yumdrake-compose`, so
+`yumdrake-compose_<volume>`). The directories inside the containers are fixed.
 
 | Volume | Service | Path in the container | Holds | Encrypted by Yumdrake |
 | --- | --- | --- | --- | --- |

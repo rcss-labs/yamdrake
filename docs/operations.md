@@ -9,12 +9,14 @@ setup). The ECS setup is described at the end.
 1. Read the release notes. Do not skip a release whose notes mention a breaking
    migration: upgrade through each one in order.
 2. Back up first (see Backup and restore).
-3. Change `YUMDRAKE_VERSION` in `.env` to the new tag, then:
+3. Check out (or download) the new release tag, so the Compose files match the
+   release. Change `YUMDRAKE_VERSION` in `.env` to the new tag, then:
 
    ```sh
-   docker compose pull
-   docker compose up -d
+   docker compose pull && docker compose up -d --build
    ```
+
+   (`--build` rebuilds the locally built Caddy image.)
 
 The orchestrator applies the schema migrations once, when it starts. The runners
 start only after the orchestrator is healthy, and a runner also waits for the
@@ -27,7 +29,7 @@ from a pre-release build, empty the log archive directory first:
 
 ```sh
 docker compose stop orchestrator
-docker run --rm -v yumdrake_log-archive:/v alpine:3.22.2 sh -c 'rm -rf /v/* /v/.[!.]*'
+docker run --rm -v yumdrake-compose_log-archive:/v alpine:3.22.2 sh -c 'rm -rf /v/* /v/.[!.]*'
 ```
 
 ### Upgrade check
@@ -79,15 +81,20 @@ copies, encrypted, deleted after 30 days) and the `log-archive` volume
 needs no backup. **Also keep `YUMDRAKE_LOCAL_SECRET_KEY` (in `.env`) in a
 separate safe place: without it the encrypted data cannot be read.**
 
-Volume names are the Compose project name plus the volume: `yumdrake_artifacts`
-and `yumdrake_log-archive`.
+Volume names are the Compose project name plus the volume:
+`yumdrake-compose_artifacts` and `yumdrake-compose_log-archive`.
 
 ### Back up
 
+The dump holds password hashes, encrypted connection secrets and personal data.
+Write backups to a private directory outside the checkout:
+
 ```sh
-docker compose exec -T postgres pg_dump -U yumdrake -Fc yumdrake > yumdrake-db.dump
+BACKUP_DIR=/var/backups/yumdrake
+(umask 077 && mkdir -p "$BACKUP_DIR")
+docker compose exec -T postgres pg_dump -U yumdrake -Fc yumdrake > "$BACKUP_DIR/yumdrake-db.dump"
 for v in artifacts log-archive; do
-  docker run --rm -v "yumdrake_$v:/v:ro" -v "$PWD:/b" alpine:3.22.2 \
+  docker run --rm -v "yumdrake-compose_$v:/v:ro" -v "$BACKUP_DIR:/b" alpine:3.22.2 \
     tar -czf "/b/yumdrake-$v.tar.gz" -C /v .
 done
 ```
@@ -100,10 +107,10 @@ Into a stopped application and an empty database:
 docker compose stop orchestrator runner
 docker compose exec -T postgres psql -U yumdrake -d postgres \
   -c 'DROP DATABASE yumdrake' -c 'CREATE DATABASE yumdrake'
-docker compose exec -T postgres pg_restore -U yumdrake -d yumdrake --no-owner < yumdrake-db.dump
+docker compose exec -T postgres pg_restore -U yumdrake -d yumdrake --no-owner < "$BACKUP_DIR/yumdrake-db.dump"
 for v in artifacts log-archive; do
-  docker run --rm -v "yumdrake_$v:/v" -v "$PWD:/b" alpine:3.22.2 \
-    sh -c "rm -rf /v/* && tar -xzf /b/yumdrake-$v.tar.gz -C /v && chown -R 65532:65532 /v"
+  docker run --rm -v "yumdrake-compose_$v:/v" -v "$BACKUP_DIR:/b" alpine:3.22.2 \
+    sh -c "find /v -mindepth 1 -delete && tar -xzf /b/yumdrake-$v.tar.gz -C /v && chown -R 65532:65532 /v"
 done
 docker compose up -d
 ```

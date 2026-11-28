@@ -5,7 +5,9 @@
 # (bound to 127.0.0.1 unless YUMDRAKE_HTTP_BIND says otherwise); with it, the
 # caddy front publishes 80 and 443 and the orchestrator publishes nothing.
 # PostgreSQL and Valkey are never published.
-name: yumdrake
+# Not "yumdrake": a clone of the repository is a directory of that name, and the
+# root compose.yaml (the dev stack) takes its project name from it.
+name: yumdrake-compose
 
 x-app-environment: &app-environment
   YUMDRAKE_DATABASE_URL: postgres://yumdrake@postgres:5432/yumdrake?sslmode=disable
@@ -17,6 +19,7 @@ x-app-environment: &app-environment
   YUMDRAKE_LOG_LEVEL: ${YUMDRAKE_LOG_LEVEL:-info}
   AWS_REGION: ${YUMDRAKE_AWS_REGION:-}
   AWS_ENDPOINT_URL: ${YUMDRAKE_AWS_ENDPOINT_URL:-}
+  YUMDRAKE_AWS_ENDPOINT_URL: ${YUMDRAKE_AWS_ENDPOINT_URL:-}
 
 services:
   postgres:

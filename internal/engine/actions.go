@@ -128,8 +128,10 @@ func (e *Engine) moveTo(ctx context.Context, tx pgx.Tx, run store.Run, state, re
 	if err := store.UpdateRunState(ctx, tx, run.ID, state, "", now); err != nil {
 		return err
 	}
-	if err := e.onEnterState(ctx, tx, run, state, now); err != nil {
-		return err
+	if state != run.State {
+		if err := e.onEnterState(ctx, tx, run, state, now); err != nil {
+			return err
+		}
 	}
 	if isFinalRunState(state) && reason != "" {
 		if err := store.SetEndReason(ctx, tx, run.ID, reason); err != nil {
@@ -235,11 +237,11 @@ func (e *Engine) Expire(ctx context.Context, runID int64) error {
 			}
 			reason = "nobody started the plan within " + plannedRunLifetime.String()
 		case "waiting_approval":
-			due, err := e.approvalDue(ctx, tx, run)
+			due, window, err := e.approvalDue(ctx, tx, run)
 			if err != nil || !due {
 				return err
 			}
-			reason = "nobody approved the plan within " + ApprovalExpiry(run).String()
+			reason = "nobody approved the plan within " + window.String()
 			if err := e.expireApproval(ctx, tx, run.ID); err != nil {
 				return err
 			}

@@ -202,6 +202,20 @@ func TestApproveAndRejectEndpoints(t *testing.T) {
 	})
 }
 
+func TestRunViewShowsAWithdrawnApprovalOfACancelledRun(t *testing.T) {
+	f := newRunFixture(t)
+	runID, _ := f.waitingRun(f.admin.ID, prodEnvironment)
+	f.mustDo("POST", runPath(runID, "/cancel"), nil, http.StatusOK)
+	got := f.mustDo("GET", runPath(runID, ""), nil, http.StatusOK)
+	approval, _ := got["approval"].(map[string]any)
+	if got["state"] != "cancelled" || approval["decision"] != "withdrawn" || approval["decided_by"] != nil {
+		t.Errorf("state %v approval %v, want a cancelled run with a withdrawn approval decided by nobody", got["state"], approval)
+	}
+	if _, raw := f.doRaw("GET", "/api/v1/approvals", f.adminToken, nil); strings.TrimSpace(string(raw)) != "[]" {
+		t.Errorf("approvals list = %s, want []", raw)
+	}
+}
+
 func TestRunViewShowsTheApproval(t *testing.T) {
 	f := newRunFixture(t)
 	plain := f.newRun(f.jobID, devEnvironment, "s1")

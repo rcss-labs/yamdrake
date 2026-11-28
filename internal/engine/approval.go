@@ -25,9 +25,17 @@ var ErrManifestChanged = errors.New("the plan changed")
 // changed: people's actions (moveTo) and the engine's own decisions (apply).
 // The caller holds the run row lock.
 func (e *Engine) onEnterState(ctx context.Context, tx pgx.Tx, run store.Run, newState string, now time.Time) error {
-	switch newState {
-	case "waiting_approval":
+	switch {
+	case newState == "waiting_approval":
 		return e.requestApproval(ctx, tx, run.ID, now)
+	case isFinalRunState(newState):
+		// Approve, reject and expiry close their own approval first; this is
+		// for a run that ends otherwise (cancelled, invalidated).
+		open, found, err := store.OpenApproval(ctx, tx, run.ID)
+		if err != nil || !found {
+			return err
+		}
+		return store.DecideApproval(ctx, tx, open.ID, "withdrawn", nil, "", now)
 	}
 	return nil
 }
@@ -121,15 +129,17 @@ func (e *Engine) expireApproval(ctx context.Context, tx pgx.Tx, runID int64) err
 // The open approval's expiry is the authority; a run that waits without an
 // approval row (made before approvals existed) falls back to the job's expiry
 // measured from the state change.
-func (e *Engine) approvalDue(ctx context.Context, tx pgx.Tx, run store.Run) (bool, error) {
+// window is how long the request allowed, for the end reason.
+func (e *Engine) approvalDue(ctx context.Context, tx pgx.Tx, run store.Run) (due bool, window time.Duration, err error) {
 	open, found, err := store.OpenApproval(ctx, tx, run.ID)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if found {
-		return !e.now().Before(open.ExpiresAt), nil
+		return !e.now().Before(open.ExpiresAt), open.ExpiresAt.Sub(open.RequestedAt), nil
 	}
-	return e.now().Sub(run.StateChangedAt) > ApprovalExpiry(run), nil
+	window = ApprovalExpiry(run)
+	return e.now().Sub(run.StateChangedAt) > window, window, nil
 }
 
 // VersionsSummary words what a run deploys the way approvers and Slack read it:

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -330,4 +331,90 @@ func TestDecisionsAreAudited(t *testing.T) {
 	}
 	check("run.approve", approved, "ship it")
 	check("run.reject", rejected, "not today")
+}
+
+func TestCancelledWaitingRunWithdrawsItsApproval(t *testing.T) {
+	h := newHarness(t, harnessOptions{approvalFor: []string{testLabel}, approvalExpiry: time.Hour})
+	ctx := context.Background()
+	run := h.waitingRun(h.starter, "s1")
+	if err := h.eng.Cancel(ctx, h.starter, run.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	h.expectState(run.ID, "cancelled")
+
+	h.clock.Advance(48 * time.Hour) // far past the approval's expiry
+	a := h.latestApproval(run.ID)
+	if a.Decision != "withdrawn" || a.DecidedBy != nil || a.DecidedAt == nil {
+		t.Errorf("approval = %+v, want withdrawn by nobody, with a time", a)
+	}
+	due, err := store.ExpiredApprovals(ctx, h.pool, h.clock.Now())
+	if err != nil || len(due) != 0 {
+		t.Errorf("ExpiredApprovals = %v, %v; want none for a cancelled run", due, err)
+	}
+	if open, err := store.OpenApprovals(ctx, h.pool); err != nil || len(open) != 0 {
+		t.Errorf("OpenApprovals = %v, %v; want none", open, err)
+	}
+}
+
+// setApprovalExpiry moves the approval row's expiry to requested_at + after,
+// away from the job's own expiry.
+func (h *harness) setApprovalExpiry(runID int64, after time.Duration) {
+	h.t.Helper()
+	_, err := h.pool.Exec(context.Background(),
+		`UPDATE approvals SET expires_at = requested_at + $2::bigint * interval '1 microsecond' WHERE run_id = $1`, runID, after.Microseconds())
+	if err != nil {
+		h.t.Fatalf("set approval expiry: %v", err)
+	}
+}
+
+// The approval row's expires_at is the authority (P4), not the job's expiry
+// measured from the state change.
+func TestExpiryFollowsTheApprovalRow(t *testing.T) {
+	h := newHarness(t, harnessOptions{approvalFor: []string{testLabel}, approvalExpiry: 2 * time.Hour})
+	ctx := context.Background()
+	sooner := h.waitingRun(h.starter, "s1")
+	later := h.waitingRun(h.starter, "s2")
+	h.setApprovalExpiry(sooner.ID, 10*time.Minute)
+	h.setApprovalExpiry(later.ID, 5*time.Hour)
+
+	h.clock.Advance(11 * time.Minute)
+	for _, id := range []int64{sooner.ID, later.ID} {
+		if err := h.eng.Expire(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := h.expectState(sooner.ID, "expired") // the job says 2h, the row says 10m
+	if !strings.Contains(got.EndReason, "10m0s") {
+		t.Errorf("end reason %q, want the row's 10m0s window", got.EndReason)
+	}
+	h.expectState(later.ID, "waiting_approval")
+
+	h.clock.Advance(3 * time.Hour) // past the job's 2h, still before the row's 5h
+	if err := h.eng.Expire(ctx, later.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.expectState(later.ID, "waiting_approval")
+
+	h.clock.Advance(2 * time.Hour)
+	if err := h.eng.Expire(ctx, later.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.expectState(later.ID, "expired")
+}
+
+func TestLoopFollowsTheApprovalRow(t *testing.T) {
+	h := newHarness(t, harnessOptions{approvalFor: []string{testLabel}, approvalExpiry: 2 * time.Hour})
+	sooner := h.waitingRun(h.starter, "s1")
+	later := h.waitingRun(h.starter, "s2")
+	h.setApprovalExpiry(sooner.ID, 10*time.Minute)
+	h.setApprovalExpiry(later.ID, 5*time.Hour)
+	h.startLoop(nil, 20*time.Millisecond, nil)
+
+	h.clock.Advance(11 * time.Minute)
+	h.waitRunState(sooner.ID, "expired")
+	h.clock.Advance(3 * time.Hour)
+	time.Sleep(200 * time.Millisecond) // several ticks
+	h.expectState(later.ID, "waiting_approval")
+	h.clock.Advance(2 * time.Hour)
+	h.waitRunState(later.ID, "expired")
 }

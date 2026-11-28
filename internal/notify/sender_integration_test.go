@@ -515,6 +515,79 @@ func TestShutdownDuringAPostNeitherCountsNorFails(t *testing.T) {
 	}
 }
 
+func TestRowWhoseLeaseRanOutIsNotPosted(t *testing.T) {
+	t.Parallel()
+	f := newSenderFixture(t)
+	run1, run2 := f.runs.newRun(t), f.runs.newRun(t)
+	enqueue(t, f.pool, run1, "started", f.clock.now())
+	enqueue(t, f.pool, run2, "started", f.clock.now())
+	row2 := rowsOfRun(t, f.pool, run2)[0].ID
+
+	// On its first post this sender stalls past its two-minute lease. A second
+	// sender then claims the rows, including run 2's, and delivers run 2's row.
+	stalled := false
+	f.slack.set(func(post) (int, string, string) {
+		if !stalled {
+			stalled = true
+			f.clock.advance(2*time.Minute + time.Second)
+			claimed, err := store.ClaimDueNotifications(context.Background(), f.pool, f.clock.now(), 10)
+			if err != nil {
+				t.Errorf("second sender's claim: %v", err)
+			}
+			found := false
+			for _, n := range claimed {
+				found = found || n.ID == row2
+			}
+			if !found {
+				t.Errorf("second sender's claim = %+v, want run 2's row %d", claimed, row2)
+			}
+			if err := store.MarkNotificationSent(context.Background(), f.pool, row2, f.clock.now()); err != nil {
+				t.Errorf("second sender's MarkNotificationSent: %v", err)
+			}
+		}
+		return 200, "", `{"ok":true}`
+	})
+
+	f.deliver(t)
+	if got := f.slack.texts(); len(got) != 1 || got[0] != fmt.Sprintf("started@%d", run1) {
+		t.Fatalf("posts = %v, want exactly run 1's started message", got)
+	}
+}
+
+func TestShutdownAfterASuccessfulPostKeepsItSent(t *testing.T) {
+	t.Parallel()
+	f := newSenderFixture(t)
+	run := f.runs.newRun(t)
+	enqueue(t, f.pool, run, "started", f.clock.now())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var posts int
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		posts++
+		// Shutdown begins while the post is in flight; Slack still answers ok.
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+		}, nil
+	})}
+	send := NewSender(f.pool, NewSlack("http://slack.invalid", client), func(context.Context) (string, error) {
+		return senderToken, nil
+	}, f.clock.now, nil)
+	_, _, _, _ = send.DeliverDue(ctx)
+
+	if row := rowsOfRun(t, f.pool, run)[0]; row.State != "sent" {
+		t.Fatalf("row %+v after a successful post and shutdown, want sent", row)
+	}
+	if _, _, _, err := send.DeliverDue(context.Background()); err != nil {
+		t.Fatalf("second DeliverDue: %v", err)
+	}
+	if posts != 1 {
+		t.Fatalf("posts = %d, want 1: the sent message must not be posted again", posts)
+	}
+}
+
 func TestStaleLeaseCannotOverwriteARow(t *testing.T) {
 	t.Parallel()
 	f := newSenderFixture(t)

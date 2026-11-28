@@ -124,6 +124,9 @@ function asApiError(caught: unknown): ApiError {
   return caught instanceof ApiError ? caught : new ApiError(0, 'network', 'Something went wrong. Try again.')
 }
 
+/** The server said no (4xx): retrying will not help. No answer, a timeout or a 5xx (a proxy during a restart) will pass. */
+const isRefusal = (error: ApiError) => error.status >= 400 && error.status < 500
+
 /** The body of a stream event, with the nulls Go sends for empty lists turned into []. */
 function parse<T>(event: Event): T | undefined {
   try {
@@ -186,7 +189,12 @@ export function useRunLive(runId: number, opts: { logs: boolean }): RunLive {
         const run = await fetchRun()
         if (!cancelled) dispatch({ type: 'detail', run, detailOnly })
       } catch (caught) {
-        if (!cancelled && asApiError(caught).status !== 0) dispatch({ type: 'error', error: asApiError(caught) })
+        const error = asApiError(caught)
+        if (cancelled) return
+        // A refusal ends the page's view of the run; anything else (network, 5xx) keeps the stream and the run
+        // as they are, and the next state change tries the refresh again.
+        if (isRefusal(error)) dispatch({ type: 'error', error })
+        else knownState = undefined
       }
     }
     reloadRef.current = () => void refreshDetail(false)
@@ -273,8 +281,8 @@ export function useRunLive(runId: number, opts: { logs: boolean }): RunLive {
         } catch (caught) {
           const error = asApiError(caught)
           if (cancelled) return
-          if (error.status === 0) scheduleReopen()
-          else dispatch({ type: 'error', error })
+          if (isRefusal(error)) dispatch({ type: 'error', error })
+          else scheduleReopen()
           return
         }
         if (cancelled) return
@@ -290,8 +298,8 @@ export function useRunLive(runId: number, opts: { logs: boolean }): RunLive {
           } catch (caught) {
             const error = asApiError(caught)
             if (cancelled) return
-            if (error.status === 0) scheduleReopen()
-            else dispatch({ type: 'error', error })
+            if (isRefusal(error)) dispatch({ type: 'error', error })
+            else scheduleReopen()
             return
           }
         }

@@ -190,6 +190,33 @@ describe('useRunLive on an active run', () => {
     expect(eventSources.all).toHaveLength(1)
   })
 
+  it('keeps retrying through a 503 from a proxy and goes live again', async () => {
+    const { result } = await watchActiveRun(runIds.running)
+    const first = eventSources.last()!
+    act(() => first.open())
+    failNext('GET', `/api/v1/runs/${runIds.running}`, 503, 'unavailable')
+    act(() => first.fail())
+    await waitFor(() => expect(eventSources.all).toHaveLength(2), { timeout: 10_000 })
+    expect(result.current.error).toBeUndefined()
+    act(() => eventSources.last()!.open())
+    expect(result.current.connection).toBe('live')
+  }, 15_000)
+
+  it('keeps the stream and the run when refreshing the detail fails, and refreshes on the next change', async () => {
+    const { result } = await watchActiveRun(runIds.waitingApproval)
+    const source = eventSources.last()!
+    const stored = mockState().runs.find((candidate) => candidate.id === runIds.waitingApproval)!
+    stored.approval = { ...stored.approval!, decision: 'approved' }
+    failNext('GET', `/api/v1/runs/${runIds.waitingApproval}`, 503, 'unavailable')
+    act(() => source.emit('state', stateEventOf(runIds.waitingApproval, { state: 'queued' })))
+    await waitFor(() => expect(requests.filter((r) => r.path === `/api/v1/runs/${runIds.waitingApproval}` && r.status === 503)).toHaveLength(1))
+    expect(result.current.error).toBeUndefined()
+    expect(result.current.connection).toBe('live')
+    expect(result.current.run?.state).toBe('queued')
+    act(() => source.emit('state', stateEventOf(runIds.waitingApproval, { state: 'queued', wait_reason: 'next' })))
+    await waitFor(() => expect(result.current.run?.approval?.decision).toBe('approved'))
+  })
+
   it('drops a cursor the server refused at once and reads the log again before reopening', async () => {
     mockState().logs[runIds.running] = [line(0, 1, 'held'), line(10401, 1, 'also held')]
     const { result } = await watchActiveRun(runIds.running)

@@ -266,7 +266,7 @@ Then plan and start a run from the web application or `POST /api/v1/jobs/{id}/ru
 
 An environment whose name contains `stale` fails the revalidation just before the steps run, so the run ends `invalidated` without changing anything. Every run keeps its live log (`GET /api/v1/runs/{id}/events`) and its stored log (`GET /api/v1/runs/{id}/log`).
 
-The Compose "app" profile runs the runner this way only under `make smoke`, through `YUMDRAKE_RUNNER_ENV` and `YUMDRAKE_RUNNER_FAKE_STEPS` (default `prod` and `false`).
+The Compose "app" profile runs the runner this way only under `make smoke`, through `YUMDRAKE_RUNNER_ENV` and `YUMDRAKE_RUNNER_FAKE_STEPS` (default `dev` and `false`).
 
 ## Exit codes
 

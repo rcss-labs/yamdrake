@@ -208,8 +208,8 @@ func (l *loader) loadCommon() Common {
 	c.ShutdownTimeout = l.duration("YUMDRAKE_SHUTDOWN_TIMEOUT", "20s")
 	c.StartupTimeout = l.duration("YUMDRAKE_STARTUP_TIMEOUT", "60s")
 	c.SecretSettings = l.loadSecretSettings()
-	if c.LocalSecretKey.Reveal() == mustDecodeDemoKey() && c.Env != "dev" {
-		l.fail("YUMDRAKE_LOCAL_SECRET_KEY", "is the public demo key; it is allowed only with YUMDRAKE_ENV=dev")
+	if isPublicSecretKey(c.LocalSecretKey.Reveal()) && c.Env != "dev" {
+		l.fail("YUMDRAKE_LOCAL_SECRET_KEY", "is a public key from the repository; it is allowed only with YUMDRAKE_ENV=dev")
 	}
 
 	c.AWS.EndpointURL = l.getenv("YUMDRAKE_AWS_ENDPOINT_URL")

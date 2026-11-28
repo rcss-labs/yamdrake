@@ -24,12 +24,31 @@ const (
 // the base64 of "yumdrake-demo-key-not-a-secret!!".
 const DemoSecretKey = "eXVtZHJha2UtZGVtby1rZXktbm90LWEtc2VjcmV0ISE=" //nolint:gosec // public demo key
 
+// DevComposeSecretKey is the local secret key of the root compose.yaml dev
+// stack. It is PUBLIC for the same reason as DemoSecretKey and is refused the
+// same way. It is the base64 of "dev-only-insecure-key-32-bytes!!".
+const DevComposeSecretKey = "ZGV2LW9ubHktaW5zZWN1cmUta2V5LTMyLWJ5dGVzISE=" //nolint:gosec // public dev key
+
 func mustDecodeDemoKey() string {
 	key, err := base64.StdEncoding.DecodeString(DemoSecretKey)
 	if err != nil {
 		panic("config: DemoSecretKey is not base64")
 	}
 	return string(key)
+}
+
+func mustDecodeDevComposeKey() string {
+	key, err := base64.StdEncoding.DecodeString(DevComposeSecretKey)
+	if err != nil {
+		panic("config: DevComposeSecretKey is not base64")
+	}
+	return string(key)
+}
+
+// isPublicSecretKey reports whether the decoded key is one that is committed
+// to the repository.
+func isPublicSecretKey(key string) bool {
+	return key == mustDecodeDemoKey() || key == mustDecodeDevComposeKey()
 }
 
 // Secret holds a sensitive value. It prints as REDACTED through fmt, slog and

@@ -1,0 +1,26 @@
+:root,
+body {
+  --bg: #F6F7F8;
+  --raised: #EEF0F2;
+  --line: rgba(23,26,31,.10);
+  --line2: rgba(23,26,31,.18);
+  --ink: #171A1F;
+  --ink2: #4A5160;
+  --ink3: #69707D;
+  --accent: #1F5FD1;
+  --ok: #1E9E5A;
+  --ok-t: #0F6B3A;
+  --ok-b: #E3F3EA;
+  --bad: #D03A26;
+  --bad-t: #A32012;
+  --bad-b: #FBE7E3;
+  --run: #2A6BE0;
+  --run-t: #1A4FB0;
+  --run-b: #E4ECFB;
+  --wait: #C98200;
+  --wait-t: #7A4A00;
+  --wait-b: #FBEFD5;
+  --mute: #9AA1AC;
+  --con: #14171C;
+  --ease: cubic-bezier(.22,1,.36,1);
+}

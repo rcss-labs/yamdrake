@@ -198,6 +198,10 @@ type Service struct {
 	// shared health server: extra routes and background loops.
 	// The Valkey client is open and owned by Run.
 	Extend func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (Extension, error)
+	// Web, when set, answers every path the health handler and the extension
+	// do not claim (the orchestrator serves the web application this way).
+	// /healthz, /readyz and the API prefixes never reach it.
+	Web http.Handler
 }
 
 // Extension is what a service adds to the health server.
@@ -269,15 +273,7 @@ func Run(ctx context.Context, svc Service, stdout io.Writer) int {
 		[]health.Check{PostgresCheck(pool, svc.Common.DatabaseURL), ValkeyCheck(client)},
 		health.WithLogger(log),
 	)
-	handler := http.Handler(healthHandler)
-	if len(ext.Handlers) > 0 {
-		mux := http.NewServeMux()
-		mux.Handle("/", healthHandler)
-		for pattern, extra := range ext.Handlers {
-			mux.Handle(pattern, extra)
-		}
-		handler = mux
-	}
+	handler := serviceHandler(healthHandler, ext, svc.Web)
 
 	background, stopBackground := context.WithCancel(ctx)
 	var running sync.WaitGroup
@@ -331,4 +327,35 @@ func Healthcheck(ctx context.Context, getenv func(string) string, addrVar, defau
 		return ExitFailure
 	}
 	return ExitOK
+}
+
+// webReservedPrefixes never reach the web handler: an unknown path under them
+// gets the health handler's 404 instead of index.html.
+var webReservedPrefixes = []string{"/api/", "/saml/"}
+
+// serviceHandler assembles the service's mux. The extension's handlers claim
+// their patterns; with a web handler, /healthz and /readyz go to the health
+// handler and every other path goes to web. Without one, the health handler
+// keeps every unclaimed path.
+func serviceHandler(healthHandler http.Handler, ext Extension, web http.Handler) http.Handler {
+	if len(ext.Handlers) == 0 && web == nil {
+		return healthHandler
+	}
+	mux := http.NewServeMux()
+	for pattern, extra := range ext.Handlers {
+		mux.Handle(pattern, extra)
+	}
+	if web == nil {
+		mux.Handle("/", healthHandler)
+		return mux
+	}
+	mux.Handle("/healthz", healthHandler)
+	mux.Handle("/readyz", healthHandler)
+	for _, prefix := range webReservedPrefixes {
+		if _, claimed := ext.Handlers[prefix]; !claimed {
+			mux.Handle(prefix, healthHandler)
+		}
+	}
+	mux.Handle("/", web)
+	return mux
 }

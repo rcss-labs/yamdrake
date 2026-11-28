@@ -100,6 +100,8 @@ var notAListResponse = map[string]bool{
 	"GET /api/v1/admin/idp-mappings/{idpGroup}": true,
 	// ssoSettingsView holds only strings and a bool: no slice fields.
 	"GET /api/v1/admin/sso": true,
+	// sourceRequest holds only three strings.
+	"GET /api/v1/admin/inventory-source": true,
 }
 
 // Every list a route returns is [] when empty, never null, on an empty
@@ -159,8 +161,8 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 		listed[r.pattern] = true
 	}
 	populatedOnly := []listRoute{
-		list("GET /api/v1/inventory/services/{name}", "/api/v1/inventory/services/orders", reflect.TypeFor[spec.Service]()),
-		list("GET /api/v1/inventory/services/{name}", "/api/v1/inventory/services/backend-api", reflect.TypeFor[spec.Service]()),
+		list("GET /api/v1/inventory/services/{name}", "/api/v1/inventory/services/orders", reflect.TypeFor[serviceDetail]()),
+		list("GET /api/v1/inventory/services/{name}", "/api/v1/inventory/services/backend-api", reflect.TypeFor[serviceDetail]()),
 	}
 	for _, r := range populatedOnly {
 		listed[r.pattern] = true

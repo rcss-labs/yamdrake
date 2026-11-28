@@ -1,0 +1,86 @@
+.groups-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.groups-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.groups-card h2,
+.groups-mappings h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.groups-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.groups-card-head h2 {
+  flex: 1 1 auto;
+}
+.groups-meta {
+  color: var(--ink3);
+  font-size: 13px;
+}
+.groups-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.groups-switch input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ink);
+}
+.groups-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+.groups-confirm {
+  display: inline-flex;
+  gap: 8px;
+}
+.groups-inline-form,
+.groups-grant-form,
+.groups-mapping-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.groups-grant-form {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.groups-mapping-form {
+  padding: 16px 20px 20px;
+  border-top: 1px solid var(--line);
+}
+.groups-hint {
+  margin: 0;
+  color: var(--ink3);
+  font-size: 13px;
+}
+.groups-grant-form .ui-note {
+  flex-basis: 100%;
+}
+.groups-mappings-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 20px 20px 12px;
+}
+.groups-mappings > .ui-note {
+  margin: 0 20px 20px;
+}
+.groups-card > .ui-note {
+  margin: 0;
+}

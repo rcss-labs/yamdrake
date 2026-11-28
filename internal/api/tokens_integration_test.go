@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -99,6 +100,15 @@ func (h *harness) confirmDevice(sessionID, userCode string) *httptest.ResponseRe
 }
 
 var userCodePattern = regexp.MustCompile(`^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$`)
+
+func TestDeviceLoginVerifyURLOpensConfirmPage(t *testing.T) {
+	h := newDeviceHarness(t)
+	start := h.startDeviceLogin()
+	want := publicURL + "/cli/confirm?code=" + url.QueryEscape(start["user_code"].(string))
+	if got, _ := start["verify_url"].(string); got != want {
+		t.Errorf("verify_url = %q, want %q (the page the web application serves)", got, want)
+	}
+}
 
 func TestDeviceLoginHappyPath(t *testing.T) {
 	h := newDeviceHarness(t)

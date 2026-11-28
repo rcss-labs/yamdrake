@@ -74,6 +74,9 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if haveActive && len(active.Sources) == 0 && e.firstBackfill("inventory:"+active.Commit) {
+		e.backfillSources(ctx, source, src, active)
+	}
 	// A nil CheckedAt means the source changed since the last check (the store
 	// resets the status then), so the same head must be read again.
 	sourceChecked := status.CheckedAt != nil
@@ -90,7 +93,7 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 		return store.SaveInventoryStatus(ctx, e.pool, status)
 	}
 
-	inventory, problems, err := e.readInventory(ctx, source, src, head, fail)
+	inventory, sources, problems, err := e.readInventory(ctx, source, src, head, fail)
 	if err != nil {
 		return err
 	}
@@ -128,7 +131,7 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 			return err
 		}
 	}
-	if _, err := store.ActivateSnapshot(ctx, tx, head, encoded, at); err != nil {
+	if _, err := store.ActivateSnapshot(ctx, tx, head, encoded, sources, at); err != nil {
 		return err
 	}
 	if err := e.revalidateJobs(ctx, tx, inventory, at); err != nil {
@@ -144,6 +147,29 @@ func (e *Engine) syncInventory(ctx context.Context) error {
 	return nil
 }
 
+// backfillSources gives a snapshot stored before the texts were kept its file
+// texts. It is best effort: any failure is logged and the sync goes on. The
+// texts are read at the snapshot's own commit and used only when they build
+// the very inventory that is stored, so text and parsed form match.
+func (e *Engine) backfillSources(ctx context.Context, source Source, src store.InventorySource, active store.Snapshot) {
+	// readInventory reports read failures through this callback; here they only
+	// end the attempt, nothing is recorded as a sync error.
+	skip := func(what string, err error, _ ...any) error { return fmt.Errorf("%s: %w", what, err) }
+	inventory, sources, problems, err := e.readInventory(ctx, source, src, active.Commit, skip)
+	if err != nil || len(problems) > 0 {
+		e.log.Warn("skipped filling inventory file texts", "commit", active.Commit, "error", fmt.Sprint(err), "problems", len(problems))
+		return
+	}
+	encoded, err := json.Marshal(inventory)
+	if err != nil || !sameJSON(active.Inventory, encoded) {
+		e.log.Warn("skipped filling inventory file texts: files differ from the stored inventory", "commit", active.Commit)
+		return
+	}
+	if err := store.FillSnapshotSources(ctx, e.pool, active.Commit, sources); err != nil {
+		e.log.Warn("could not fill inventory file texts", "commit", active.Commit, "error", err.Error())
+	}
+}
+
 // sameJSON reports whether two JSON documents have the same content,
 // regardless of formatting (PostgreSQL normalises jsonb).
 func sameJSON(a, b []byte) bool {
@@ -155,10 +181,11 @@ func sameJSON(a, b []byte) bool {
 }
 
 // readInventory reads and checks every inventory file at commit. The error is
-// a source error; problems are definitions errors. File names in problems are
+// a source error; problems are definitions errors. sources maps each file read
+// to its text. File names in problems are
 // relative to the inventory path (for example services/orders.yaml).
 func (e *Engine) readInventory(ctx context.Context, source Source, src store.InventorySource, commit string,
-	fail func(what string, err error, attrs ...any) error) (spec.Inventory, spec.Problems, error) {
+	fail func(what string, err error, attrs ...any) error) (spec.Inventory, map[string]string, spec.Problems, error) {
 	dir := strings.Trim(strings.TrimSpace(src.Path), "/")
 	if dir == "." {
 		dir = ""
@@ -175,7 +202,7 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 		files, err = nil, nil
 	}
 	if err != nil {
-		return spec.Inventory{}, nil, fail("list inventory files", err, "commit", commit)
+		return spec.Inventory{}, nil, nil, fail("list inventory files", err, "commit", commit)
 	}
 
 	var problems spec.Problems
@@ -198,12 +225,15 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 		}
 	}
 
+	// The text of every file read, kept with the snapshot built from it.
+	sources := map[string]string{}
 	var environments []spec.Environment
 	if haveEnvironments {
 		data, err := source.ReadFile(ctx, src.Repo, commit, prefix+environmentsFile)
 		if err != nil {
-			return spec.Inventory{}, nil, fail("read inventory file", err, "commit", commit, "file", environmentsFile)
+			return spec.Inventory{}, nil, nil, fail("read inventory file", err, "commit", commit, "file", environmentsFile)
 		}
+		sources[environmentsFile] = string(data)
 		var found spec.Problems
 		environments, found = spec.ParseEnvironments(environmentsFile, data)
 		problems = append(problems, found...)
@@ -216,8 +246,9 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 	for _, relative := range serviceFiles {
 		data, err := source.ReadFile(ctx, src.Repo, commit, prefix+relative)
 		if err != nil {
-			return spec.Inventory{}, nil, fail("read inventory file", err, "commit", commit, "file", relative)
+			return spec.Inventory{}, nil, nil, fail("read inventory file", err, "commit", commit, "file", relative)
 		}
+		sources[relative] = string(data)
 		service, found := spec.ParseService(relative, data)
 		problems = append(problems, found...)
 		services = append(services, service)
@@ -228,7 +259,7 @@ func (e *Engine) readInventory(ctx context.Context, source Source, src store.Inv
 		var cross spec.Problems
 		var inventory spec.Inventory
 		inventory, cross = spec.BuildInventory(environmentsFile, environments, services)
-		return inventory, cross, nil
+		return inventory, sources, cross, nil
 	}
-	return spec.Inventory{}, problems.Sorted(), nil
+	return spec.Inventory{}, nil, problems.Sorted(), nil
 }

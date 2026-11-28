@@ -1,0 +1,38 @@
+.ui-input,
+.ui-select {
+  height: 36px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: Canvas;
+  font-weight: 400;
+  font-size: 14px;
+  color: var(--ink);
+}
+.ui-input:disabled,
+.ui-select:disabled {
+  background: var(--raised);
+  color: var(--ink3);
+  cursor: not-allowed;
+}
+.ui-input[aria-invalid='true'],
+.ui-select[aria-invalid='true'] {
+  border-color: var(--bad);
+}
+.ui-select-sm {
+  height: 30px;
+  font-size: 13px;
+  padding: 0 6px;
+}
+.ui-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  cursor: pointer;
+}
+.ui-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ink);
+}

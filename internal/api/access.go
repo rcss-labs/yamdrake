@@ -81,6 +81,11 @@ func guardAdmins(ctx context.Context, tx pgx.Tx, change func() error) error {
 type groupRef struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
+	// Source is "manual" when an administrator put the user in the group and
+	// "idp" when only the identity provider did. A user in a group both ways
+	// reports "manual": that membership survives removal at the provider, and
+	// it is the one a PATCH of group_ids can change.
+	Source string `json:"source"`
 }
 
 type groupView struct {
@@ -114,10 +119,22 @@ func (s *server) userView(ctx context.Context, u store.User) (userResponse, erro
 	if err != nil {
 		return userResponse{}, err
 	}
+	manualIDs, err := store.ManualGroupIDs(ctx, s.Pool, u.ID)
+	if err != nil {
+		return userResponse{}, err
+	}
+	manual := make(map[int64]bool, len(manualIDs))
+	for _, id := range manualIDs {
+		manual[id] = true
+	}
 	out := userResponse{ID: u.ID, Email: u.Email, Name: u.Name, Source: u.Source, Disabled: u.Disabled,
 		LastSignInAt: u.LastLoginAt, CreatedAt: u.CreatedAt, Groups: []groupRef{}}
 	for _, g := range groups {
-		out.Groups = append(out.Groups, groupRef{ID: g.ID, Name: g.Name})
+		source := "idp"
+		if manual[g.ID] {
+			source = "manual"
+		}
+		out.Groups = append(out.Groups, groupRef{ID: g.ID, Name: g.Name, Source: source})
 	}
 	return out, nil
 }
@@ -619,10 +636,15 @@ func (s *server) listAudit(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(parsed, maxAuditLimit)
 	}
-	entries, err := store.ListAudit(r.Context(), s.Pool, before, limit)
+	// One row more than asked for tells whether an older page exists.
+	entries, err := store.ListAudit(r.Context(), s.Pool, before, limit+1)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
+	}
+	hasOlder := len(entries) > limit
+	if hasOlder {
+		entries = entries[:limit]
 	}
 	out := make([]auditEntryResponse, 0, len(entries))
 	for _, e := range entries {
@@ -631,7 +653,7 @@ func (s *server) listAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	// next_before is null on the last page.
 	var nextBefore *int64
-	if len(entries) == limit {
+	if hasOlder {
 		nextBefore = &entries[len(entries)-1].ID
 	}
 	body := map[string]any{"entries": out, "next_before": nextBefore}

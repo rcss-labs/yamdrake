@@ -248,7 +248,7 @@ func (s *server) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 			s.valkeyFailed(w, "store device user code", err)
 			return
 		}
-		verifyURL := strings.TrimRight(s.PublicURL, "/") + "/device?user_code=" + url.QueryEscape(userCode)
+		verifyURL := strings.TrimRight(s.PublicURL, "/") + "/cli/confirm?code=" + url.QueryEscape(userCode)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"device_code": deviceCode, "user_code": userCode, "verify_url": verifyURL,
 			"interval": s.pollSeconds(), "expires_in": int64(deviceTTL / time.Second),

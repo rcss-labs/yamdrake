@@ -1,0 +1,36 @@
+.session-note {
+  max-width: 480px;
+  margin: 64px auto;
+  padding: 0 16px;
+  color: var(--ink2);
+}
+
+.session-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  color: var(--ink);
+}
+
+.session-error p {
+  margin: 0;
+}
+
+.session-retry {
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: var(--bg);
+  font-weight: 500;
+}
+
+.session-retry:hover:not(:disabled) {
+  background: var(--raised);
+}
+
+.session-retry:disabled {
+  color: var(--ink3);
+  cursor: not-allowed;
+}

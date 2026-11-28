@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -838,6 +839,9 @@ func TestDevFallsBackToDevBranchAndSaysSo(t *testing.T) {
 	plan, _ := s.plan(id)
 	web := plan.Services[plan.service(t, "web")]
 	api := plan.Services[plan.service(t, "api")]
+	if len(web.Config) == 0 || len(api.Config) == 0 {
+		t.Fatalf("plan has no config items: web %d, api %d", len(web.Config), len(api.Config))
+	}
 	for _, item := range []struct {
 		name   string
 		branch string
@@ -892,6 +896,11 @@ func TestOrchestratorNeverSeesConfigContents(t *testing.T) {
 	for _, e := range s.envs {
 		configBuckets[e.srcBucket], configBuckets[e.dstBucket] = true, true
 	}
+	proxyURL, err := url.Parse(s.proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyHostname := proxyURL.Hostname()
 	for _, r := range requests {
 		if r.Service == "ecr" && r.Operation == "DescribeImages" {
 			describes++
@@ -899,12 +908,50 @@ func TestOrchestratorNeverSeesConfigContents(t *testing.T) {
 		if r.Service != "s3" {
 			continue
 		}
-		bucket, key, _ := strings.Cut(strings.TrimPrefix(r.Path, "/"), "/")
-		if configBuckets[bucket] && key != "" {
+		if objectOnBucket(r, proxyHostname, configBuckets) {
 			t.Errorf("the orchestrator made S3 %s (%s %s) on a config or artifact bucket", r.Operation, r.Method, r.Path)
 		}
 	}
 	if describes == 0 {
 		t.Error("the proxy recorded no ECR DescribeImages call: the orchestrator's AWS traffic did not go through it")
+	}
+}
+
+// objectOnBucket reports whether a recorded S3 request addresses an object in one
+// of the buckets, whether it was path-style or virtual-host.
+func objectOnBucket(r awstest.Request, proxyHostname string, buckets map[string]bool) bool {
+	path := strings.TrimPrefix(r.Path, "/")
+	hostname := r.Host
+	if host, _, err := net.SplitHostPort(r.Host); err == nil {
+		hostname = host
+	}
+	var bucket, key string
+	if hostname != proxyHostname {
+		bucket = strings.TrimSuffix(hostname, "."+proxyHostname)
+		key = path
+	} else {
+		bucket, key, _ = strings.Cut(path, "/")
+	}
+	return r.Service == "s3" && buckets[bucket] && key != ""
+}
+
+func TestObjectOnBucketMatcher(t *testing.T) {
+	cases := []struct {
+		name string
+		req  awstest.Request
+		want bool
+	}{
+		{"path-style object", awstest.Request{Service: "s3", Path: "/b/k", Host: "127.0.0.1:1234"}, true},
+		{"virtual-host object", awstest.Request{Service: "s3", Path: "/k", Host: "b.127.0.0.1:1234"}, true},
+		{"path-style bucket listing", awstest.Request{Service: "s3", Path: "/b", Host: "127.0.0.1:1234"}, false},
+		{"other bucket", awstest.Request{Service: "s3", Path: "/x/k", Host: "127.0.0.1:1234"}, false},
+		{"virtual-host bucket listing", awstest.Request{Service: "s3", Path: "/", Host: "b.127.0.0.1:1234"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := objectOnBucket(c.req, "127.0.0.1", map[string]bool{"b": true}); got != c.want {
+				t.Errorf("objectOnBucket(%s %q, host %q) = %v, want %v", c.req.Service, c.req.Path, c.req.Host, got, c.want)
+			}
+		})
 	}
 }

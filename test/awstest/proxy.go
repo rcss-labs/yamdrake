@@ -26,7 +26,9 @@ type Request struct {
 	// Method and Path are the HTTP method and URL path as the caller sent
 	// them; for path-style S3 the path names the bucket and the key.
 	Method, Path string
-	Body         []byte
+	// Host is the Host header the caller sent: the bucket for virtual-host S3 calls.
+	Host string
+	Body []byte
 }
 
 type rule struct {
@@ -134,7 +136,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	service, operation, account := classify(r, body)
 	p.mu.Lock()
-	p.requests = append(p.requests, Request{Service: service, Operation: operation, Account: account, Method: r.Method, Path: r.URL.Path, Body: body})
+	p.requests = append(p.requests, Request{Service: service, Operation: operation, Account: account, Method: r.Method, Path: r.URL.Path, Host: r.Host, Body: body})
 	p.mu.Unlock()
 
 	if f := p.take(p.fails, service, operation); f != nil {

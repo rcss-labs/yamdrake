@@ -82,6 +82,53 @@ jobs:
       - run: make test-integration
       - run: make test-e2e
 
+  floci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    # Same services and image tags as the integration job (make test-floci also
+    # runs the integration tests).
+    services:
+      postgres:
+        image: postgres:17.12-alpine
+        env:
+          POSTGRES_DB: yumdrake
+          POSTGRES_USER: yumdrake
+          POSTGRES_PASSWORD: yumdrake
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yumdrake"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      valkey:
+        image: valkey/valkey:8.1.12
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      YUMDRAKE_TEST_DATABASE_URL: postgres://yumdrake:yumdrake@localhost:5432/yumdrake?sslmode=disable
+      YUMDRAKE_TEST_VALKEY_ADDR: localhost:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # Floci (the local AWS emulator) needs the Docker socket for ECS and ECR;
+      # only the floci service starts, postgres and valkey are the services above.
+      - name: Start Floci
+        run: docker compose up -d --wait floci
+      - run: make test-floci
+      - name: Show Floci logs on failure
+        if: failure()
+        run: docker compose logs floci
+
   smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

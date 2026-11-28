@@ -25,6 +25,23 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+  # One shared emulator for every worktree: start it only as
+  # `docker compose -p plan5 up -d --wait floci`. Host port 4566 is deliberately
+  # not published (another Floci may own it). ECS tasks and the ECR registry run
+  # as sibling containers through the Docker socket.
+  floci:
+    image: floci/floci:2.5.0
+    ports:
+      - "127.0.0.1:4577:4566"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      FLOCI_HOSTNAME: floci
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
   orchestrator:
     profiles: [app]
     image: yumdrake-orchestrator:dev

@@ -10,7 +10,7 @@ BINARY_PACKAGES := orchestrator runner
 # Compose builds read VERSION and COMMIT from the environment (see compose.yaml).
 export VERSION COMMIT
 
-.PHONY: help build lint test dev-up dev-down test-integration test-e2e images smoke web-install web-lint web-test web-build web-e2e
+.PHONY: help build lint test dev-up dev-down test-integration test-floci floci-clean test-e2e images smoke web-install web-lint web-test web-build web-e2e
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -42,8 +42,8 @@ lint: ## Check gofmt, go vet and golangci-lint
 test: ## Run unit tests with the race detector
 	go test -race ./...
 
-dev-up: ## Start local PostgreSQL and Valkey and wait until healthy
-	docker compose up -d --wait postgres valkey
+dev-up: ## Start local PostgreSQL, Valkey and Floci (local AWS) and wait until healthy
+	docker compose up -d --wait postgres valkey floci
 
 dev-down: ## Stop local services and delete their volumes
 	docker compose down -v
@@ -56,6 +56,16 @@ export YUMDRAKE_TEST_DATABASE_URL YUMDRAKE_TEST_VALKEY_ADDR
 
 test-integration: ## Run integration tests against the local services (see dev-up)
 	go test -race -tags integration ./...
+
+# Floci (the local AWS emulator) is published on 4577; 4566 is deliberately unused.
+YUMDRAKE_TEST_AWS_ENDPOINT ?= http://localhost:4577
+export YUMDRAKE_TEST_AWS_ENDPOINT
+
+test-floci: ## Run the integration and Floci tests (see dev-up; needs Docker for ECS and ECR)
+	go test -race -tags "integration floci" -timeout 10m ./...
+
+floci-clean: ## Remove the floci-aws-* containers that our Floci created (never another Floci's)
+	./scripts/floci-clean.sh
 
 test-e2e: ## Run the end-to-end tests (in-process orchestrator, fake GitHub) against the local services
 	go test -race -tags e2e -timeout 3m ./test/e2e/...

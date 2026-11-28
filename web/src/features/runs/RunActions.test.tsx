@@ -130,6 +130,19 @@ describe('permissions pick the buttons', () => {
     expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument()
   })
 
+  it('Start of a restore needs restore, not run', async () => {
+    moveStoredRun(runIds.planned, 'planned', { kind: 'restore' })
+    renderRun(runIds.planned, grantee(24, 'run'))
+    await screen.findByTestId('run-lead')
+    expect(screen.queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
+  })
+
+  it('Start of a restore shows with restore alone', async () => {
+    moveStoredRun(runIds.planned, 'planned', { kind: 'restore' })
+    renderRun(runIds.planned, grantee(25, 'restore'))
+    expect(await actionNames()).toEqual(['Start'])
+  })
+
   it('the requester sees the reason instead of Approve and Reject', async () => {
     renderRun(runIds.waitingApproval, { ...jobManagerMe, grants: [...jobManagerMe.grants, { action: 'approve', label: '', environment: '', folder_id: 0 }] })
     expect(await screen.findByText('You started this run, so someone else has to approve it.')).toBeInTheDocument()

@@ -168,10 +168,9 @@ func summarizeRun(r store.Run) runSummaryView {
 		restoreOf = r.ParentRunID
 	}
 	return runSummaryView{
-		RestoreOf: restoreOf,
-		ID:        r.ID, Kind: r.Kind, JobSourceID: r.JobSourceID, JobID: r.JobID, Environment: r.Environment, Label: r.Label,
+		ID: r.ID, Kind: r.Kind, JobSourceID: r.JobSourceID, JobID: r.JobID, Environment: r.Environment, Label: r.Label,
 		State: r.State, WaitReason: r.WaitReason, EndReason: r.EndReason, ManifestID: r.ManifestID,
-		RequestedBy: r.RequestedBy, Via: r.Via, CreatedAt: r.CreatedAt, StateChangedAt: r.StateChangedAt,
+		RequestedBy: r.RequestedBy, Via: r.Via, RestoreOf: restoreOf, CreatedAt: r.CreatedAt, StateChangedAt: r.StateChangedAt,
 		StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
 	}
 }

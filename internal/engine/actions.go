@@ -218,9 +218,17 @@ func (e *Engine) record(ctx context.Context, tx pgx.Tx, p *auth.Principal, actio
 // needs one, otherwise it queues and tries to take its locks at once.
 func (e *Engine) Start(ctx context.Context, p auth.Principal, runID int64) error {
 	return e.inTx(ctx, runID, func(tx pgx.Tx, o *outcome) error {
-		run, err := e.lockedRunFor(ctx, tx, p, runID, auth.Run)
+		run, err := store.LockRun(ctx, tx, runID)
 		if err != nil {
 			return fmt.Errorf("start run %d: %w", runID, err)
+		}
+		// A restore goes through the restore permission, a deploy through run.
+		needed := auth.Run
+		if run.Kind == "restore" {
+			needed = auth.Restore
+		}
+		if !p.Can(needed, targetOf(run)) {
+			return fmt.Errorf("start run %d: %w", runID, ErrForbidden)
 		}
 		if run.State != "planned" {
 			return fmt.Errorf("start run %d: %w: it is %s", runID, ErrWrongState, run.State)

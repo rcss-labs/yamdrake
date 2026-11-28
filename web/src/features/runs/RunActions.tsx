@@ -98,7 +98,7 @@ export function RunActions({ run, reload }: RunActionsProps) {
   const buttons: { name: string; variant?: 'primary' | 'danger'; disabled?: boolean; onClick(): void }[] = []
   const state = run.state
   if (state === 'planned') {
-    if (mayRun && planReady) buttons.push({ name: 'Start', variant: 'primary', onClick: askOrStart })
+    if ((run.kind === 'restore' ? mayRestore : mayRun) && planReady) buttons.push({ name: 'Start', variant: 'primary', onClick: askOrStart })
     if (mayCancel) buttons.push({ name: 'Discard', onClick: () => setConfirming('discard') })
   }
   if (state === 'waiting_approval' && mayApprove) {

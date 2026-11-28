@@ -86,6 +86,12 @@ func (e *Engine) CreateRestore(ctx context.Context, p auth.Principal, sourceRunI
 		}
 	}
 
+	// A restore touches no ECR repository, so only the environment's account must be connected.
+	environment := spec.Environment{Name: source.Environment, Label: source.Label, AWSAccount: source.AWSAccount}
+	if err := e.checkAccountsConnected(ctx, environment, nil, spec.Inventory{}); err != nil {
+		return store.Run{}, err
+	}
+
 	var job spec.Job
 	if err := json.Unmarshal(source.JobSnapshot, &job); err != nil {
 		return store.Run{}, fmt.Errorf("restore run %d: decode its job: %w", sourceRunID, err)

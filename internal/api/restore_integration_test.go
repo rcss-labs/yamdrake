@@ -247,3 +247,23 @@ func TestRunSummaryServesRestoreOf(t *testing.T) {
 		}
 	}
 }
+
+func TestStartRestoreNeedsRestoreNotRun(t *testing.T) {
+	f := newRunFixture(t)
+	restorer := f.userWith("restorer", store.Grant{Action: "restore"})
+	runner := f.userWith("runner", store.Grant{Action: "run"})
+	code, created := f.post(restorer, runPath(f.finishedRun("failed"), "/restore"), map[string]any{})
+	if code != http.StatusCreated {
+		t.Fatalf("restore = %d %v", code, created)
+	}
+	id := int64(created["id"].(float64))
+	f.exec(`UPDATE runs SET state = 'planned' WHERE id = $1`, id)
+
+	if code, got := f.post(runner, runPath(id, "/start"), nil); code != http.StatusForbidden {
+		t.Fatalf("start of a restore with only run = %d %v, want 403", code, got)
+	}
+	f.wantRunState(t, id, "planned")
+	if code, got := f.post(restorer, runPath(id, "/start"), nil); code != http.StatusOK {
+		t.Fatalf("start of a restore with restore = %d %v, want 200", code, got)
+	}
+}

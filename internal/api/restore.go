@@ -1,6 +1,28 @@
 package api
 
-import "net/http"
+import (
+	"bytes"
+	"io"
+	"net/http"
+)
+
+// decodeOptionalBody is decodeBody for a request that may have no body at
+// all, whether it says so with a zero length or is chunked and empty.
+func decodeOptionalBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if r.Body == nil || r.Body == http.NoBody {
+		return true
+	}
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, codeInvalid, "request body is larger than 1 MB")
+		return false
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return true
+	}
+	r.Body = io.NopCloser(bytes.NewReader(data))
+	return decodeBody(w, r, dst)
+}
 
 // restoreRequest is the body of the restore endpoint. Every field is optional.
 type restoreRequest struct {
@@ -21,10 +43,8 @@ func (s *server) restoreRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req restoreRequest
-	if r.Body != nil && r.ContentLength != 0 {
-		if !decodeBody(w, r, &req) {
-			return
-		}
+	if !decodeOptionalBody(w, r, &req) {
+		return
 	}
 	run, err := s.Runs.CreateRestore(r.Context(), principal, id, req.Services, viaOf(principal))
 	if err != nil {
@@ -47,10 +67,8 @@ func (s *server) rerunFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct{}
-	if r.Body != nil && r.ContentLength != 0 {
-		if !decodeBody(w, r, &req) {
-			return
-		}
+	if !decodeOptionalBody(w, r, &req) {
+		return
 	}
 	run, err := s.Runs.CreateRerun(r.Context(), principal, id, viaOf(principal))
 	if err != nil {

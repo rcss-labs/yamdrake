@@ -389,3 +389,71 @@ func (h *harness) finishedRunWithSelection(sel Selection) store.Run {
 	h.endRun(run.ID, "partially_succeeded")
 	return h.run(run.ID)
 }
+
+// plannedRestore creates a restore of a finished run and lets it resolve, so it is planned.
+func (h *harness) plannedRestore() store.Run {
+	h.t.Helper()
+	source := h.finishedRun("succeeded", []manifest.Service{restoreService("s1")}, map[string]string{"s1": "update-service"})
+	restore, err := h.eng.CreateRestore(context.Background(), h.starter, source.ID, nil, "web")
+	if err != nil {
+		h.t.Fatalf("CreateRestore: %v", err)
+	}
+	h.advance(restore.ID)
+	restored := restoreService("s1")
+	restored.TargetTaskDefinition = restoreService("s1").PreviousTaskDefinition
+	m := manifest.Manifest{
+		RunID: restore.ID, RestoreOf: source.ID, Environment: testEnvironment, Label: testLabel, AWSAccount: testAWSAccount,
+		InventoryCommit: "inv-commit", JobCommit: "job-commit", Services: []manifest.Service{restored}, Checks: []manifest.Check{},
+	}
+	m.ID = manifest.Identity(m)
+	h.settleResolve(restore.ID, "succeeded", m)
+	h.advance(restore.ID)
+	return h.expectState(restore.ID, "planned")
+}
+
+func TestStartRestoreNeedsRestorePermission(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	ctx := context.Background()
+	restore := h.plannedRestore()
+
+	runOnly, restoreOnly := h.starter, h.starter
+	runOnly.Grants = []store.Grant{{Action: "run"}}
+	restoreOnly.Grants = []store.Grant{{Action: "restore"}}
+
+	if err := h.eng.Start(ctx, runOnly, restore.ID); !errors.Is(err, ErrForbidden) {
+		t.Errorf("Start of a restore by a person who may only run = %v, want ErrForbidden", err)
+	}
+	h.expectState(restore.ID, "planned")
+	if err := h.eng.Start(ctx, restoreOnly, restore.ID); err != nil {
+		t.Fatalf("Start of a restore by a person who may restore: %v", err)
+	}
+	if got := h.run(restore.ID).State; got == "planned" {
+		t.Errorf("restore is still planned after Start")
+	}
+}
+
+func TestStartDeployStillNeedsRunPermission(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	run := h.planned(h.starter, "s1")
+	restoreOnly := h.starter
+	restoreOnly.Grants = []store.Grant{{Action: "restore"}}
+	if err := h.eng.Start(context.Background(), restoreOnly, run.ID); !errors.Is(err, ErrForbidden) {
+		t.Errorf("Start of a deploy by a person who may only restore = %v, want ErrForbidden", err)
+	}
+}
+
+func TestCreateRestoreRefusesDisconnectedAccount(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	source := h.finishedRun("succeeded", []manifest.Service{restoreService("s1")}, map[string]string{"s1": "update-service"})
+	if _, err := h.pool.Exec(context.Background(), `DELETE FROM aws_accounts WHERE account_id = $1`, testAWSAccount); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+	_, err := h.eng.CreateRestore(context.Background(), h.starter, source.ID, nil, "web")
+	if !errors.Is(err, ErrNotRunnable) || !strings.Contains(err.Error(), testAWSAccount) {
+		t.Errorf("CreateRestore on a disconnected account = %v, want ErrNotRunnable naming the account", err)
+	}
+	var runs int
+	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM runs WHERE kind = 'restore'`).Scan(&runs); err != nil || runs != 0 {
+		t.Errorf("restore runs = %d (%v), want none", runs, err)
+	}
+}

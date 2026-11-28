@@ -268,6 +268,13 @@ func TestJobLookupAmbiguousListsMatches(t *testing.T) {
 func TestJobLookupExactPathWins(t *testing.T) {
 	h, api := apiHarness(t)
 	ambiguousJobs(api)
+	// A job whose path ends in the typed path: without "an exact path wins" the
+	// request would match two jobs.
+	api.reply("GET /api/v1/jobs", 200, map[string]any{"jobs": []map[string]any{
+		{"id": 3, "job_id": "roll", "path": "backend/roll.yaml", "folder": "Platform", "runnable": true, "approval_labels": []string{}},
+		{"id": 4, "job_id": "roll", "path": "web/roll.yaml", "folder": "Web", "runnable": true, "approval_labels": []string{}},
+		{"id": 6, "job_id": "roll-team", "path": "team/web/roll.yaml", "folder": "Team", "runnable": true, "approval_labels": []string{}},
+	}})
 	api.reply("GET /api/v1/jobs/{id}", 200, jobDetailFixture())
 	code, _, stderr := h.run("jobs", "show", "web/roll.yaml")
 	if code != 0 {

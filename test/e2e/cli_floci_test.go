@@ -245,25 +245,46 @@ func TestCLIEndToEnd(t *testing.T) {
 		got := deployer.expect(3, append([]string{"run", "deploy", "--yes", "--watch", "-o", "json"}, selection(crashVersion)...)...)
 		// With -o json the progress and the summary go to standard error, which
 		// must name the service that failed and why.
-		for _, want := range []string{"partially_succeeded", "api", "tasks keep stopping"} {
-			if !strings.Contains(got.stderr, want) {
-				t.Errorf("stderr lacks %q:\n%s", want, got.stderr)
+		if !strings.Contains(got.stderr, "partially_succeeded") {
+			t.Errorf("stderr does not say the run partially succeeded:\n%s", got.stderr)
+		}
+		// The summary prints one "STEP / SERVICE: STATE: SHORT" line per failure:
+		// api's roll only, never web or worker.
+		if !strings.Contains(got.stderr, "roll / api: failed: tasks keep stopping") {
+			t.Errorf("stderr lacks the failure line for api:\n%s", got.stderr)
+		}
+		for _, other := range []string{"/ web: failed", "/ worker: failed"} {
+			if strings.Contains(got.stderr, other) {
+				t.Errorf("stderr reports a failure it should not (%q):\n%s", other, got.stderr)
 			}
 		}
 		id := cliRunID(t, got)
-		s.expectDeploy(id, "partially_succeeded")
+		done := s.expectDeploy(id, "partially_succeeded")
 
 		log := deployer.expect(0, "runs", "log", fmt.Sprint(id), "--service", "api")
 		if !strings.Contains(log.stdout, "exit 3") {
 			t.Errorf("runs log --service api does not show the error line:\n%s", log.stdout)
 		}
-		for _, other := range []string{"web/", "worker/"} {
-			if strings.Contains(log.stdout, other) {
-				t.Errorf("runs log --service api shows a line of %s:\n%s", other, log.stdout)
+		// Every line of the filtered log belongs to a leg of api. The JSON lines
+		// name their leg, so look the leg's service up in the run.
+		var page struct {
+			Lines []struct {
+				LegID int64 `json:"leg_id"`
+			} `json:"lines"`
+		}
+		deployer.expect(0, "runs", "log", fmt.Sprint(id), "--service", "api", "-o", "json").json(t, "runs log", &page)
+		if len(page.Lines) == 0 {
+			t.Error("runs log --service api -o json has no lines")
+		}
+		serviceOfLeg := map[int64]string{}
+		for _, l := range done.Legs {
+			serviceOfLeg[l.ID] = l.Service
+		}
+		for _, l := range page.Lines {
+			if serviceOfLeg[l.LegID] != "api" {
+				t.Errorf("runs log --service api shows a line of leg %d (service %q)", l.LegID, serviceOfLeg[l.LegID])
 			}
 		}
-		var page map[string]any
-		deployer.expect(0, "runs", "log", fmt.Sprint(id), "--service", "api", "-o", "json").json(t, "runs log", &page)
 	})
 
 	t.Run("prod needs a second person", func(t *testing.T) {

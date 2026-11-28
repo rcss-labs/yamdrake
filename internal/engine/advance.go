@@ -277,6 +277,9 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 		}
 		o.runChanged = true
 		if newState != run.State {
+			if err := e.onEnterState(ctx, tx, run, newState, now); err != nil {
+				return err
+			}
 			level, text := transitionLine(run.State, newState, d.Reason)
 			if err := store.AppendRunLine(ctx, tx, run.ID, level, text, now); err != nil {
 				return err

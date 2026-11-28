@@ -147,6 +147,7 @@ func TestNoRouteReturnsNullForAList(t *testing.T) {
 		list("GET /api/v1/tokens", "/api/v1/tokens", reflect.TypeFor[struct {
 			Tokens []tokenResponse `json:"tokens"`
 		}]()),
+		list("GET /api/v1/approvals", "/api/v1/approvals", reflect.TypeFor[[]approvalItemView]()),
 	}
 	check := func(stage string, routes []listRoute) {
 		t.Helper()

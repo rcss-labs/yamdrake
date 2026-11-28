@@ -1,0 +1,161 @@
+package engine
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/spec"
+	"github.com/rcss-labs/yamdrake/internal/store"
+)
+
+// ErrManifestChanged means the approver saw a plan that is no longer the
+// run's: nothing was recorded.
+var ErrManifestChanged = errors.New("the plan changed")
+
+// onEnterState carries out what entering a state means beyond the state
+// itself. Every path that changes a run's state calls it, in the same
+// transaction, once the new state is stored and only when the state really
+// changed: people's actions (moveTo) and the engine's own decisions (apply).
+// The caller holds the run row lock.
+func (e *Engine) onEnterState(ctx context.Context, tx pgx.Tx, run store.Run, newState string, now time.Time) error {
+	switch newState {
+	case "waiting_approval":
+		return e.requestApproval(ctx, tx, run.ID, now)
+	}
+	return nil
+}
+
+// requestApproval opens the approval for the plan the run holds now. The run is
+// re-read because the manifest may have been stored in this very transaction.
+func (e *Engine) requestApproval(ctx context.Context, tx pgx.Tx, runID int64, now time.Time) error {
+	run, err := store.GetRun(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	_, err = store.RequestApproval(ctx, tx, store.Approval{
+		RunID: run.ID, ManifestID: run.ManifestID, RequestedBy: run.RequestedBy,
+		RequestedAt: now, ExpiresAt: now.Add(ApprovalExpiry(run)),
+	})
+	return err
+}
+
+// Approve lets an approver (not the person who started the run, unless an
+// admin) approve exactly the plan they were shown: manifestID must be the
+// run's. The run is then queued.
+func (e *Engine) Approve(ctx context.Context, p auth.Principal, runID int64, manifestID, comment string) error {
+	return e.decide(ctx, p, runID, "run.approve", "approved", "queued", &manifestID, comment)
+}
+
+// Reject ends a run waiting for approval as rejected.
+func (e *Engine) Reject(ctx context.Context, p auth.Principal, runID int64, comment string) error {
+	return e.decide(ctx, p, runID, "run.reject", "rejected", "rejected", nil, comment)
+}
+
+// decide records an approver's decision and moves the run, in this order:
+// permission, then "already decided" (how the loser of a simultaneous Approve
+// and Reject learns it lost), then wrong state, then the manifest check. The
+// run row lock makes two deciders take turns; store.DecideApproval's own
+// conditional update is the second line of defence.
+func (e *Engine) decide(ctx context.Context, p auth.Principal, runID int64, action, decision, next string, manifestID *string, comment string) error {
+	return e.inTx(ctx, runID, func(tx pgx.Tx, o *outcome) error {
+		run, err := store.LockRun(ctx, tx, runID)
+		if err != nil {
+			return fmt.Errorf("%s %d: %w", action, runID, err)
+		}
+		if !p.MayApproveRunStartedBy(run.RequestedBy, targetOf(run)) {
+			return fmt.Errorf("%s %d: %w", action, runID, ErrForbidden)
+		}
+		if run.State != "waiting_approval" {
+			latest, found, err := store.LatestApproval(ctx, tx, runID)
+			if err != nil {
+				return err
+			}
+			if found && latest.Decision != "" {
+				return fmt.Errorf("%s %d: %w", action, runID, store.ErrAlreadyDecided)
+			}
+			return fmt.Errorf("%s %d: %w: it is %s", action, runID, ErrWrongState, run.State)
+		}
+		if manifestID != nil && *manifestID != run.ManifestID {
+			return fmt.Errorf("%s %d: %w", action, runID, ErrManifestChanged)
+		}
+		open, found, err := store.OpenApproval(ctx, tx, runID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%s %d: %w: it has no open approval", action, runID, ErrWrongState)
+		}
+		now := e.now()
+		if err := store.DecideApproval(ctx, tx, open.ID, decision, &p.UserID, comment, now); err != nil {
+			return fmt.Errorf("%s %d: %w", action, runID, err)
+		}
+		reason := ""
+		if next == "rejected" {
+			reason = "rejected by " + displayName(p)
+		}
+		if err := e.moveTo(ctx, tx, run, next, reason, displayName(p), o); err != nil {
+			return err
+		}
+		return e.record(ctx, tx, &p, action, runID, map[string]any{"manifest_id": run.ManifestID, "comment": comment})
+	})
+}
+
+// expireApproval closes the run's open approval as expired, by nobody. It is
+// part of the transaction that expires the run.
+func (e *Engine) expireApproval(ctx context.Context, tx pgx.Tx, runID int64) error {
+	open, found, err := store.OpenApproval(ctx, tx, runID)
+	if err != nil || !found {
+		return err
+	}
+	return store.DecideApproval(ctx, tx, open.ID, "expired", nil, "", e.now())
+}
+
+// approvalDue reports whether a run waiting for approval has waited too long.
+// The open approval's expiry is the authority; a run that waits without an
+// approval row (made before approvals existed) falls back to the job's expiry
+// measured from the state change.
+func (e *Engine) approvalDue(ctx context.Context, tx pgx.Tx, run store.Run) (bool, error) {
+	open, found, err := store.OpenApproval(ctx, tx, run.ID)
+	if err != nil {
+		return false, err
+	}
+	if found {
+		return !e.now().Before(open.ExpiresAt), nil
+	}
+	return e.now().Sub(run.StateChangedAt) > ApprovalExpiry(run), nil
+}
+
+// VersionsSummary words what a run deploys the way approvers and Slack read it:
+// "<group label> <version> (<service count>)", one per selected group in the
+// job's order, joined by ", " (a group without a label shows its id). A run
+// whose snapshot or selection cannot be read gives "".
+func VersionsSummary(run store.Run) string {
+	var job spec.Job
+	if err := json.Unmarshal(run.JobSnapshot, &job); err != nil {
+		return ""
+	}
+	var selection Selection
+	if err := json.Unmarshal(run.Selection, &selection); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, group := range job.Groups {
+		chosen, ok := selection[group.ID]
+		if !ok || len(chosen.Services) == 0 {
+			continue
+		}
+		label := group.Label
+		if label == "" {
+			label = group.ID
+		}
+		parts = append(parts, fmt.Sprintf("%s %s (%d)", label, chosen.Version, len(chosen.Services)))
+	}
+	return strings.Join(parts, ", ")
+}

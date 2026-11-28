@@ -66,6 +66,20 @@ func OpenApproval(ctx context.Context, db DBTX, runID int64) (Approval, bool, er
 	return a, true, nil
 }
 
+// LatestApproval returns the run's open approval, else its most recent decided
+// one. ok is false when the run never asked for approval.
+func LatestApproval(ctx context.Context, db DBTX, runID int64) (Approval, bool, error) {
+	a, err := scanApproval(db.QueryRow(ctx,
+		"SELECT "+approvalColumns+" FROM approvals WHERE run_id = $1 ORDER BY (decision = '') DESC, id DESC LIMIT 1", runID))
+	if errors.Is(mapError(err), ErrNotFound) {
+		return Approval{}, false, nil
+	}
+	if err != nil {
+		return Approval{}, false, fmt.Errorf("latest approval: %w", mapError(err))
+	}
+	return a, true, nil
+}
+
 // DecideApproval records the decision ("approved", "rejected" or "expired";
 // ErrInvalid otherwise) on an open approval. The decision is one conditional
 // UPDATE, so of two concurrent deciders the second waits for the first's

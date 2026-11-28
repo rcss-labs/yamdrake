@@ -102,7 +102,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			log.Info("sync loop stopped")
 		}, func(ctx context.Context) {
 			log.Info("engine loop started", "sweep_interval", cfg.SweepInterval.String())
-			runEngine.Loop(ctx, bus.Subscribe(ctx, wake.TopicRuns), cfg.SweepInterval, sweepQueue, nil)
+			runEngine.Loop(ctx, bus.Subscribe(ctx, wake.TopicRuns), cfg.SweepInterval, sweepQueue)
 			log.Info("engine loop stopped")
 		}}
 		if archiver != nil {

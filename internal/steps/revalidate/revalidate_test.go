@@ -469,4 +469,4 @@ func contains(list []string, want string) bool {
 }
 
 // *artifacts.Store must satisfy the reader the executor looks for.
-var _ revalidate.ArtifactReader = (*artifacts.Store)(nil)
+var _ revalidate.ArtifactReader = (*artifacts.S3Store)(nil)

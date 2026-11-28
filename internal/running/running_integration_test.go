@@ -194,7 +194,7 @@ func openTestValkey(t *testing.T) valkey.Client {
 	if addr == "" {
 		t.Fatal("YUMDRAKE_TEST_VALKEY_ADDR must be set when running integration tests")
 	}
-	client, err := cache.Open(addr)
+	client, err := cache.Open(cache.Options{Addr: addr})
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}

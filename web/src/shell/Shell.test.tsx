@@ -15,7 +15,8 @@ describe('the application shell', () => {
   it('lists eight sections for an administrator', async () => {
     renderApp(<App />, { me: adminMe })
     const nav = await mainNav()
-    expect(nav.getAllByRole('link').map((link) => link.textContent)).toEqual([
+    // The label is the first span; Approvals may also carry a count badge once its request answers.
+    expect(nav.getAllByRole('link').map((link) => link.querySelector('span')?.textContent)).toEqual([
       'Overview',
       'Jobs',
       'Runs',

@@ -4,6 +4,7 @@ import { errorMessage } from '../api/client'
 import type { Me } from '../api/types'
 import { canSomewhere } from '../auth/permissions'
 import { useMe, useSignOut } from '../auth/session'
+import { useApprovals } from '../features/runs/queries'
 import { Icon, type IconName } from '../ui'
 
 interface NavItem {
@@ -38,11 +39,29 @@ function seesAdmin(me: Me): boolean {
   )
 }
 
-function SidebarLink({ item }: { item: NavItem }) {
+const approvalsRefreshMs = 30_000
+
+/** How many waiting runs this person may approve; 0 while loading or when the request fails. */
+function useApprovalCount(): number {
+  const approvals = useApprovals({ refetchInterval: approvalsRefreshMs })
+  return approvals.data?.approvals.filter((item) => item.can_approve).length ?? 0
+}
+
+function SidebarLink({ item, count = 0 }: { item: NavItem; count?: number }) {
   return (
-    <NavLink to={item.to} end={item.to === '/'} className="shell-nav">
+    <NavLink
+      to={item.to}
+      end={item.to === '/'}
+      className="shell-nav"
+      aria-label={count > 0 ? `${item.label}, ${count} waiting` : undefined}
+    >
       <Icon name={item.icon} />
       <span>{item.label}</span>
+      {count > 0 && (
+        <span className="shell-count" aria-hidden="true">
+          {count}
+        </span>
+      )}
     </NavLink>
   )
 }
@@ -50,6 +69,7 @@ function SidebarLink({ item }: { item: NavItem }) {
 export function Sidebar() {
   const me = useMe()
   const signOut = useSignOut()
+  const approvalCount = useApprovalCount()
   const [signingOut, setSigningOut] = useState(false)
   const [signOutError, setSignOutError] = useState('')
 
@@ -83,7 +103,7 @@ export function Sidebar() {
         {groups.map((group) => (
           <div key={group[0]?.to} className="shell-navgroup">
             {group.map((item) => (
-              <SidebarLink key={item.to} item={item} />
+              <SidebarLink key={item.to} item={item} count={item.to === '/approvals' ? approvalCount : 0} />
             ))}
           </div>
         ))}

@@ -111,6 +111,15 @@ func TestRecordRefusesSecretKeys(t *testing.T) {
 		"in a map of strings":        {"m": map[string]string{"token": "x"}},
 		"nil value still a secret":   {"password": nil},
 		"nested in nested slice map": {"a": []map[string]any{{"b": []any{map[string]any{"HASH": 1}}}}},
+		"contains password":          {"new_password": "x"},
+		"contains token":             {"api_token_value": "x"},
+		"contains secret":            {"client_secret_ref": "x"},
+		"contains private_key":       {"my_private_key_pem": "x"},
+		"contains hash":              {"password_hash": "x"},
+		"contains assertion":         {"saml_assertion_xml": "x"},
+		"contains plaintext":         {"plaintext": "x"},
+		"plaintext, upper case":      {"TokenPlainText": "x"},
+		"substring deep in a slice":  {"a": []any{map[string]any{"b": map[string]any{"user_tokens": 3}}}},
 	}
 	for name, detail := range cases {
 		err := Record(ctx, pool, nil, time.Now(), Event{Action: "x", Detail: detail})
@@ -121,8 +130,8 @@ func TestRecordRefusesSecretKeys(t *testing.T) {
 	if got := entries(t, pool); len(got) != 0 {
 		t.Fatalf("%d entries written despite refusals", len(got))
 	}
-	// Names that merely contain a secret word are fine.
-	ok := map[string]any{"password_changed": true, "tokens": 3, "group": map[string]any{"hashes": 1}}
+	// Names that carry no secret word are fine.
+	ok := map[string]any{"changed": true, "expires_at": "x", "group": map[string]any{"count": 1, "email_attribute": "mail"}}
 	if err := Record(ctx, pool, nil, time.Now(), Event{Action: "x", Detail: ok}); err != nil {
 		t.Fatalf("harmless keys refused: %v", err)
 	}

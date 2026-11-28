@@ -16,6 +16,7 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
+	"github.com/rcss-labs/yamdrake/internal/webui"
 )
 
 // OrchestratorServiceName is the name the orchestrator logs under.
@@ -31,6 +32,7 @@ func NewOrchestratorService(cfg config.Orchestrator) Service {
 		Common: cfg.Common,
 		Addr:   cfg.HTTPAddr,
 		Extend: OrchestratorExtension(cfg),
+		Web:    webui.Handler(),
 		Fields: []any{"migrate_on_start", cfg.MigrateOnStart, "migrate_timeout", cfg.MigrateTimeout.String()},
 		Prepare: func(ctx context.Context, log *slog.Logger, _ *pgxpool.Pool) error {
 			if !cfg.MigrateOnStart {
@@ -65,6 +67,7 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Valkey:              client,
 			KeyPrefix:           cfg.ValkeyKeyPrefix,
 			PublicURL:           cfg.PublicURL,
+			TokenSSOMaxAge:      cfg.TokenSSOMaxAge,
 		})
 		return Extension{
 			Handlers: map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},

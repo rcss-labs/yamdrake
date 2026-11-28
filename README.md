@@ -23,9 +23,10 @@ PostgreSQL listens on `localhost:5432` (database, user and password `yumdrake`).
 
 ## Running the services locally
 
-Build both binaries into `bin/`:
+Build both binaries into `bin/`. `make build` also builds the web application and embeds it, so it needs Node 24 and a one-time `make web-install` first:
 
 ```sh
+make web-install   # once per clone
 make build
 ```
 
@@ -95,6 +96,16 @@ printf '%s\n' "$PASSWORD" | yumdrake-orchestrator create-admin --email admin@exa
 
 The command creates a local user in the admin group `Administrators` and prints only `created`. It exits 0 on success, 1 on failure (for example, the email already exists) and 2 on a usage error.
 
+### Unlocking an account
+
+Anyone can keep an account locked by sending 5 wrong passwords within 15 minutes, which includes the break-glass admin. An operator clears the failure counter of one email on the orchestrator's command line, with the same environment as the orchestrator:
+
+```sh
+yumdrake-orchestrator unlock --email admin@example.com
+```
+
+It prints only `unlocked`, writes an `auth.unlock` audit entry, and exits 0 on success, 1 on failure (for example, no user has that email) and 2 on a usage error. The email is matched ignoring case and surrounding spaces.
+
 ### Password sign-in
 
 - `POST /api/v1/auth/login` with `{"email": ..., "password": ...}` sets the `yumdrake_session` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`). The session has an idle timeout of 8 hours and a maximum age of 24 hours.
@@ -113,7 +124,10 @@ These routes need no sign-in and should be rate-limited at the load balancer or 
 
 Tokens look like `ymd_...`. They are shown once and stored only as a SHA-256 hash. They expire (90 days by default, at most 365 days) and can be revoked. A token carries its owner's permissions. Send it as `Authorization: Bearer <token>`.
 
-- `GET /api/v1/tokens` and `POST /api/v1/tokens` (body `{"name": ..., "ttl_days": ...}`) list and create your own tokens. `DELETE /api/v1/tokens/{id}` revokes one.
+- `GET /api/v1/tokens` and `POST /api/v1/tokens` (body `{"name": ..., "ttl_days": ...}`) list and create your own tokens. `DELETE /api/v1/tokens/{id}` revokes one. Creating and revoking tokens needs a browser session: a request made with a token answers `403` "Sign in with your browser to manage tokens", so a token cannot renew itself. A token can give up its own power: `DELETE /api/v1/tokens/{id}` with the token's own id, or `POST /api/v1/auth/logout`, revokes that token (and only that one); any other id answers `403`.
+- A service account has no browser, so a global admin mints its token with `POST /api/v1/admin/users/{id}/tokens` (body `{"name": ..., "ttl_days": ...}`) from a browser session. It works only for users whose source is `service` (otherwise `422` `invalid`), is audited with the token's id and name (never its value) and returns the plaintext once, in the shape of `POST /api/v1/tokens`.
+- A token of a SAML user works only while that user's last SSO sign-in is at most `YUMDRAKE_TOKEN_SSO_MAX_AGE` old (default 168 hours). After that it answers `401` "Sign in again with SSO: yumdrake login". Tokens of `local` and `service` users are not affected.
+- Disabling a user revokes all of that user's tokens; enabling the user again does not bring them back.
 
 Device sign-in for the CLI:
 
@@ -121,11 +135,11 @@ Device sign-in for the CLI:
 2. A signed-in user confirms the 8-character `user_code` in the browser (`POST /api/v1/cli/login/confirm`).
 3. The CLI polls `POST /api/v1/cli/login/token` with the `device_code`, no faster than every `interval` seconds. It receives a token once.
 
-Codes expire after 10 minutes.
+Codes expire after 10 minutes. A session may make at most 10 confirm attempts per 10 minutes; more answer `429` with `Retry-After`.
 
 ## Single sign-on (SAML)
 
-An admin with `manage_access` configures SSO at `GET` and `PUT /api/v1/admin/sso`, and checks it with `POST /api/v1/admin/sso/test`.
+A global admin configures SSO with `PUT /api/v1/admin/sso`; `manage_access` alone is not enough, because whoever controls the identity provider can sign in as anyone (a non-admin gets `403`). Holders of `manage_access` can read the settings (`GET /api/v1/admin/sso`) and check them (`POST /api/v1/admin/sso/test`).
 
 Give the identity provider:
 
@@ -155,11 +169,38 @@ Users, groups, grants, identity-provider mappings and the audit log live under `
 
 Actions: `view`, `view_logs`, `run`, `cancel`, `approve`, `restore`, `manage_jobs`, `manage_connections`, `manage_access` and `view_audit`. Every signed-in user has `view`. A group marked admin has every action.
 
+`manage_access` is not admin. Only a global admin may touch admin groups, their members and mappings, or the SSO settings. A holder of `manage_access` who is not an admin may create or delete a grant, add a user to a group, or map an identity-provider group to a group only for an action and scope they hold themselves (a grant wider than their own answers `403`), and grants of `manage_access`, `manage_connections` and `view_audit` can be created or deleted only by an admin.
+
 A grant gives a group one action, optionally limited to a label (`dev`, `preprod` or `prod`) or to one environment, and optionally to one folder.
 
 At least one enabled admin must remain; otherwise the change is refused with `409`.
 
 Every change is written to the append-only audit log, which never contains passwords, tokens or keys.
+
+## Web application
+
+The web application lives in `web/` (React, TypeScript and Vite). It needs Node 24 and npm.
+
+```sh
+make web-install   # install dependencies from the lockfile
+make web-lint      # ESLint and the TypeScript check
+make web-test      # unit tests, run once
+make web-build     # production build, copied into internal/webui/dist for embedding
+```
+
+For development, run the orchestrator on port 8080 and start the dev server with `npm --prefix web run dev`. The dev server proxies `/api` and `/saml` to the orchestrator on `localhost:8080`.
+
+With the dev server on `http://localhost:5173`, sign-in answers 403 unless the orchestrator runs with `YUMDRAKE_PUBLIC_URL=http://localhost:5173`, because the API checks the `Origin` of every write against the public URL.
+
+### Browser test
+
+```sh
+make dev-up                                          # PostgreSQL and Valkey
+(cd web && npx playwright install chromium)          # once; add --with-deps on a bare Linux machine
+make web-e2e                                         # builds, then runs the test in Chromium
+```
+
+`make web-e2e` runs `web/e2e/foundation.spec.ts` against the real orchestrator binary (`bin/yumdrake-orchestrator`, with the web application embedded), not the Vite dev server. The helper `test/e2e/webstack` starts it on free ports with its own database (`yumdrake_web_e2e_*`, dropped at the end) and its own Valkey key prefix, plus the fake GitHub from `test/e2e/fakegithub` holding `internal/spec/testdata/valid`. It needs the Compose services (or `YUMDRAKE_TEST_DATABASE_URL` and `YUMDRAKE_TEST_VALKEY_ADDR` pointing at others). The helper stops the orchestrator and drops the database when the test ends, fails or is interrupted. Set `YUMDRAKE_E2E_SHOTS_DIR` to a directory to keep the eight full-page screenshots the test takes.
 
 ## Testing
 
@@ -201,6 +242,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_LOCAL_SECRET_KEY` | orchestrator, runner | none (required when the mode is `local`) | Base64 of exactly 32 bytes (for example `openssl rand -base64 32`). Encrypts stored GitHub credentials. For development and tests only; never printed. |
 | `YUMDRAKE_PUBLIC_URL` | orchestrator | none (required) | Address users reach the service at, such as `https://yumdrake.example.com`: scheme, host and optional port only. Must be `https://`, except `http://` for `localhost` and `127.0.0.1`. Requests that carry a session cookie and change state must come from this origin. |
 | `YUMDRAKE_VALKEY_KEY_PREFIX` | orchestrator | empty | At most 64 of letters, digits, `-`, `_`, `:`. Put in front of the Valkey keys of sessions and sign-in counters; set it only to separate services (or test runs) that share one Valkey. |
+| `YUMDRAKE_TOKEN_SSO_MAX_AGE` | orchestrator | `168h` | Go duration of at least `1h`. How recent a SAML user's last SSO sign-in must be for their CLI tokens to work. |
 | `YUMDRAKE_SYNC_INTERVAL` | orchestrator | `60s` | Go duration of at least `10s`. |
 | `YUMDRAKE_GITHUB_API_URL` | orchestrator | `https://api.github.com` | An `http://` or `https://` URL. Overridden in tests. |
 | `YUMDRAKE_TEST_DATABASE_URL` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_DATABASE_URL`. Set by `make test-integration` and CI. |
@@ -208,7 +250,7 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 
 ## Validating YAML
 
-`make build` produces `bin/yumdrake`, the CLI that checks an inventory before it is synced:
+`make build` (after `make web-install`, see above) produces `bin/yumdrake`, the CLI that checks an inventory before it is synced:
 
 ```sh
 bin/yumdrake validate <inventory-dir> [--job <file>]...
@@ -222,6 +264,7 @@ The inventory directory holds `environments.yaml` and one `services/*.yaml` file
 Exit codes: `0` valid, `1` problems found or the directory is missing, `2` usage error (no directory, an unknown command, or bad flags).
 
 ```sh
+make web-install   # once, if not done yet
 make build
 bin/yumdrake validate internal/spec/testdata/valid --job internal/spec/testdata/valid/jobs/deploy-backend.yaml
 ```
@@ -236,4 +279,4 @@ kind: Service
 
 ## CI
 
-The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration and smoke jobs on pull requests and on pushes to `main`.
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint, test, integration, smoke and web jobs on pull requests and on pushes to `main`.

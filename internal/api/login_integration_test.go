@@ -265,7 +265,7 @@ func TestDisabledUserCannotLogin(t *testing.T) {
 
 func TestFailedLoginIsAuditedWithEmailNotPassword(t *testing.T) {
 	h := newHarness(t)
-	email := uniqueEmail(t, "audited")
+	email := h.newUser("audited").Email // only existing accounts are audited
 	const attempt = "the-password-that-was-tried"
 	h.expect(h.login(email, attempt), http.StatusUnauthorized, "unauthorized")
 	var found bool
@@ -407,5 +407,44 @@ func TestFullVerificationLimiterAnswers503AndIsNotCounted(t *testing.T) {
 	count, err := h.valkey.Do(context.Background(), h.valkey.B().Get().Key((&server{Deps: h.deps}).lockoutKey(user.Email)).Build()).AsInt64()
 	if err != nil || int(count) != unauthorized {
 		t.Fatalf("failure counter = %d (%v), want %d: refused requests must not count", count, err, unauthorized)
+	}
+}
+
+// The operator's unlock command clears the counter by the key LoginFailureKey
+// names: it must be the key the sign-in really counts in.
+func TestLoginFailureKeyIsTheCounterSignInUses(t *testing.T) {
+	h := newHarness(t)
+	user := h.newUser("unlockable")
+	for i := range 5 {
+		h.expect(h.login(user.Email, "wrong password "+strconv.Itoa(i)), http.StatusUnauthorized, "unauthorized")
+	}
+	h.expect(h.login(user.Email, testPassword), http.StatusTooManyRequests, "")
+	key := LoginFailureKey(h.deps.KeyPrefix, "  "+strings.ToUpper(user.Email)+" ")
+	if err := h.valkey.Do(context.Background(), h.valkey.B().Del().Key(key).Build()).Error(); err != nil {
+		t.Fatalf("DEL: %v", err)
+	}
+	h.expect(h.login(user.Email, testPassword), http.StatusOK, "")
+}
+
+func TestPasswordSignInRecordsLastSignIn(t *testing.T) {
+	h := newHarness(t)
+	user := h.newUser("lastsignin")
+	lastSignIn := func() any {
+		rec := h.asAdmin("GET", "/api/v1/admin/users", nil)
+		h.expect(rec, http.StatusOK, "")
+		for _, u := range decodeObject(t, rec)["users"].([]any) {
+			if int64(u.(map[string]any)["id"].(float64)) == user.ID {
+				return u.(map[string]any)["last_sign_in_at"]
+			}
+		}
+		t.Fatalf("user %d is not in the admin users list", user.ID)
+		return nil
+	}
+	if got := lastSignIn(); got != nil {
+		t.Fatalf("last_sign_in_at before any sign-in = %v, want null", got)
+	}
+	h.expect(h.login(user.Email, testPassword), http.StatusOK, "")
+	if got := lastSignIn(); got == nil {
+		t.Fatalf("last_sign_in_at after a password sign-in is null, want the sign-in time")
 	}
 }

@@ -386,13 +386,17 @@ A service's first-ever Yumdrake deployment can be restored too, because resolve 
 - **SAML** is the normal way in. Groups arrive in a SAML attribute and are mapped to Yumdrake groups in Admin. Membership is refreshed at each sign-in, and sessions have a maximum age so a removed user loses access.
 - **Local accounts** exist for a break-glass admin and for service accounts. Passwords are stored as argon2id hashes. Use of the break-glass account is audited and announced.
 - **Sessions** are server-side in Valkey behind a secure, http-only cookie, and can be revoked.
-- **CLI tokens** belong to a user, carry that user's permissions and no more, are stored hashed, expire, and can be revoked.
+- **CLI tokens** belong to a user, carry that user's permissions and no more, are stored hashed, expire, and can be revoked. Only a browser session can create or revoke a token, so a token cannot renew itself (a token can only revoke itself); a global admin mints the token of a service account. A SAML user's token works only while that user's last SSO sign-in is at most `YUMDRAKE_TOKEN_SSO_MAX_AGE` old (default 168 hours), because group memberships refresh only at SSO sign-in; disabling a user revokes all their tokens.
 
 ### 9.2 Permissions
 
 Actions: `view`, `view_logs`, `run`, `cancel`, `approve`, `restore`, `manage_jobs`, `manage_connections`, `manage_access`, `view_audit`.
 
 A grant gives a group an action within a scope: an environment label, a single environment, and optionally a folder. A group may instead be a global admin. Every signed-in user has `view`.
+
+`manage_access` does not confer admin power. Only a global admin may create a group with the admin flag, change a group's admin flag, add or remove members of an admin group, map an identity-provider group to an admin group (or change or remove such a mapping), disable or enable a user who is in an admin group, or change the single sign-on settings (whoever controls the identity provider can sign in as anyone). A `manage_access` holder who is not an admin gets 403 for these and can still manage non-admin groups and non-admin users, and read and test the single sign-on settings.
+
+A non-admin who holds `manage_access` may create or delete a grant, add a user to a group or map an identity-provider group to a group only for an action and scope they hold themselves (a wider grant is refused), and grants of `manage_access`, `manage_connections` and `view_audit` can be created or deleted only by a global admin.
 
 Every REST, SSE and CLI request is checked on the server. The UI hides or disables what a user may not do.
 

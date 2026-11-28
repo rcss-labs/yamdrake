@@ -20,7 +20,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/crewjam/saml"
 	"github.com/crewjam/saml/samlsp"
@@ -45,6 +47,8 @@ const (
 	samlACSPath     = "/saml/acs"
 
 	maxACSBodyBytes = 2 << 20
+	// maxSSOSettingLength bounds the entity id and the attribute names.
+	maxSSOSettingLength = 255
 
 	// rsaSHA256 is the XML signature method for the requests we sign (the key is RSA).
 	rsaSHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
@@ -59,11 +63,104 @@ func init() {
 // errSSODisabled means single sign-on is switched off or not set up.
 var errSSODisabled = errors.New("single sign-on is not enabled")
 
+// errSSOMisconfigured means single sign-on is switched on but the stored
+// identity provider settings cannot be used.
+var errSSOMisconfigured = errors.New("single sign-on is not set up correctly")
+
+// The codes a failed browser sign-in puts in /sign-in?sso_error=. They are
+// short and fixed on purpose: the reason (audit entry, log) never reaches the URL.
+const (
+	ssoErrorRejected    = "rejected"    // the response was not accepted
+	ssoErrorRefused     = "refused"     // the account may not sign in
+	ssoErrorUnavailable = "unavailable" // single sign-on is off or not set up
+)
+
+// redirectSSOError answers a browser that reached a single sign-on route by
+// top-level navigation: a 303 to the sign-in page with a fixed code. The target
+// is a constant path, never built from the request.
+func redirectSSOError(w http.ResponseWriter, r *http.Request, code string) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, "/sign-in?sso_error="+code, http.StatusSeeOther)
+}
+
+// ssoUnavailable handles the newProvider errors that mean "not usable": the
+// browser is sent back to sign-in. It reports whether it answered.
+func (s *server) ssoUnavailable(w http.ResponseWriter, r *http.Request, err error) bool {
+	switch {
+	case errors.Is(err, errSSODisabled):
+		redirectSSOError(w, r, ssoErrorUnavailable)
+	case errors.Is(err, errSSOMisconfigured):
+		s.Log.Warn("single sign-on is misconfigured", "error", err.Error())
+		redirectSSOError(w, r, ssoErrorUnavailable)
+	default:
+		return false
+	}
+	return true
+}
+
+// ssoFailed handles an unexpected failure (database, Valkey, key material) on a
+// route a browser reaches by top-level navigation: the error is logged exactly
+// as before and the browser is sent back to sign-in with a fixed code. Valkey
+// being unavailable reads as "unavailable", everything else as "rejected".
+func (s *server) ssoFailed(w http.ResponseWriter, r *http.Request, err error, code string) {
+	s.Log.Error("single sign-on request failed", "method", r.Method, "path", r.URL.Path, "error", err.Error())
+	redirectSSOError(w, r, code)
+}
+
 // samlProvider is the service provider for one request, with the settings it
 // was built from.
 type samlProvider struct {
 	*saml.ServiceProvider
 	settings auth.SAMLSettings
+}
+
+// keyCacheTTL is how long the decrypted service-provider key and relay key stay
+// in memory: every anonymous request to /saml/acs needs them, and decrypting on
+// each one would hand anyone a way to load the key service.
+const keyCacheTTL = 5 * time.Minute
+
+// keyCache holds the decrypted keys. Neither key ever changes once created, so
+// the only cost of caching is how long the plaintext sits in memory.
+type keyCache struct {
+	mu          sync.Mutex
+	spKey       *rsa.PrivateKey
+	spCert      *x509.Certificate
+	spExpires   time.Time
+	relayKey    []byte
+	relayExpire time.Time
+}
+
+// spKeyPair returns the service provider's key and certificate, decrypting
+// them at most once per keyCacheTTL. A failure is not cached.
+func (s *server) spKeyPair(ctx context.Context) (*rsa.PrivateKey, *x509.Certificate, error) {
+	s.keys.mu.Lock()
+	defer s.keys.mu.Unlock()
+	now := s.Now()
+	if s.keys.spKey != nil && now.Before(s.keys.spExpires) {
+		return s.keys.spKey, s.keys.spCert, nil
+	}
+	key, cert, err := auth.LoadSPKeyPair(ctx, s.Pool, s.Cipher, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.keys.spKey, s.keys.spCert, s.keys.spExpires = key, cert, now.Add(keyCacheTTL)
+	return key, cert, nil
+}
+
+// relayMACKey returns the key that authenticates relay cookies, cached like spKeyPair.
+func (s *server) relayMACKey(ctx context.Context) ([]byte, error) {
+	s.keys.mu.Lock()
+	defer s.keys.mu.Unlock()
+	now := s.Now()
+	if s.keys.relayKey != nil && now.Before(s.keys.relayExpire) {
+		return s.keys.relayKey, nil
+	}
+	key, err := auth.LoadRelayKey(ctx, s.Pool, s.Cipher)
+	if err != nil {
+		return nil, err
+	}
+	s.keys.relayKey, s.keys.relayExpire = key, now.Add(keyCacheTTL)
+	return key, nil
 }
 
 func (s *server) effectiveEntityID(settings auth.SAMLSettings) string {
@@ -87,7 +184,7 @@ func (s *server) newProvider(ctx context.Context, needIDP, needKey bool) (*samlP
 			return nil, errSSODisabled
 		}
 		if idp, err = samlsp.ParseMetadata([]byte(settings.IDPMetadataXML)); err != nil {
-			return nil, fmt.Errorf("stored identity provider metadata: %w", err)
+			return nil, fmt.Errorf("stored identity provider metadata: %w: %w", errSSOMisconfigured, err)
 		}
 	}
 	// Anonymous metadata requests read the certificate only; the private key
@@ -95,7 +192,7 @@ func (s *server) newProvider(ctx context.Context, needIDP, needKey bool) (*samlP
 	var key *rsa.PrivateKey
 	var cert *x509.Certificate
 	if needKey {
-		key, cert, err = auth.LoadSPKeyPair(ctx, s.Pool, s.Cipher, s.Now())
+		key, cert, err = s.spKeyPair(ctx)
 	} else {
 		cert, err = auth.LoadSPCertificate(ctx, s.Pool, s.Cipher, s.Now())
 	}
@@ -224,12 +321,11 @@ func openRelayState(key []byte, value string, now time.Time) (nonce, requestID, 
 // samlStart sends the browser to the identity provider with a signed request.
 func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 	sp, err := s.newProvider(r.Context(), true, true)
-	switch {
-	case errors.Is(err, errSSODisabled):
-		notFound(w, "single sign-on")
+	if s.ssoUnavailable(w, r, err) {
 		return
-	case err != nil:
-		s.internalError(w, r, err)
+	}
+	if err != nil {
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	redirectURL := sp.GetSSOBindingLocation(saml.HTTPRedirectBinding)
@@ -239,22 +335,22 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 		binding, target = saml.HTTPPostBinding, postURL
 	}
 	if target == "" {
-		s.internalError(w, r, errors.New("identity provider metadata has no sign-on endpoint"))
+		s.ssoUnavailable(w, r, fmt.Errorf("identity provider metadata has no sign-on endpoint: %w", errSSOMisconfigured))
 		return
 	}
 	authnRequest, err := sp.MakeAuthenticationRequest(target, binding, saml.HTTPPostBinding)
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
-	relayKey, err := auth.LoadRelayKey(r.Context(), s.Pool, s.Cipher)
+	relayKey, err := s.relayMACKey(r.Context())
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	nonce, err := randomHandle()
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	nextPath := r.URL.Query().Get("next")
@@ -272,7 +368,7 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 	if binding == saml.HTTPRedirectBinding {
 		location, err := authnRequest.Redirect(handle, sp.ServiceProvider)
 		if err != nil {
-			s.internalError(w, r, err)
+			s.ssoFailed(w, r, err, ssoErrorRejected)
 			return
 		}
 		http.Redirect(w, r, location.String(), http.StatusFound)
@@ -280,7 +376,7 @@ func (s *server) samlStart(w http.ResponseWriter, r *http.Request) {
 	}
 	scriptNonce, err := randomHandle()
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -349,7 +445,16 @@ func rejectReason(err error) string {
 	}
 }
 
-// samlReject answers 400, audits saml.rejected with a reason code (and detail
+// samlRejectUnbound refuses a post that is not tied to a sign-in this server
+// started, or whose signature was not validated. Anyone on the internet can send
+// those and the audit log cannot be pruned, so they go to the application log
+// only; the browser is sent back to sign-in exactly as for an audited rejection.
+func (s *server) samlRejectUnbound(w http.ResponseWriter, r *http.Request, reason string) {
+	s.Log.Warn("saml response rejected before it was authenticated", "reason", reason)
+	redirectSSOError(w, r, ssoErrorRejected)
+}
+
+// samlReject answers with a redirect to sign-in (code "rejected"), audits saml.rejected with a reason code (and detail
 // that is neither the response nor a key), and creates nothing.
 func (s *server) samlReject(w http.ResponseWriter, r *http.Request, reason string, extra map[string]any) {
 	detail := map[string]any{"reason": reason}
@@ -361,33 +466,63 @@ func (s *server) samlReject(w http.ResponseWriter, r *http.Request, reason strin
 		s.Log.Error("audit rejected saml response", "error", err.Error())
 	}
 	s.Log.Warn("saml response rejected", "reason", reason)
-	writeError(w, http.StatusBadRequest, codeInvalid, "the sign-in response was not accepted")
+	redirectSSOError(w, r, ssoErrorRejected)
 }
 
-// responseDestination returns the Destination attribute of the response's root
-// element, "" when it has none.
-func responseDestination(encoded string) (string, bool) {
+// responseShape reads the root element of the base64 response: its Destination
+// attribute ("" when it has none) and whether it has a direct child Signature
+// element (which says nothing about whether the signature is valid).
+func responseShape(encoded string) (destination string, hasSignature, ok bool) {
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
-	// Reads one start tag; encoding/xml does not expand external entities, and
-	// the whole document is validated later by the SAML library.
+	// encoding/xml does not expand external entities, and the whole document is
+	// validated later by the SAML library.
 	decoder := xml.NewDecoder(bytes.NewReader(raw)) //nolint:gosec // see above
+	depth := 0
 	for {
 		token, err := decoder.Token()
 		if err != nil {
-			return "", false
+			return "", false, false
 		}
-		if start, ok := token.(xml.StartElement); ok {
-			for _, attr := range start.Attr {
-				if attr.Name.Space == "" && attr.Name.Local == "Destination" {
-					return attr.Value, true
+		switch t := token.(type) {
+		case xml.StartElement:
+			depth++
+			if depth == 1 {
+				for _, attr := range t.Attr {
+					if attr.Name.Space == "" && attr.Name.Local == "Destination" {
+						destination = attr.Value
+					}
 				}
 			}
-			return "", true
+			if depth == 2 && t.Name.Space == "http://www.w3.org/2000/09/xmldsig#" && t.Name.Local == "Signature" {
+				hasSignature = true
+			}
+		case xml.EndElement:
+			depth--
+			if depth == 0 {
+				return destination, hasSignature, true
+			}
 		}
 	}
+}
+
+// signatureValidatedBy says whether a refusal can only have happened after the
+// identity provider's signature was verified, so that it is worth an audit
+// entry. wrong_audience and replay are raised only for an assertion whose
+// signature (or whose response's signature) already checked out. The others are
+// checked against the response's own fields, which are as good as unsigned
+// input unless the response carries a signature: when it does and the library
+// got past it (a bad one is bad_signature) they are authentic too.
+func signatureValidatedBy(reason string, responseHasSignature bool) bool {
+	switch reason {
+	case "wrong_audience", "replay":
+		return true
+	case "expired", "not_yet_valid", "wrong_issuer", "request_mismatch", "idp_refused":
+		return responseHasSignature
+	}
+	return false
 }
 
 // samlACS is the assertion consumer: the identity provider's browser post.
@@ -395,25 +530,24 @@ func responseDestination(encoded string) (string, bool) {
 func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxACSBodyBytes)
 	sp, err := s.newProvider(r.Context(), true, true)
-	switch {
-	case errors.Is(err, errSSODisabled):
-		notFound(w, "single sign-on")
+	if s.ssoUnavailable(w, r, err) {
 		return
-	case err != nil:
-		s.internalError(w, r, err)
+	}
+	if err != nil {
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	// Whatever happens next, this relay cookie has been used.
 	clearRelayCookie(w)
 	if err := r.ParseForm(); err != nil {
-		s.samlReject(w, r, "malformed", nil)
+		s.samlRejectUnbound(w, r, "malformed")
 		return
 	}
 	// Only the HTTP-POST binding is advertised. The artifact and SimpleSign
 	// bindings would make the library call out to the identity provider or
 	// take another signature path.
 	if r.PostForm.Get("SAMLart") != "" || r.PostForm.Has("Signature") || r.PostForm.Has("SigAlg") || r.Form.Get("SAMLart") != "" {
-		s.samlReject(w, r, "unsupported_binding", nil)
+		s.samlRejectUnbound(w, r, "unsupported_binding")
 		return
 	}
 
@@ -423,9 +557,9 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	// The response must answer a request this browser started: the cookie is
 	// ours (MAC, unexpired) and its nonce is the RelayState the identity
 	// provider echoes; its request id is the only InResponseTo we accept.
-	relayKey, err := auth.LoadRelayKey(r.Context(), s.Pool, s.Cipher)
+	relayKey, err := s.relayMACKey(r.Context())
 	if err != nil {
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 	cookie, err := r.Cookie(samlRelayCookie)
@@ -438,18 +572,33 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		ok = ok && subtle.ConstantTimeCompare([]byte(nonce), []byte(relayState)) == 1
 	}
 	if !ok {
-		s.samlReject(w, r, "relay_state", nil)
+		s.samlRejectUnbound(w, r, "relay_state")
+		return
+	}
+	// The relay state is good for one post: the first that shows it claims it,
+	// so one cookie from an anonymous /start cannot be used for a stream of
+	// posts. A claim that cannot be made (Valkey down) is a 503, not a refusal.
+	nonceSum := sha256.Sum256([]byte(relayState))
+	claimKey := s.KeyPrefix + "saml-relay:" + hex.EncodeToString(nonceSum[:])
+	switch err := s.Valkey.Do(ctx, s.Valkey.B().Set().Key(claimKey).Value("1").Nx().Px(samlRelayTTL+time.Minute).Build()).Error(); {
+	case isNil(err):
+		s.samlRejectUnbound(w, r, "relay_reused")
+		return
+	case err != nil:
+		s.ssoFailed(w, r, fmt.Errorf("claim saml relay state: %w", err), ssoErrorUnavailable)
 		return
 	}
 
 	// Responses are always for our ACS address, signed or not (the library
 	// allows an unsigned response to omit it).
-	if destination, ok := responseDestination(r.PostForm.Get("SAMLResponse")); !ok || destination != sp.AcsURL.String() {
+	// Nothing has authenticated the response yet, so a refusal here is only logged.
+	responseDestination, responseSigned, shaped := responseShape(r.PostForm.Get("SAMLResponse"))
+	if !shaped || responseDestination != sp.AcsURL.String() {
 		reason := "wrong_destination"
-		if !ok {
+		if !shaped {
 			reason = "malformed"
 		}
-		s.samlReject(w, r, reason, nil)
+		s.samlRejectUnbound(w, r, reason)
 		return
 	}
 
@@ -457,11 +606,16 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 	sp.ReplayCache = replay
 	assertion, err := sp.ParseResponse(r, []string{requestID})
 	if replay.unavailable != nil {
-		s.valkeyFailed(w, "check saml assertion replay", replay.unavailable)
+		s.ssoFailed(w, r, fmt.Errorf("check saml assertion replay"+": %w", replay.unavailable), ssoErrorUnavailable)
 		return
 	}
 	if err != nil {
-		s.samlReject(w, r, rejectReason(err), nil)
+		reason := rejectReason(err)
+		if signatureValidatedBy(reason, responseSigned) {
+			s.samlReject(w, r, reason, nil)
+		} else {
+			s.samlRejectUnbound(w, r, reason)
+		}
 		return
 	}
 
@@ -474,12 +628,12 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		s.samlReject(w, r, "request_reused", nil)
 		return
 	case err != nil:
-		s.valkeyFailed(w, "record saml request id", err)
+		s.ssoFailed(w, r, fmt.Errorf("record saml request id"+": %w", err), ssoErrorUnavailable)
 		return
 	}
 
 	email, name, groups := identityFromAssertion(assertion, sp.settings)
-	if email == "" || len(email) > maxEmailLength || !strings.Contains(email, "@") {
+	if email == "" || len(email) > maxEmailLength || !strings.Contains(email, "@") || hasControlText(email, false) {
 		s.samlReject(w, r, "bad_email", nil)
 		return
 	}
@@ -492,18 +646,18 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 		s.samlRefuse(w, r, "user_disabled", email)
 		return
 	case err != nil:
-		s.internalError(w, r, err)
+		s.ssoFailed(w, r, err, ssoErrorRejected)
 		return
 	}
 
 	if _, err := s.startSession(w, r, user.ID, map[string]any{"via": "saml"}); err != nil {
 		switch {
 		case errors.Is(err, session.ErrUnavailable):
-			s.valkeyFailed(w, "start session", err)
+			s.ssoFailed(w, r, fmt.Errorf("start session"+": %w", err), ssoErrorUnavailable)
 		case errors.Is(err, auth.ErrDisabled):
 			s.samlRefuse(w, r, "user_disabled", email)
 		default:
-			s.internalError(w, r, err)
+			s.ssoFailed(w, r, err, ssoErrorRejected)
 		}
 		return
 	}
@@ -516,13 +670,14 @@ func (s *server) samlACS(w http.ResponseWriter, r *http.Request) {
 }
 
 // samlRefuse is samlReject for a valid response of a person who may not sign in
-// here: the account is known and the answer is 403.
+// here: the account is known and the browser is sent to sign-in with code "refused".
 func (s *server) samlRefuse(w http.ResponseWriter, r *http.Request, reason, email string) {
 	if err := audit.Record(context.WithoutCancel(r.Context()), s.Pool, nil, s.Now(), audit.Event{
 		Action: "saml.rejected", TargetType: "user", Detail: map[string]any{"reason": reason, "email": email}}); err != nil {
 		s.Log.Error("audit rejected saml response", "error", err.Error())
 	}
-	writeError(w, http.StatusForbidden, codeForbidden, "this account may not sign in")
+	s.Log.Warn("saml sign-in refused", "reason", reason)
+	redirectSSOError(w, r, ssoErrorRefused)
 }
 
 // provisionUser creates or updates the user and replaces their identity-provider
@@ -646,14 +801,29 @@ func identityFromAssertion(assertion *saml.Assertion, settings auth.SAMLSettings
 	if name == "" {
 		name = email
 	}
-	return email, truncate(name, maxNameLength), attributeValues(assertion, settings.GroupsAttribute)
+	return email, truncate(cleanDisplayName(name), maxNameLength), attributeValues(assertion, settings.GroupsAttribute)
+}
+
+// cleanDisplayName drops control characters and invalid text from a name the
+// identity provider sent: the person signed in correctly, so the name is
+// repaired rather than the sign-in refused.
+func cleanDisplayName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r == utf8.RuneError || r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, name)
 }
 
 // ssoSettingsView is the settings as the administrator sees them.
 type ssoSettingsView struct {
-	Enabled         bool   `json:"enabled"`
-	IDPMetadataXML  string `json:"idp_metadata_xml"`
-	EntityID        string `json:"entity_id"`
+	Enabled        bool   `json:"enabled"`
+	IDPMetadataXML string `json:"idp_metadata_xml"`
+	EntityID       string `json:"entity_id"`
+	// EntityIDDefault is the entity id used while entity_id is stored empty;
+	// it follows the public URL.
+	EntityIDDefault string `json:"entity_id_default"`
 	GroupsAttribute string `json:"groups_attribute"`
 	EmailAttribute  string `json:"email_attribute"`
 	NameAttribute   string `json:"name_attribute"`
@@ -665,6 +835,7 @@ func (s *server) ssoView(settings auth.SAMLSettings) ssoSettingsView {
 	base := strings.TrimRight(s.PublicURL, "/")
 	return ssoSettingsView{
 		Enabled: settings.Enabled, IDPMetadataXML: settings.IDPMetadataXML, EntityID: s.effectiveEntityID(settings),
+		EntityIDDefault: s.effectiveEntityID(auth.SAMLSettings{}),
 		GroupsAttribute: settings.GroupsAttribute, EmailAttribute: settings.EmailAttribute, NameAttribute: settings.NameAttribute,
 		MetadataURL: base + "/saml/metadata", ACSURL: base + samlACSPath,
 	}
@@ -683,15 +854,16 @@ type ssoRequest struct {
 	Enabled bool `json:"enabled"`
 	// IDPMetadataXML replaces the stored identity provider metadata; empty
 	// keeps what is stored.
-	IDPMetadataXML  string `json:"idp_metadata_xml"`
+	IDPMetadataXML  string `json:"idp_metadata_xml" text:"multiline"`
 	EntityID        string `json:"entity_id"`
 	GroupsAttribute string `json:"groups_attribute"`
 	EmailAttribute  string `json:"email_attribute"`
 	NameAttribute   string `json:"name_attribute"`
 	// Read-only fields of the settings view; accepted and ignored so the view
 	// can be sent back as it was read.
-	MetadataURL string `json:"metadata_url"`
-	ACSURL      string `json:"acs_url"`
+	MetadataURL     string `json:"metadata_url"`
+	ACSURL          string `json:"acs_url"`
+	EntityIDDefault string `json:"entity_id_default"`
 }
 
 // checkIDPMetadata parses the metadata and, when strict, also requires what
@@ -739,10 +911,25 @@ func hasSigningCertificate(idp *saml.EntityDescriptor) bool {
 	return false
 }
 
+// putSSO changes the single sign-on settings. Whoever controls the identity
+// provider can sign in as anyone, so this needs Admin, not just manage_access.
 func (s *server) putSSO(w http.ResponseWriter, r *http.Request) {
+	if !isAdmin(r) {
+		s.writeAccessError(w, r, errAdminRequired, "sso")
+		return
+	}
 	var req ssoRequest
 	if !decodeBody(w, r, &req) {
 		return
+	}
+	for _, field := range []struct{ name, value string }{
+		{"entity_id", req.EntityID}, {"groups_attribute", req.GroupsAttribute},
+		{"email_attribute", req.EmailAttribute}, {"name_attribute", req.NameAttribute},
+	} {
+		if len(strings.TrimSpace(field.value)) > maxSSOSettingLength {
+			invalid(w, fmt.Sprintf("%s is at most %d characters", field.name, maxSSOSettingLength))
+			return
+		}
 	}
 	current, err := auth.LoadSAMLSettings(r.Context(), s.Pool)
 	if err != nil {

@@ -65,6 +65,15 @@ RETURNING `+userColumns+`, (xmax = 0)`, email, name, dbTime(at))
 	return u, created, nil
 }
 
+// RecordSignIn sets the user's last sign-in time. Every interactive sign-in
+// (password or SAML) calls it; token use does not.
+func RecordSignIn(ctx context.Context, db DBTX, userID int64, at time.Time) error {
+	if _, err := db.Exec(ctx, "UPDATE users SET last_login_at = $2 WHERE id = $1", userID, dbTime(at)); err != nil {
+		return fmt.Errorf("record sign-in: %w", mapError(err))
+	}
+	return nil
+}
+
 // CreateLocalUser creates a user that signs in with a password (source
 // "local") or a service account (source "service"). An empty passwordHash is
 // stored as no password. It returns ErrDuplicate for a taken email and

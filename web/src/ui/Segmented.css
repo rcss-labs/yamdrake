@@ -1,0 +1,26 @@
+.ui-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  background: var(--raised);
+  border-radius: 10px;
+}
+.ui-seg button {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink2);
+  font-weight: 500;
+  font-size: 13px;
+}
+.ui-seg button:hover {
+  color: var(--ink);
+}
+.ui-seg button.ui-seg-on {
+  background: Canvas;
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px var(--line);
+}

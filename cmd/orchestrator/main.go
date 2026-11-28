@@ -39,10 +39,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 		return app.ExitOK
 	case "create-admin":
 		return createAdmin(ctx, args[2:], getenv, stdin, stdout, stderr)
+	case "unlock":
+		return unlock(ctx, args[2:], getenv, stdout, stderr)
 	case "healthcheck":
 		return app.Healthcheck(ctx, getenv, httpAddrVar, defaultHTTPAddr, stderr)
 	default:
-		_, _ = fmt.Fprintf(stderr, "usage: %s [version|healthcheck|create-admin]\n\nWith no subcommand the service starts and is configured through YUMDRAKE_* environment variables.\n", serviceName)
+		_, _ = fmt.Fprintf(stderr, "usage: %s [version|healthcheck|create-admin|unlock]\n\nWith no subcommand the service starts and is configured through YUMDRAKE_* environment variables.\n", serviceName)
 		return app.ExitUsage
 	}
 }

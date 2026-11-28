@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -152,9 +155,10 @@ func TestDisableUserDeletesSessions(t *testing.T) {
 	}
 	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: token}), http.StatusUnauthorized, "unauthorized")
 
-	// Enabling brings back the account (tokens work again), not the sessions.
+	// Enabling brings back the account, but neither the sessions nor the tokens
+	// (disabling revoked them for good).
 	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"disabled": false}), http.StatusOK, "")
-	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: token}), http.StatusOK, "")
+	h.expect(h.send(sent{method: "GET", path: "/api/v1/me", bearer: token}), http.StatusUnauthorized, "unauthorized")
 }
 
 func TestDisableStandsWhenValkeyIsDown(t *testing.T) {
@@ -207,45 +211,132 @@ func TestCannotRemoveLastAdmin(t *testing.T) {
 	h.expect(rec, http.StatusConflict, "conflict")
 }
 
+// holdAdminLock takes the admin lock in a transaction of its own and returns
+// it with the PostgreSQL backend pid that holds it.
+func (h *harness) holdAdminLock() (pgx.Tx, int) {
+	h.t.Helper()
+	ctx := context.Background()
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		h.t.Fatalf("begin: %v", err)
+	}
+	if err := store.LockAdminChanges(ctx, tx); err != nil {
+		h.t.Fatalf("LockAdminChanges: %v", err)
+	}
+	var pid int
+	if err := tx.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+		h.t.Fatalf("pg_backend_pid: %v", err)
+	}
+	return tx, pid
+}
+
+// waitForAdminLockWaiters waits (up to 10 seconds) until at least n backends
+// other than holderPID wait for the admin lock itself: the advisory lock with
+// its key, ungranted, in this database, so other locks and other tests on a
+// shared server are not counted.
+func (h *harness) waitForAdminLockWaiters(holderPID, n int) bool {
+	h.t.Helper()
+	key := store.AdminLockKey()
+	classID, objID := int64(uint32(uint64(key)>>32)), int64(uint32(uint64(key)))
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var got int
+		err := h.pool.QueryRow(context.Background(), `SELECT count(DISTINCT pid) FROM pg_locks
+WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+AND classid::bigint = $1 AND objid::bigint = $2 AND pid <> $3
+AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`, classID, objID, holderPID).Scan(&got)
+		if err != nil {
+			h.t.Fatalf("read pg_locks: %v", err)
+		}
+		if got >= n {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The admin-affecting writes of identity-provider mappings take the same lock
+// as the other writes that can change who is an administrator.
+func TestIDPMappingChangesTakeTheAdminLock(t *testing.T) {
+	h := newHarness(t)
+	group := h.createGroupVia("locked-"+uniqueEmail(t, "g"), false)
+	h.expect(h.asAdmin("PUT", "/api/v1/admin/idp-mappings/to-delete", map[string]any{"group_id": group}), http.StatusOK, "")
+	for name, request := range map[string]struct {
+		method, path string
+		body         any
+		want         int
+	}{
+		"put":    {"PUT", "/api/v1/admin/idp-mappings/locked-one", map[string]any{"group_id": group}, http.StatusOK},
+		"delete": {"DELETE", "/api/v1/admin/idp-mappings/to-delete", nil, http.StatusNoContent},
+	} {
+		holder, pid := h.holdAdminLock()
+		done := make(chan int, 1)
+		go func() {
+			done <- h.send(sent{method: request.method, path: request.path, bearer: h.adminToken, body: request.body}).Code
+		}()
+		if !h.waitForAdminLockWaiters(pid, 1) {
+			_ = holder.Rollback(context.Background())
+			t.Fatalf("%s: the request did not wait for the admin lock", name)
+		}
+		_ = holder.Rollback(context.Background())
+		if code := <-done; code != request.want {
+			t.Errorf("%s: status %d, want %d", name, code, request.want)
+		}
+	}
+}
+
+// Two administrators each disable the other. Left alone the two requests could
+// both read "two administrators" before either writes; the admin lock makes the
+// second one count afresh. The test holds the lock itself, so both requests are
+// certainly waiting on it (checked in pg_locks) before either may go on, and the
+// outcome cannot depend on timing: one succeeds, the other is refused as the
+// removal of the last administrator.
 func TestTwoConcurrentRemovalsOfDifferentAdminsCannotBothSucceed(t *testing.T) {
 	h := newHarness(t)
+	ctx := context.Background()
 	second := h.newUser("second")
-	groups, _ := store.GroupsOfUser(context.Background(), h.pool, h.admin.ID)
+	groups, _ := store.GroupsOfUser(ctx, h.pool, h.admin.ID)
 	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(second.ID), map[string]any{"group_ids": []int64{groups[0].ID}}), http.StatusOK, "")
 	secondToken, _ := h.newToken(second.ID)
 
+	holder, holderPID := h.holdAdminLock()
+	defer func() { _ = holder.Rollback(ctx) }()
+
 	var wg sync.WaitGroup
 	codes := make([]int, 2)
-	for i, target := range []int64{h.admin.ID, second.ID} {
+	for i, request := range []struct{ actor, victim string }{
+		{h.adminToken, itoa(second.ID)}, // the first administrator disables the second ...
+		{secondToken, itoa(h.admin.ID)}, // ... and the second disables the first
+	} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Each admin disables the other: a different admin per request.
-			actor, victim := secondToken, target
-			if i == 1 {
-				actor = h.adminToken
-			}
-			req := httptest.NewRequest("PATCH", "/api/v1/admin/users/"+itoa(victim), strings.NewReader(`{"disabled":true}`))
-			req.Header.Set("Authorization", "Bearer "+actor)
-			rec := httptest.NewRecorder()
-			h.handler.ServeHTTP(rec, req)
+			rec := h.send(sent{method: "PATCH", path: "/api/v1/admin/users/" + request.victim, bearer: request.actor, body: map[string]any{"disabled": true}})
 			codes[i] = rec.Code
 		}()
 	}
+
+	// Both requests must be queued on the advisory lock before it is released.
+	if !h.waitForAdminLockWaiters(holderPID, 2) {
+		_ = holder.Rollback(ctx)
+		wg.Wait()
+		t.Fatalf("fewer than 2 requests waited on the admin lock (answers %v); both must take it before changing anything", codes)
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release the lock: %v", err)
+	}
 	wg.Wait()
-	ok := 0
-	for _, c := range codes {
-		if c == http.StatusOK {
-			ok++
-		}
+
+	slices.Sort(codes)
+	if codes[0] != http.StatusOK || codes[1] != http.StatusConflict {
+		t.Fatalf("answers = %v, want exactly one 200 and one 409", codes)
 	}
-	// A request whose caller was disabled first answers 401: that is fine too.
-	if ok > 1 {
-		t.Fatalf("both removals succeeded (%v): no administrator is left", codes)
-	}
-	admins, err := store.CountEnabledAdmins(context.Background(), h.pool)
-	if err != nil || admins < 1 {
-		t.Fatalf("enabled administrators = %d, %v; want at least 1", admins, err)
+	admins, err := store.CountEnabledAdmins(ctx, h.pool)
+	if err != nil || admins != 1 {
+		t.Fatalf("enabled administrators = %d, %v; want exactly 1", admins, err)
 	}
 }
 
@@ -324,6 +415,62 @@ func TestAuditPagingAndPermission(t *testing.T) {
 	h.expect(h.send(sent{method: "GET", path: "/api/v1/admin/audit", bearer: token}), http.StatusForbidden, "forbidden")
 }
 
+func TestUserGroupsReportTheirSource(t *testing.T) {
+	h := newHarness(t)
+	user := h.newUser("mixed")
+	manualOnly := h.createGroupVia("manual-only-"+uniqueEmail(t, "g"), false)
+	idpOnly := h.createGroupVia("idp-only-"+uniqueEmail(t, "g"), false)
+	both := h.createGroupVia("both-"+uniqueEmail(t, "g"), false)
+	h.expect(h.asAdmin("PATCH", "/api/v1/admin/users/"+itoa(user.ID), map[string]any{"group_ids": []int64{manualOnly, both}}), http.StatusOK, "")
+	if err := store.ReplaceIDPMemberships(context.Background(), h.pool, user.ID, []int64{idpOnly, both}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]string{manualOnly: "manual", idpOnly: "idp", both: "manual"}
+	for _, entry := range decodeObject(t, h.asAdmin("GET", "/api/v1/admin/users", nil))["users"].([]any) {
+		u := entry.(map[string]any)
+		if int64(u["id"].(float64)) != user.ID {
+			continue
+		}
+		got := map[int64]string{}
+		for _, g := range u["groups"].([]any) {
+			ref := g.(map[string]any)
+			got[int64(ref["id"].(float64))], _ = ref["source"].(string)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("groups = %v, want %v", got, want)
+		}
+		for id, source := range want {
+			if got[id] != source {
+				t.Errorf("group %d source = %q, want %q (manual wins when both)", id, got[id], source)
+			}
+		}
+		return
+	}
+	t.Fatal("user not listed")
+}
+
+func TestAuditNextBeforeOnlyWhenOlderRowsExist(t *testing.T) {
+	h := newHarness(t)
+	for i := range 3 {
+		h.createGroupVia("audit-edge-"+strconv.Itoa(i)+"-"+uniqueEmail(t, "g"), false)
+	}
+	all := decodeObject(t, h.asAdmin("GET", "/api/v1/admin/audit?limit=200", nil))["entries"].([]any)
+	total := len(all)
+	if total < 3 || total >= 200 {
+		t.Fatalf("test needs a log of 3 to 199 entries, got %d", total)
+	}
+	// Exactly as many rows as the limit: nothing older, so no next page.
+	exact := decodeObject(t, h.asAdmin("GET", "/api/v1/admin/audit?limit="+strconv.Itoa(total), nil))
+	if len(exact["entries"].([]any)) != total || exact["next_before"] != nil {
+		t.Errorf("a full last page: %d entries, next_before = %v, want %d and null", len(exact["entries"].([]any)), exact["next_before"], total)
+	}
+	// One row fewer than the log: an older row exists.
+	short := decodeObject(t, h.asAdmin("GET", "/api/v1/admin/audit?limit="+strconv.Itoa(total-1), nil))
+	if len(short["entries"].([]any)) != total-1 || short["next_before"] == nil {
+		t.Errorf("a page with an older row: %d entries, next_before = %v, want %d and a cursor", len(short["entries"].([]any)), short["next_before"], total-1)
+	}
+}
+
 // TestEveryChangeIsAudited makes one change per mutating route of this task
 // and checks the entry it leaves, in the same step.
 func TestEveryChangeIsAudited(t *testing.T) {
@@ -379,14 +526,16 @@ func TestEveryChangeIsAudited(t *testing.T) {
 		h.expect(h.asAdmin("DELETE", "/api/v1/admin/idp-mappings/aud-idp", nil), http.StatusNoContent, "")
 	})
 	var tokenID int64
+	adminSession := h.newSession(h.admin.ID)
 	e = wantAction("token.create", func() {
-		rec := h.asAdmin("POST", "/api/v1/tokens", map[string]any{"name": "audited"})
+		// Tokens are managed from a browser session only.
+		rec := h.send(sent{method: "POST", path: "/api/v1/tokens", sessionID: adminSession, origin: publicURL, body: map[string]any{"name": "audited"}})
 		h.expect(rec, http.StatusCreated, "")
 		tokenID = int64(decodeObject(t, rec)["id"].(float64))
 	})
 	_ = e
 	wantAction("token.revoke", func() {
-		h.expect(h.asAdmin("DELETE", "/api/v1/tokens/"+itoa(tokenID), nil), http.StatusNoContent, "")
+		h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + itoa(tokenID), sessionID: adminSession, origin: publicURL}), http.StatusNoContent, "")
 	})
 }
 
@@ -449,11 +598,12 @@ func TestAccessResponsesMatchTheWebContract(t *testing.T) {
 		t.Errorf("next_before on the last page = %v (present %v), want null", v, present)
 	}
 	// A token is listed with the contract's fields and no revoked ones.
-	created := decodeObject(t, h.asAdmin("POST", "/api/v1/tokens", map[string]any{"name": "w", "ttl_days": 1}))
+	adminSession := h.newSession(h.admin.ID)
+	created := decodeObject(t, h.send(sent{method: "POST", path: "/api/v1/tokens", sessionID: adminSession, origin: publicURL, body: map[string]any{"name": "w", "ttl_days": 1}}))
 	if p, _ := created["plaintext"].(string); !strings.HasPrefix(p, "ymd_") {
 		t.Errorf("created token has no plaintext")
 	}
-	h.expect(h.asAdmin("DELETE", "/api/v1/tokens/"+idString(int64(created["id"].(float64))), nil), http.StatusNoContent, "")
+	h.expect(h.send(sent{method: "DELETE", path: "/api/v1/tokens/" + idString(int64(created["id"].(float64))), sessionID: adminSession, origin: publicURL}), http.StatusNoContent, "")
 	if left := decodeObject(t, h.asAdmin("GET", "/api/v1/tokens", nil))["tokens"].([]any); len(left) != 1 {
 		t.Errorf("tokens listed after revoking one = %d, want only the admin's own", len(left))
 	}

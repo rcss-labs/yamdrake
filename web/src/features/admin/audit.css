@@ -1,0 +1,22 @@
+.audit-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+  border-top: 1px solid var(--line);
+}
+.audit-actions .audit-error {
+  color: var(--bad-t);
+  font-size: 13px;
+}
+.audit-nowrap {
+  white-space: nowrap;
+}
+.audit-who {
+  font-weight: 500;
+}
+.audit-detail {
+  color: var(--ink3);
+  font-size: 13px;
+}

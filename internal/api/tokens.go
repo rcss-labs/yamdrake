@@ -20,6 +20,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/audit"
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
@@ -71,9 +72,14 @@ func (s *server) listTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 // createToken makes a token for the caller. Its plaintext is in this response
-// and nowhere else.
+// and nowhere else. Only a browser session may do it: a token that could mint
+// tokens would renew itself for ever and outlive its owner's removal.
 func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 	principal, _ := PrincipalFrom(r.Context())
+	if principal.Via != viaSession {
+		writeError(w, http.StatusForbidden, codeForbidden, messageTokensNeedSession)
+		return
+	}
 	var req struct {
 		Name          string `json:"name"`
 		ExpiresInDays int    `json:"ttl_days"`
@@ -93,6 +99,76 @@ func (s *server) createToken(w http.ResponseWriter, r *http.Request) {
 	plaintext, created, err := s.issueToken(r, principal, name, time.Duration(req.ExpiresInDays)*24*time.Hour)
 	if err != nil {
 		s.internalError(w, r, err)
+		return
+	}
+	body := struct {
+		tokenResponse
+		Plaintext string `json:"plaintext"`
+	}{tokenView(created), plaintext}
+	writeJSON(w, http.StatusCreated, body)
+}
+
+// createServiceToken mints a token for a service account, which has no browser
+// to do it from. Global admins only, and only from a browser session (a token
+// that could mint tokens could renew admin power for ever); the audit entry
+// names the token and never its value. The plaintext is in this response only.
+func (s *server) createServiceToken(w http.ResponseWriter, r *http.Request) {
+	principal, _ := PrincipalFrom(r.Context())
+	if principal.Via != viaSession {
+		writeError(w, http.StatusForbidden, codeForbidden, messageTokensNeedSession)
+		return
+	}
+	if !principal.Admin {
+		s.writeAccessError(w, r, errAdminRequired, "token")
+		return
+	}
+	id, ok := pathID(r)
+	if !ok {
+		notFound(w, "user")
+		return
+	}
+	var req struct {
+		Name          string `json:"name"`
+		ExpiresInDays int    `json:"ttl_days"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" || len(name) > maxTokenNameLength {
+		invalid(w, fmt.Sprintf("name is required and at most %d characters", maxTokenNameLength))
+		return
+	}
+	if req.ExpiresInDays < 0 || req.ExpiresInDays > maxTokenDays {
+		invalid(w, fmt.Sprintf("ttl_days must be between 0 (the default, 90) and %d", maxTokenDays))
+		return
+	}
+	var plaintext string
+	var created store.Token
+	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
+		user, err := store.UserByID(ctx, tx, id)
+		if err != nil {
+			return audit.Event{}, err
+		}
+		if user.Source != "service" {
+			return audit.Event{}, fmt.Errorf("%w: tokens are minted here only for service accounts", store.ErrInvalid)
+		}
+		plaintext, created, err = auth.NewToken(ctx, tx, id, name, time.Duration(req.ExpiresInDays)*24*time.Hour, s.Now())
+		if err != nil {
+			return audit.Event{}, err
+		}
+		detail := map[string]any{"name": name, "user_id": id, "email": user.Email}
+		if created.ExpiresAt != nil {
+			detail["expires_at"] = created.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		return audit.Event{Action: "token.create", TargetType: "token", TargetID: idString(created.ID), Detail: detail}, nil
+	})
+	if errors.Is(err, store.ErrInvalid) {
+		writeError(w, http.StatusUnprocessableEntity, codeInvalid, "tokens are minted here only for service accounts")
+		return
+	}
+	if err != nil {
+		s.writeAccessError(w, r, err, "user")
 		return
 	}
 	body := struct {
@@ -132,13 +208,20 @@ func (s *server) issueToken(r *http.Request, principal auth.Principal, name stri
 	return plaintext, created, nil
 }
 
-// revokeToken revokes one of the caller's own tokens. A token of someone else
-// is a 404, the same as an unknown id, so its existence is not revealed.
+// revokeToken revokes one of the caller's own tokens (from a browser session),
+// or the token that makes the request. A token of someone else is a 404, the same as an
+// unknown id, so its existence is not revealed.
 func (s *server) revokeToken(w http.ResponseWriter, r *http.Request) {
 	principal, _ := PrincipalFrom(r.Context())
 	id, ok := pathID(r)
-	if !ok {
+	if !ok && principal.Via == viaSession {
 		notFound(w, "token")
+		return
+	}
+	// A token may give up its own power and nothing else; any other id (a
+	// sibling, a stranger's, an unknown one) is refused alike.
+	if principal.Via != viaSession && (!ok || id != principal.TokenID) {
+		writeError(w, http.StatusForbidden, codeForbidden, messageTokenRevokesItself)
 		return
 	}
 	err := s.auditedWrite(r, func(ctx context.Context, tx pgx.Tx) (audit.Event, error) {
@@ -248,7 +331,7 @@ func (s *server) startDeviceLogin(w http.ResponseWriter, r *http.Request) {
 			s.valkeyFailed(w, "store device user code", err)
 			return
 		}
-		verifyURL := strings.TrimRight(s.PublicURL, "/") + "/device?user_code=" + url.QueryEscape(userCode)
+		verifyURL := strings.TrimRight(s.PublicURL, "/") + "/cli/confirm?code=" + url.QueryEscape(userCode)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"device_code": deviceCode, "user_code": userCode, "verify_url": verifyURL,
 			"interval": s.pollSeconds(), "expires_in": int64(deviceTTL / time.Second),
@@ -264,6 +347,9 @@ func (s *server) confirmDeviceLogin(w http.ResponseWriter, r *http.Request) {
 	principal, _ := PrincipalFrom(r.Context())
 	if principal.Via != viaSession {
 		writeError(w, http.StatusForbidden, codeForbidden, "a device sign-in is confirmed from a browser session")
+		return
+	}
+	if !s.allowConfirmAttempt(w, r) {
 		return
 	}
 	var req struct {
@@ -309,6 +395,41 @@ func (s *server) confirmDeviceLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+const (
+	maxConfirmAttempts = 10
+	confirmWindow      = 10 * time.Minute
+)
+
+// confirmCountScript counts one attempt and starts the window with the first.
+var confirmCountScript = valkey.NewLuaScript(`
+local n = redis.call('INCR', KEYS[1])
+if n == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+return {n, redis.call('PTTL', KEYS[1])}`)
+
+// allowConfirmAttempt counts a confirm attempt of this session (every attempt,
+// whatever the code) and answers 429 once there are more than
+// maxConfirmAttempts in confirmWindow, so a user code cannot be guessed. The
+// key holds a hash of the session id, never the id.
+func (s *server) allowConfirmAttempt(w http.ResponseWriter, r *http.Request) bool {
+	id, _ := session.IDFromRequest(r)
+	sum := sha256.Sum256([]byte(id))
+	key := s.KeyPrefix + "device-confirm:" + hex.EncodeToString(sum[:])
+	ctx, cancel := context.WithTimeout(r.Context(), valkeyTimeout)
+	defer cancel()
+	reply, err := confirmCountScript.Exec(ctx, s.Valkey, []string{key}, []string{strconv.FormatInt(confirmWindow.Milliseconds(), 10)}).AsIntSlice()
+	if err != nil || len(reply) != 2 {
+		s.valkeyFailed(w, "count device confirm attempt", errors.Join(err, errors.New("confirm counter")))
+		return false
+	}
+	if reply[0] > maxConfirmAttempts {
+		wait := max(time.Duration(reply[1])*time.Millisecond, time.Second)
+		w.Header().Set("Retry-After", strconv.FormatInt(int64((wait+time.Second-1)/time.Second), 10))
+		writeError(w, http.StatusTooManyRequests, codeTooMany, "too many attempts; try again later")
+		return false
+	}
+	return true
 }
 
 // pollScript returns the device state and, when it is confirmed, deletes it in

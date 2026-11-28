@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApiLogLine, LogPage, RunStateEvent } from '../../api/types'
 import { runIds } from '../../test/fixtures'
 import { delayNext, eventSources, failNext, mockState, requests } from '../../test/server'
-import { useRunLive } from './useRunLive'
+import { REOPEN_DELAY_MS, useRunLive, WATCHDOG_MS } from './useRunLive'
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -287,6 +287,50 @@ describe('useRunLive on an active run', () => {
       await new Promise((resolve) => setTimeout(resolve, 20))
     })
     expect(result.current.run?.wait_reason).toBe('Newer than the reload')
+  })
+
+  describe('the silence watchdog', () => {
+    // Only the timers: the mock server and Testing Library's polling keep using real ones.
+    const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+    // Testing Library's waitFor waits on a timer that is faked here, so these tests wait with vitest's own.
+    const watchWithFakeTimers = async () => {
+      renderHook(() => useRunLive(runIds.running, { logs: true }), { wrapper })
+      await vi.waitFor(() => expect(eventSources.last()).toBeDefined())
+    }
+    const runFetches = () => requests.filter((request) => request.path === `/api/v1/runs/${runIds.running}`).length
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('reconnects when the stream is silent for 45 seconds', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      await watchWithFakeTimers()
+      const first = eventSources.last()!
+      act(() => first.open())
+      const fetchesBefore = runFetches()
+      await advance(WATCHDOG_MS - 1000)
+      expect(first.closed).toBe(false)
+      await advance(1000)
+      expect(first.closed).toBe(true)
+      // The existing reconnect path: a pause, then the run is read and a new stream opens; reload() read it too.
+      await advance(REOPEN_DELAY_MS)
+      await vi.waitFor(() => expect(eventSources.all).toHaveLength(2))
+      expect(runFetches()).toBeGreaterThan(fetchesBefore)
+    })
+
+    it('a ping keeps the stream alive', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      await watchWithFakeTimers()
+      const stream = eventSources.last()!
+      act(() => stream.open())
+      for (let beat = 0; beat < 4; beat += 1) {
+        await advance(WATCHDOG_MS - 5000)
+        act(() => stream.emit('ping', {}))
+      }
+      expect(stream.closed).toBe(false)
+      expect(eventSources.all).toHaveLength(1)
+    })
   })
 
   it('closes the stream and reports finished on the end event', async () => {

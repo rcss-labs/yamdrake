@@ -52,7 +52,7 @@ type planConfigView struct {
 	PreviousSHA256  string       `json:"previous_sha256,omitempty"`
 	Change          string       `json:"change"`
 	Keys            *planKeyDiff `json:"keys,omitempty"`
-	NotRestored     bool         `json:"not_restored,omitempty"`
+	NotRestored     string       `json:"not_restored,omitempty"` // why a restore leaves this item alone
 }
 
 type planKeyDiff struct {

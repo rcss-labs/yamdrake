@@ -8,8 +8,9 @@
 // It only reads, so it needs no Env.Do. A mismatch fails the leg with the
 // short reason "changed since planning", which the run engine turns into
 // "invalidated". An AWS answer that is not a definite yes or no (access
-// denied, throttling after retries, network) also fails the leg, but is
-// reported as a failure to check, not as a change.
+// denied, throttling after retries, network) also fails the leg, but its short
+// reason starts with "could not re-check the targets" and the run ends failed,
+// not invalidated. Throttling, server errors and timeouts are retried first.
 //
 // Nothing here puts file contents or AWS error messages into a log line or an
 // outcome: files are named with their name and the first 12 characters of a
@@ -26,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
@@ -37,6 +39,7 @@ import (
 
 	"github.com/rcss-labs/yamdrake/internal/artifacts"
 	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yamdrake/internal/engine"
 	"github.com/rcss-labs/yamdrake/internal/manifest"
 	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/runner"
@@ -44,9 +47,15 @@ import (
 )
 
 // DriftReason is the short failure reason of a leg whose targets changed.
-const DriftReason = "changed since planning"
+const DriftReason = engine.RevalidateDriftReason
 
-const couldNotCheckReason = "could not re-check the targets"
+const couldNotCheckReason = engine.RevalidateCouldNotCheckReason
+
+// attempts is how often one AWS call is tried when AWS answers with throttling,
+// a server error or a timeout.
+const attempts = 4
+
+const defaultRetryBase = 500 * time.Millisecond
 
 // ArtifactReader reads a stored copy and checks its SHA-256. *artifacts.Store
 // satisfies it. Deps.Artifacts must also implement it (as *artifacts.Store
@@ -59,6 +68,9 @@ type executor struct{ d resolve.Deps }
 
 // New returns the "revalidate" executor.
 func New(d resolve.Deps) runner.Executor {
+	if d.RetryBase <= 0 {
+		d.RetryBase = defaultRetryBase
+	}
 	if d.Clients == nil {
 		options := d.Options
 		d.Clients = func(cfg aws.Config) resolve.Clients { return resolve.NewClients(cfg, options) }
@@ -133,12 +145,23 @@ func (r *revalidation) outcome(services int) queue.Outcome {
 		drift = drift || f.drift
 		lines[i] = f.detail
 	}
-	reason := couldNotCheckReason
+	reason := couldNotCheckReason + ": " + firstUnchecked(r.findings)
 	if drift {
 		reason = DriftReason
 	}
 	r.env.Log("error", fmt.Sprintf("%s: %d findings.", reason, len(r.findings)))
 	return failed(reason, strings.Join(lines, "\n"))
+}
+
+// firstUnchecked is the first finding that is not drift, as the short reason
+// of a leg that could not re-check: the service and the AWS code, no more.
+func firstUnchecked(findings []finding) string {
+	for _, f := range findings {
+		if !f.drift {
+			return f.detail
+		}
+	}
+	return "unknown"
 }
 
 func failed(short, detail string) queue.Outcome {
@@ -175,6 +198,12 @@ func (r *revalidation) unchecked(service, detail string) {
 	r.env.Log("error", "["+service+"] "+detail)
 }
 
+// call runs one AWS call under the per-call deadline, repeating it while AWS
+// answers with throttling, a server error or a timeout.
+func (r *revalidation) call(ctx context.Context, fn func(ctx context.Context) error) error {
+	return resolve.Retry(ctx, attempts, r.x.d.RetryBase, fn)
+}
+
 func (r *revalidation) ok(service, format string, args ...any) {
 	r.env.Log("ok", "["+service+"] "+fmt.Sprintf(format, args...))
 }
@@ -185,7 +214,9 @@ func (r *revalidation) clientsFor(ctx context.Context, region string) (resolve.C
 	if c, ok := r.clients[region]; ok {
 		return c, nil
 	}
-	cfg, err := r.x.d.AWS(ctx, r.run.Run.AWSAccount, region, r.session)
+	callCtx, cancel := context.WithTimeout(ctx, resolve.CallTimeout)
+	defer cancel()
+	cfg, err := r.x.d.AWS(callCtx, r.run.Run.AWSAccount, region, r.session)
 	if err != nil {
 		return resolve.Clients{}, err
 	}
@@ -227,23 +258,37 @@ func (r *revalidation) taskDefinition(ctx context.Context, s manifest.Service, r
 		r.unchecked(s.Name, resolve.ErrorDetail("sign-in", err))
 		return
 	}
-	described, err := clients.ECS.DescribeServices(ctx, &ecs.DescribeServicesInput{
-		Cluster: aws.String(ref.Cluster), Services: []string{ref.Service},
+	var described *ecs.DescribeServicesOutput
+	err = r.call(ctx, func(ctx context.Context) (callErr error) {
+		described, callErr = clients.ECS.DescribeServices(ctx, &ecs.DescribeServicesInput{
+			Cluster: aws.String(ref.Cluster), Services: []string{ref.Service},
+		})
+		return callErr
 	})
 	if err != nil {
 		r.unchecked(s.Name, resolve.ErrorDetail("ecs:DescribeServices", err))
 		return
 	}
-	var found *struct{ status, taskDefinition string }
+	// Only a service of the environment's account and region counts; a name
+	// alone never matches.
+	var candidates []ecstypes.Service
 	for _, candidate := range described.Services {
+		if problem := resolve.ARNScopeProblem(aws.ToString(candidate.ServiceArn), r.run.Run.AWSAccount, ref.Region); problem != "" {
+			r.unchecked(s.Name, fmt.Sprintf("service %s was refused: %s", ref.Service, problem))
+			return
+		}
+		candidates = append(candidates, candidate)
+	}
+	var found *struct{ status, taskDefinition string }
+	for _, candidate := range candidates {
 		if aws.ToString(candidate.ServiceArn) == s.ECSService || aws.ToString(candidate.ServiceName) == ref.Service {
 			found = &struct{ status, taskDefinition string }{aws.ToString(candidate.Status), aws.ToString(candidate.TaskDefinition)}
 			break
 		}
 	}
 	// same rule as resolve: ECS returned only the service asked for
-	if found == nil && len(described.Services) == 1 {
-		c := described.Services[0]
+	if found == nil && len(candidates) == 1 {
+		c := candidates[0]
 		found = &struct{ status, taskDefinition string }{aws.ToString(c.Status), aws.ToString(c.TaskDefinition)}
 	}
 	switch {
@@ -270,7 +315,11 @@ func (r *revalidation) targetTaskDefinition(ctx context.Context, s manifest.Serv
 		r.unchecked(s.Name, resolve.ErrorDetail("sign-in", err))
 		return
 	}
-	out, err := clients.ECS.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String(s.TargetTaskDefinition)})
+	var out *ecs.DescribeTaskDefinitionOutput
+	err = r.call(ctx, func(ctx context.Context) (callErr error) {
+		out, callErr = clients.ECS.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String(s.TargetTaskDefinition)})
+		return callErr
+	})
 	switch {
 	case resolve.ErrorCode(err) == "ClientException": // what ECS answers for a task definition it does not know
 		r.changed(s.Name, "task definition %s to restore no longer exists", s.TargetTaskDefinition)
@@ -303,9 +352,13 @@ func (r *revalidation) image(ctx context.Context, s manifest.Service, region *st
 		r.unchecked(s.Name, resolve.ErrorDetail("sign-in", err))
 		return
 	}
-	out, err := clients.ECR.DescribeImages(ctx, &ecr.DescribeImagesInput{
-		RegistryId: aws.String(ref.Account), RepositoryName: aws.String(ref.Name),
-		ImageIds: []ecrtypes.ImageIdentifier{{ImageDigest: aws.String(s.ImageDigest)}},
+	var out *ecr.DescribeImagesOutput
+	err = r.call(ctx, func(ctx context.Context) (callErr error) {
+		out, callErr = clients.ECR.DescribeImages(ctx, &ecr.DescribeImagesInput{
+			RegistryId: aws.String(ref.Account), RepositoryName: aws.String(ref.Name),
+			ImageIds: []ecrtypes.ImageIdentifier{{ImageDigest: aws.String(s.ImageDigest)}},
+		})
+		return callErr
 	})
 	if err != nil {
 		var notFound *ecrtypes.ImageNotFoundException
@@ -343,7 +396,19 @@ func (r *revalidation) destination(ctx context.Context, s manifest.Service, item
 		r.unchecked(s.Name, resolve.ErrorDetail("sign-in", err))
 		return
 	}
-	out, err := clients.S3.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(ref.Bucket), Key: aws.String(ref.Key)})
+	// The body is read inside the call: its context must outlive the read.
+	var data []byte
+	var readErr error
+	err = r.call(ctx, func(ctx context.Context) error {
+		data, readErr = nil, nil
+		out, callErr := clients.S3.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(ref.Bucket), Key: aws.String(ref.Key)})
+		if callErr != nil {
+			return callErr
+		}
+		defer func() { _ = out.Body.Close() }()
+		data, readErr = io.ReadAll(io.LimitReader(out.Body, artifacts.MaxObjectBytes+1))
+		return nil
+	})
 	missing := isMissing(err)
 	if err != nil && !missing {
 		r.unchecked(s.Name, resolve.ErrorDetail("s3:GetObject", err))
@@ -356,8 +421,6 @@ func (r *revalidation) destination(ctx context.Context, s manifest.Service, item
 	case missing:
 		r.changed(s.Name, "%s: destination no longer exists; it held %s at planning time", item.Name, shortSum(item.PreviousSHA256))
 	default:
-		defer func() { _ = out.Body.Close() }()
-		data, readErr := io.ReadAll(io.LimitReader(out.Body, artifacts.MaxObjectBytes+1))
 		switch {
 		case readErr != nil:
 			r.unchecked(s.Name, "reading the destination of "+item.Name+" failed")
@@ -402,7 +465,10 @@ func (r *revalidation) storedCopy(ctx context.Context, service, file, which, key
 		r.unchecked(service, "the artifact store cannot read stored copies")
 		return
 	}
-	_, err := reader.Get(ctx, key, wantSHA256)
+	err := r.call(ctx, func(ctx context.Context) error {
+		_, getErr := reader.Get(ctx, key, wantSHA256)
+		return getErr
+	})
 	switch {
 	case err == nil:
 		r.ok(service, "%s: stored copy (%s) still hashes to %s", file, which, shortSum(wantSHA256))

@@ -273,7 +273,7 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 		// A run leaves resolving only with its plan stored. A result that cannot
 		// be used ends the run instead of leaving it stuck.
 		if run.State == "resolving" && d.NewState != "" {
-			problem, err := copyManifest(ctx, tx, run.ID, legs)
+			problem, err := copyManifest(ctx, tx, run, legs)
 			if err != nil {
 				return err
 			}
@@ -333,10 +333,13 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, run store.Run, legs []sto
 // field on trust: approvals bind to this value, so it must describe exactly
 // what is stored.
 //
+// The manifest must name this run and its AWS account, and a succeeded leg's
+// must have services; anything else is not this run's plan.
+//
 // A non-empty problem means a succeeded leg left no usable plan; the caller
 // ends the run with it as the reason. On a failed leg an unusable result is
 // only a diagnostic and is skipped.
-func copyManifest(ctx context.Context, tx pgx.Tx, runID int64, legs []store.Leg) (problem string, err error) {
+func copyManifest(ctx context.Context, tx pgx.Tx, run store.Run, legs []store.Leg) (problem string, err error) {
 	resolve, ok := latestLeg(legs, "resolve")
 	if !ok || (resolve.State != legSucceeded && resolve.State != legFailed) {
 		return "", nil
@@ -362,7 +365,14 @@ func copyManifest(ctx context.Context, tx pgx.Tx, runID int64, legs []store.Leg)
 		}
 		return "", nil
 	}
-	return "", store.SetManifest(ctx, tx, runID, resolve.Result, identity)
+	if m.RunID != run.ID || m.AWSAccount != run.AWSAccount || (succeeded && len(m.Services) == 0) {
+		// Approvals and the writing steps trust this plan to be this run's.
+		if succeeded {
+			return "the resolve step's plan is not for this run; nothing was changed", nil
+		}
+		return "", nil
+	}
+	return "", store.SetManifest(ctx, tx, run.ID, resolve.Result, identity)
 }
 
 func sortedIDs(ids []int64) []int64 {

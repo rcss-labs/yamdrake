@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
@@ -72,7 +73,9 @@ type stubAWS struct {
 	serviceName string          // when set, DescribeServices returns only this service, under this name
 	images      map[string]bool // digests that exist
 	objects     map[string][]byte
-	s3Err       error // returned by every GetObject when set
+	s3Err       error   // returned by every GetObject when set
+	serviceARN  string  // when set, the ARN DescribeServices reports for the service
+	ecsErrors   []error // returned, one per call, by DescribeServices before it answers
 	calls       []string
 }
 
@@ -84,11 +87,22 @@ func (s *stubAWS) record(call string) {
 
 func (s *stubAWS) DescribeServices(_ context.Context, in *ecs.DescribeServicesInput, _ ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error) {
 	s.record("ecs:DescribeServices")
+	s.mu.Lock()
+	if len(s.ecsErrors) > 0 {
+		err := s.ecsErrors[0]
+		s.ecsErrors = s.ecsErrors[1:]
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
 	if s.serviceGone {
 		return &ecs.DescribeServicesOutput{Failures: []ecstypes.Failure{{Arn: aws.String(in.Services[0]), Reason: aws.String("MISSING")}}}, nil
 	}
 	svc := ecstypes.Service{
 		ServiceArn: aws.String(webARN), ServiceName: aws.String("web"), Status: aws.String("ACTIVE"), TaskDefinition: aws.String(s.taskDef),
+	}
+	if s.serviceARN != "" {
+		svc.ServiceArn = aws.String(s.serviceARN)
 	}
 	if s.serviceName != "" {
 		svc.ServiceName = aws.String(s.serviceName)
@@ -249,6 +263,7 @@ func (h *harness) run(t *testing.T) queue.Outcome {
 		},
 		Clients:   func(aws.Config) resolve.Clients { return resolve.Clients{ECS: h.aws, ECR: h.aws, S3: h.aws} },
 		Artifacts: h.artifacts,
+		RetryBase: time.Nanosecond,
 	}
 	if h.artifactsOverride != nil {
 		deps.Artifacts = h.artifactsOverride
@@ -341,6 +356,49 @@ func TestOnlyServiceReturnedIsMatchedLikeResolve(t *testing.T) {
 	h.noLeaks(t, out)
 }
 
+func TestRevalidateRefusesAServiceInAnotherAccount(t *testing.T) {
+	h := newHarness()
+	h.aws.serviceARN = "arn:aws:ecs:eu-west-1:999999999999:service/main/web"
+	out := h.run(t)
+	if out.State != "failed" || out.FailureShort == "" {
+		t.Fatalf("outcome = %q %q, want failed", out.State, out.FailureShort)
+	}
+	if !strings.Contains(out.FailureDetail, "999999999999") || !strings.Contains(out.FailureDetail, account) {
+		t.Errorf("detail %q does not name both accounts", out.FailureDetail)
+	}
+	h.noLeaks(t, out)
+}
+
+func TestRepositoryInAnotherAccountIsAllowed(t *testing.T) {
+	h := newHarness()
+	h.manifest.Services[0].ECRRepository = "999999999999.dkr.ecr.eu-west-1.amazonaws.com/web"
+	h.manifest.ID = manifest.Identity(h.manifest)
+	out := h.run(t)
+	if out.State != "succeeded" {
+		t.Fatalf("outcome = %q %q: %s\nlog:\n%s", out.State, out.FailureShort, out.FailureDetail, h.env.text())
+	}
+}
+
+func TestRevalidateRetriesThrottlingThenSucceeds(t *testing.T) {
+	h := newHarness()
+	throttled := &smithy.GenericAPIError{Code: "ThrottlingException", Message: secretAWSText}
+	h.aws.ecsErrors = []error{throttled, throttled}
+	out := h.run(t)
+	if out.State != "succeeded" {
+		t.Fatalf("outcome = %q %q: %s\nlog:\n%s", out.State, out.FailureShort, out.FailureDetail, h.env.text())
+	}
+	n := 0
+	for _, call := range h.aws.calls {
+		if call == "ecs:DescribeServices" {
+			n++
+		}
+	}
+	if n != 3 {
+		t.Errorf("DescribeServices was called %d times, want 3 (two throttled, then the answer)", n)
+	}
+	h.noLeaks(t, out)
+}
+
 func TestDestinationChangedSincePlanningFails(t *testing.T) {
 	h := newHarness()
 	h.aws.objects["config-dest/env/web.env"] = envChanged
@@ -401,8 +459,8 @@ func TestAWSErrorFailsWithCodeOnly(t *testing.T) {
 		t.Errorf("detail %q does not name the service and the AWS code", out.FailureDetail)
 	}
 	// An answer we could not get is not drift: do not tell the user it changed.
-	if out.FailureShort == "changed since planning" {
-		t.Errorf("an AWS failure was reported as drift")
+	if out.FailureShort == "changed since planning" || !strings.HasPrefix(out.FailureShort, "could not re-check the targets") {
+		t.Errorf("short reason %q: an AWS failure must say it could not re-check, not that the targets changed", out.FailureShort)
 	}
 	h.noLeaks(t, out)
 }
@@ -441,7 +499,7 @@ func TestArtifactStoreWithoutReaderCannotPass(t *testing.T) {
 	h := newHarness()
 	h.artifactsOverride = putOnlyArtifacts{}
 	out := h.run(t)
-	if out.State != "failed" || out.FailureShort != "could not re-check the targets" {
+	if out.State != "failed" || !strings.HasPrefix(out.FailureShort, "could not re-check the targets") {
 		t.Fatalf("outcome = %q %q (%s), want failed \"could not re-check the targets\"", out.State, out.FailureShort, out.FailureDetail)
 	}
 	if !strings.Contains(out.FailureDetail, "the artifact store cannot read stored copies") {

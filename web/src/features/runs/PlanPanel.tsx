@@ -13,7 +13,7 @@ function plural(count: number, one: string, many: string) {
 }
 
 function summaryLine(plan: Plan) {
-  const changing = plan.services.flatMap((service) => service.config).filter((item) => item.change !== 'unchanged').length
+  const changing = plan.services.flatMap((service) => service.config).filter((item) => item.change === 'new' || item.change === 'changed').length
   const services = plural(plan.services.length, 'service', 'services')
   if (changing === 0) return `Plan: ${services}, no config files change`
   return `Plan: ${services}, ${changing} ${changing === 1 ? 'config file changes' : 'config files change'}`
@@ -78,7 +78,7 @@ function ConfigEntry({ item }: { item: ConfigItem }) {
     <li className="plan-config-item">
       <span className="plan-config-head">
         <span className="plan-mono">{item.name}</span>
-        <Tag data-change={item.change}>{item.change}</Tag>
+        <Tag data-change={item.change}>{item.change === 'unknown' ? 'Unknown' : item.change}</Tag>
       </span>
       {keys && (
         <>

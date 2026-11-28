@@ -51,7 +51,7 @@ type ConfigItem struct {
 	PreviousExists      bool     `json:"previous_exists"`
 	PreviousSHA256      string   `json:"previous_sha256,omitempty"`
 	PreviousArtifactKey string   `json:"previous_artifact_key,omitempty"`
-	Change              string   `json:"change"`         // "new" | "changed" | "unchanged"
+	Change              string   `json:"change"`         // "new" | "changed" | "unchanged" | "unknown" (a failed plan could not tell)
 	Keys                *KeyDiff `json:"keys,omitempty"` // env only, when changed
 }
 

@@ -21,8 +21,9 @@ func TestTestConnectionReportsAccountMismatch(t *testing.T) {
 	h.rebuild(func(d *Deps) { d.AWSConfig = home.AWSConfig("us-east-1") })
 
 	roleARN := home.Role("yumdrake-discovery-" + awstest.RandomSuffix())
-	deployRole := map[string]any{"method": "role", "role_arn": roleARN}
 	create := func(name, accountID string, discovery map[string]any) string {
+		// The deployment role is in the row's own account; a role of another account is refused when saving.
+		deployRole := map[string]any{"method": "role", "role_arn": "arn:aws:iam::" + accountID + ":role/yumdrake-deploy"}
 		created := h.mustDo("POST", "/api/v1/admin/aws-accounts", map[string]any{
 			"name": name, "account_id": accountID, "discovery": discovery, "deploy": deployRole,
 		}, http.StatusCreated)
@@ -44,5 +45,9 @@ func TestTestConnectionReportsAccountMismatch(t *testing.T) {
 	// A role is assumed from the orchestrator's own credentials, with the external id.
 	role := map[string]any{"method": "role", "role_arn": roleARN, "external_id": "ext-" + awstest.RandomSuffix()}
 	check("role in the same account", create("role-ok", home.ID, role), true, "")
-	check("role in another account", create("role-other", other2.ID, role), false, "AccountMismatch")
+	// A role of another account can no longer be saved: the account in its ARN must be the row's.
+	h.mustDo("POST", "/api/v1/admin/aws-accounts", map[string]any{
+		"name": "role-other", "account_id": other2.ID, "discovery": role,
+		"deploy": map[string]any{"method": "role", "role_arn": "arn:aws:iam::" + other2.ID + ":role/yumdrake-deploy"},
+	}, http.StatusUnprocessableEntity)
 }

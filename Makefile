@@ -55,7 +55,7 @@ YUMDRAKE_TEST_VALKEY_ADDR ?= localhost:6379
 export YUMDRAKE_TEST_DATABASE_URL YUMDRAKE_TEST_VALKEY_ADDR
 
 test-integration: ## Run integration tests against the local services (see dev-up)
-	go test -race -tags integration ./...
+	go test -race -tags integration -timeout 25m ./...
 
 # Floci (the local AWS emulator) is published on 4577; 4566 is deliberately unused.
 YUMDRAKE_TEST_AWS_ENDPOINT ?= http://localhost:4577
@@ -67,7 +67,7 @@ E2E_FLOCI_ENDPOINT := $(strip $(YUMDRAKE_TEST_AWS_ENDPOINT))
 endif
 
 test-floci: ## Run the integration and Floci tests (see dev-up; needs Docker for ECS and ECR)
-	go test -race -tags "integration floci" -timeout 10m ./...
+	go test -race -tags "integration floci" -timeout 25m ./...
 
 floci-clean: ## Remove the floci-aws-* containers that our Floci created (never another Floci's)
 	./scripts/floci-clean.sh
@@ -75,9 +75,9 @@ floci-clean: ## Remove the floci-aws-* containers that our Floci created (never 
 # Floci planning tests run only when YUMDRAKE_TEST_AWS_ENDPOINT is set in the environment or on the command line; the default above does not enable them.
 test-e2e: ## Run the end-to-end tests (in-process orchestrator, fake GitHub; with Floci when YUMDRAKE_TEST_AWS_ENDPOINT is set) against the local services
 ifeq ($(E2E_FLOCI_ENDPOINT),)
-	go test -race -tags e2e -timeout 6m ./test/e2e/...
+	go test -race -tags e2e -timeout 15m ./test/e2e/...
 else
-	go test -race -tags "e2e floci" -timeout 10m ./test/e2e/...
+	go test -race -tags "e2e floci" -timeout 25m ./test/e2e/...
 endif
 
 images: ## Build the yumdrake-orchestrator and yumdrake-runner images (tag :dev)

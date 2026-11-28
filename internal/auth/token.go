@@ -74,28 +74,35 @@ func NewToken(ctx context.Context, db store.DBTX, userID int64, name string, ttl
 // stored value byte by byte; timing of the lookup therefore reveals nothing
 // useful and no further comparison of hashes is needed.
 func VerifyToken(ctx context.Context, db store.DBTX, plaintext string, now time.Time) (int64, error) {
+	tok, err := VerifyTokenRecord(ctx, db, plaintext, now)
+	return tok.UserID, err
+}
+
+// VerifyTokenRecord is VerifyToken returning the whole token (its id as well as
+// its owner), so a caller can act on the token that made the request.
+func VerifyTokenRecord(ctx context.Context, db store.DBTX, plaintext string, now time.Time) (store.Token, error) {
 	body, ok := strings.CutPrefix(plaintext, tokenPrefix)
 	if !ok {
-		return 0, ErrBadToken
+		return store.Token{}, ErrBadToken
 	}
 	// Strict decoding refuses non-canonical encodings so one secret has one text.
 	secret, err := base64.RawURLEncoding.Strict().DecodeString(body)
 	if err != nil || len(secret) != tokenBytes {
-		return 0, ErrBadToken
+		return store.Token{}, ErrBadToken
 	}
 	tok, err := store.TokenByHash(ctx, db, hashTokenSecret(secret))
 	if errors.Is(err, store.ErrNotFound) {
-		return 0, ErrBadToken
+		return store.Token{}, ErrBadToken
 	}
 	if err != nil {
-		return 0, fmt.Errorf("%w: %w", ErrTokenCheckFailed, err)
+		return store.Token{}, fmt.Errorf("%w: %w", ErrTokenCheckFailed, err)
 	}
 	if tok.RevokedAt != nil || (tok.ExpiresAt != nil && !now.Before(*tok.ExpiresAt)) {
-		return 0, ErrBadToken
+		return store.Token{}, ErrBadToken
 	}
 	if tok.LastUsedAt == nil || now.Sub(*tok.LastUsedAt) >= touchInterval {
 		// Best effort: failing to note the use must not fail a valid request.
 		_ = store.TouchToken(ctx, db, tok.ID, now)
 	}
-	return tok.UserID, nil
+	return tok, nil
 }

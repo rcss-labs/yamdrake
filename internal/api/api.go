@@ -23,6 +23,9 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/store"
 )
 
+// DefaultTokenSSOMaxAge is the default of Deps.TokenSSOMaxAge.
+const DefaultTokenSSOMaxAge = 168 * time.Hour
+
 // maxBodyBytes limits every request body.
 const maxBodyBytes = 1 << 20
 
@@ -80,6 +83,11 @@ type Deps struct {
 	// long a request waits for a slot before it is answered 503 (default 1s).
 	MaxConcurrentLogins int
 	VerifyWait          time.Duration
+	// TokenSSOMaxAge is how recent the last SSO sign-in of a SAML user must be
+	// for their tokens to work (default 168h). Group memberships from the
+	// identity provider refresh only at sign-in, so this bounds how long a
+	// person removed there keeps their access through a token.
+	TokenSSOMaxAge time.Duration
 }
 
 // valkeyTimeout bounds every Valkey call made for a request: against a dead
@@ -93,6 +101,8 @@ type server struct {
 	dummyHash string
 	// verifySlots has one token per allowed concurrent password check.
 	verifySlots chan struct{}
+	// keys caches the decrypted SAML keys (see keyCacheTTL).
+	keys keyCache
 }
 
 // dummyPasswordHash is computed once per process, with the production parameters.
@@ -125,6 +135,9 @@ func New(deps Deps) http.Handler {
 	}
 	if deps.MaxConcurrentLogins <= 0 {
 		deps.MaxConcurrentLogins = defaultConcurrentLogins
+	}
+	if deps.TokenSSOMaxAge <= 0 {
+		deps.TokenSSOMaxAge = DefaultTokenSSOMaxAge
 	}
 	if deps.VerifyWait <= 0 {
 		deps.VerifyWait = defaultVerifyWait
@@ -174,6 +187,10 @@ func (s *server) authenticatedMux(extra func(*http.ServeMux)) http.Handler {
 		extra(mux)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if refusedText(r) {
+			invalid(w, "the request path or query contains a control character or invalid text")
+			return
+		}
 		if _, pattern := mux.Handler(r); pattern != "" && !allowed[pattern] {
 			s.Log.Error("refusing a route that has no permission decision", "pattern", pattern)
 			writeError(w, http.StatusNotFound, codeNotFound, "not found")
@@ -181,6 +198,25 @@ func (s *server) authenticatedMux(extra func(*http.ServeMux)) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// refusedText reports whether the decoded path or any query name or value has
+// text the database cannot store (see hasControlText).
+func refusedText(r *http.Request) bool {
+	if hasControlText(r.URL.Path, false) {
+		return true
+	}
+	for name, values := range r.URL.Query() {
+		if hasControlText(name, false) {
+			return true
+		}
+		for _, value := range values {
+			if hasControlText(value, false) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // routeDef is a route of the authenticated part of the API with the action it
@@ -248,6 +284,20 @@ func invalid(w http.ResponseWriter, message string) {
 // trailing data and bodies over 1 MB. It writes the error response itself and
 // reports whether decoding succeeded.
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if !decodeBodyUnchecked(w, r, dst) {
+		return false
+	}
+	if problem := controlProblem(dst); problem != "" {
+		invalid(w, problem)
+		return false
+	}
+	return true
+}
+
+// decodeBodyUnchecked is decodeBody without the control-character check, for
+// the sign-in route, which answers such text as it answers any wrong
+// credential.
+func decodeBodyUnchecked(w http.ResponseWriter, r *http.Request, dst any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	decoder.DisallowUnknownFields()
 	err := decoder.Decode(dst)

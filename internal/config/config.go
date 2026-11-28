@@ -40,6 +40,10 @@ type Orchestrator struct {
 	// counters. Empty by default; set it to tell apart services (or test runs)
 	// that share one Valkey.
 	ValkeyKeyPrefix string
+	// TokenSSOMaxAge is how old the last SSO sign-in of a SAML user may be for
+	// their CLI tokens to keep working (YUMDRAKE_TOKEN_SSO_MAX_AGE, default 168h,
+	// at least 1h).
+	TokenSSOMaxAge time.Duration
 
 	SyncSettings
 }
@@ -52,6 +56,8 @@ type Runner struct {
 }
 
 const redactedPassword = "REDACTED"
+
+const minTokenSSOMaxAge = time.Hour
 
 var keyPrefixPattern = regexp.MustCompile(`^[A-Za-z0-9_:-]{0,64}$`)
 
@@ -113,6 +119,10 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	cfg.ValkeyKeyPrefix = l.getenv("YUMDRAKE_VALKEY_KEY_PREFIX")
 	if !keyPrefixPattern.MatchString(cfg.ValkeyKeyPrefix) {
 		l.fail("YUMDRAKE_VALKEY_KEY_PREFIX", "must be at most 64 letters, digits, '-', '_' or ':'")
+	}
+	cfg.TokenSSOMaxAge = l.duration("YUMDRAKE_TOKEN_SSO_MAX_AGE", "168h")
+	if cfg.TokenSSOMaxAge > 0 && cfg.TokenSSOMaxAge < minTokenSSOMaxAge {
+		l.fail("YUMDRAKE_TOKEN_SSO_MAX_AGE", "must be at least 1h")
 	}
 	cfg.SyncSettings = l.loadSyncSettings()
 

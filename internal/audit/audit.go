@@ -18,11 +18,19 @@ type Event struct {
 	Detail                       map[string]any
 }
 
-// secretKeys are names that must never appear in Detail, at any depth, in any
-// letter case. The check is a guard against mistakes, not a sanitiser.
-var secretKeys = map[string]bool{
-	"password": true, "token": true, "secret": true,
-	"private_key": true, "hash": true, "assertion": true,
+// secretWords are fragments that must not appear in any key of Detail, at any
+// depth, in any letter case ("new_password" and "TokenPlainText" are refused as
+// well as "password"). The check is a guard against mistakes, not a sanitiser.
+var secretWords = []string{"password", "token", "secret", "private_key", "hash", "assertion", "plaintext"}
+
+func looksSecret(key string) bool {
+	lower := strings.ToLower(key)
+	for _, word := range secretWords {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
 }
 
 // Record appends e. A nil actor means the system itself. It refuses (and
@@ -62,7 +70,7 @@ func findSecretKey(v any) (string, bool) {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, child := range x {
-			if secretKeys[strings.ToLower(k)] {
+			if looksSecret(k) {
 				return strings.ToLower(k), true
 			}
 			if key, found := findSecretKey(child); found {

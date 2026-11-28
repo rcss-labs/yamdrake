@@ -544,6 +544,14 @@ func TestRejects(t *testing.T) {
 			}
 			usersBefore, rejectedBefore := h.userCount(), h.auditCount("saml.rejected")
 			rec := h.postACS(flow, row.cookie)
+			// Only a rejection after a valid signature is audited; refusals of
+			// a bad signature, a wrong destination, or a relay state that was
+			// not valid or was already used are only logged.
+			audited := 1
+			switch row.reason {
+			case "relay_state", "bad_signature", "wrong_destination", "replay":
+				audited = 0
+			}
 			expectSignInRedirect(t, rec, "rejected")
 			if sessionCookie(rec) != nil {
 				t.Errorf("a rejected response set a session cookie")
@@ -559,8 +567,11 @@ func TestRejects(t *testing.T) {
 					t.Errorf("a rejected response created the user")
 				}
 			}
-			if got := h.auditCount("saml.rejected"); got != rejectedBefore+1 {
-				t.Fatalf("saml.rejected entries: %d before, %d after, want one more", rejectedBefore, got)
+			if got := h.auditCount("saml.rejected"); got != rejectedBefore+audited {
+				t.Fatalf("saml.rejected entries: %d before, %d after, want %d more", rejectedBefore, got, audited)
+			}
+			if audited == 0 {
+				return
 			}
 			var entry *store.AuditEntry
 			for _, e := range h.auditEntries() {
@@ -1074,8 +1085,9 @@ func TestSAMLFailureRedirectsToSignIn(t *testing.T) {
 	if !relayCookieCleared(rec) {
 		t.Errorf("a rejected response did not clear the relay cookie")
 	}
-	if got := h.auditCount("saml.rejected"); got != rejectedBefore+1 {
-		t.Errorf("saml.rejected entries: %d before, %d after, want one more", rejectedBefore, got)
+	// Not tied to a sign-in we started: the browser is redirected the same way, the audit log is untouched.
+	if got := h.auditCount("saml.rejected"); got != rejectedBefore {
+		t.Errorf("saml.rejected entries: %d before, %d after, want none more", rejectedBefore, got)
 	}
 
 	// Stored identity provider metadata that cannot be read: start and acs answer "unavailable".
@@ -1129,8 +1141,8 @@ func TestOneRequestAnswersOnlyOnce(t *testing.T) {
 	if sessionCookie(rec) != nil {
 		t.Fatalf("second response set a session")
 	}
-	if h.userCount() != users || h.auditCount("saml.rejected") != rejected+1 {
-		t.Errorf("the reused request changed state or was not audited once: %v", h.auditActions())
+	if h.userCount() != users || h.auditCount("saml.rejected") != rejected {
+		t.Errorf("the reused request changed state or was audited (the relay state is claimed once, so it is only logged): %v", h.auditActions())
 	}
 }
 

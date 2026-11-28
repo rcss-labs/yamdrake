@@ -56,7 +56,7 @@ type connectionRequest struct {
 	Token          string `json:"token"`
 	AppID          int64  `json:"app_id"`
 	InstallationID int64  `json:"installation_id"`
-	PrivateKey     string `json:"private_key"`
+	PrivateKey     string `json:"private_key" text:"multiline"`
 }
 
 // secret validates the request and returns the bytes to encrypt. Messages

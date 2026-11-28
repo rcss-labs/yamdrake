@@ -98,16 +98,21 @@ function isErrorBody(value: unknown): value is ErrorBody {
 async function toApiError(response: Response): Promise<ApiError> {
   let code = `http_${response.status}`
   let message = `The server answered with status ${response.status}`
+  let problems: ApiError['problems'] = []
   try {
     const parsed: unknown = JSON.parse(await response.text())
     if (isErrorBody(parsed)) {
       code = parsed.error.code
       message = parsed.error.message
+      const sent = (parsed.error as { problems?: unknown }).problems
+      if (Array.isArray(sent)) {
+        problems = sent as ApiError['problems']
+      }
     }
   } catch {
     // Not JSON (for example a gateway page): keep the fallback code and message.
   }
-  const error = new ApiError(response.status, code, message)
+  const error = new ApiError(response.status, code, message, problems)
   const retryAfter = Number(response.headers.get('Retry-After'))
   if (response.headers.has('Retry-After') && Number.isFinite(retryAfter) && retryAfter >= 0) {
     error.retryAfterSeconds = retryAfter

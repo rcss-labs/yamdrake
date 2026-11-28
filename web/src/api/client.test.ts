@@ -58,6 +58,18 @@ describe('api', () => {
     expect(error).toMatchObject({ status: 403, code: 'forbidden', message: 'You may not see folders' })
   })
 
+  it('keeps the problems of a 422 answer on the ApiError, and has none for other errors', async () => {
+    const problems = [{ file: 'jobs/a.yaml', line: 6, message: 'group "a" needs a version' }]
+    server.use(
+      http.post('/api/v1/jobs/1/runs', () => HttpResponse.json({ error: { code: 'invalid', message: 'the selection cannot be planned', problems } }, { status: 422 })),
+    )
+    const error = await api('POST', '/api/v1/jobs/1/runs', {}).catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ status: 422, code: 'invalid', problems })
+    failNext('GET', '/api/v1/folders', 500, 'internal', 'Down')
+    const other = await api('GET', '/api/v1/folders').catch((caught: unknown) => caught)
+    expect((other as ApiError).problems).toEqual([])
+  })
+
   it('falls back to http_<status> when the error body is not the API format', async () => {
     server.use(http.get('/api/v1/folders', () => new HttpResponse('<html>Bad gateway</html>', { status: 502 })))
     const error = await api('GET', '/api/v1/folders').catch((caught: unknown) => caught)

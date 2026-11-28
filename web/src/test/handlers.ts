@@ -485,7 +485,12 @@ function selectionProblems(job: StoredJob, environment: string, selection: Field
     problems.push({ file: job.path, line: 0, message: `environment "${environment}" is not in the inventory` })
   }
   const groups = job.definition?.groups ?? []
-  for (const group of groups) {
+  // A group missing from the selection is not selected, as in Go; a selection of no group is refused.
+  const chosen = groups.filter((group) => group.id in selection)
+  if (chosen.length === 0) {
+    problems.push({ file: job.path, line: 0, message: 'nothing is selected' })
+  }
+  for (const group of chosen) {
     const choice = fields(selection[group.id])
     if (text(choice.version).trim() === '') {
       problems.push({ file: job.path, line: group.line, message: `group "${group.id}" needs a version` })
@@ -510,6 +515,7 @@ function selectionProblems(job: StoredJob, environment: string, selection: Field
 function servicesOfSelection(job: StoredJob, selection: Fields): Record<string, string> {
   const result: Record<string, string> = {}
   for (const group of job.definition?.groups ?? []) {
+    if (!(group.id in selection)) continue
     const choice = fields(selection[group.id])
     const overrides = fields(choice.services)
     for (const service of group.services ?? []) {

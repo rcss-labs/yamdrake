@@ -257,7 +257,24 @@ describe('the mock run routes keep state and answer like the server', () => {
     })
     const body = (await wire.json()) as { error: { problems: { message: string }[] } }
     expect(wire.status).toBe(422)
-    expect(body.error.problems.map((problem) => problem.message)).toEqual(['environment "nowhere" is not in the inventory', 'group "backends" needs a version'])
+    expect(body.error.problems.map((problem) => problem.message)).toEqual(['environment "nowhere" is not in the inventory', 'nothing is selected'])
+  })
+
+  it('treats a group missing from the selection as not selected, and refuses a selection of no group', async () => {
+    signInAs(adminMe)
+    const twoGroups = mockState().jobs[0]!.definition!
+    twoGroups.groups = [
+      { id: 'backends', label: 'Backend services', services: ['backend-api'], line: 6 },
+      { id: 'billing', label: 'Billing', services: ['billing'], line: 9 },
+    ]
+    const created = await api<RunDetail>('POST', '/api/v1/jobs/1/runs', { environment: 'hetzner-01', selection: { backends: { version: '1.9.4' } }, start: false })
+    expect(created.state).toBe('planned')
+    const wire = await fetch('/api/v1/jobs/1/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ environment: 'hetzner-01', selection: {}, start: false }),
+    })
+    expect(wire.status).toBe(422)
   })
 
   it('cancels a planned run at once and a running run into cancelling, and refuses to cancel a finished one', async () => {

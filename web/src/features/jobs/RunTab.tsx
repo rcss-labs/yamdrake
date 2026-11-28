@@ -7,7 +7,7 @@ import { Button, Card, Checkbox, ErrorState, Field, Loading, Note, ProblemList, 
 import { FreezeBanner } from '../freezes/FreezeBanner'
 import { useInventory } from '../inventory/queries'
 import { useJobVersions } from '../runs/queries'
-import { SelectionError, useCreateRun } from './runQueries'
+import { useCreateRun } from './runQueries'
 import './run-tab.css'
 
 const plural = (count: number) => (count === 1 ? 'service' : 'services')
@@ -133,7 +133,7 @@ function RunForm({ job, groups, environment, environments, onEnvironment }: RunF
   }
 
   const failure = create.error
-  const problems = failure instanceof SelectionError ? failure.problems : []
+  const problems = failure?.problems ?? []
 
   return (
     <div className="run-layout">

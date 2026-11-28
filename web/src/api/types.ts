@@ -1140,3 +1140,85 @@ export interface ServicePage {
   deployments: ServiceDeployment[]
   config: ServiceConfigChange[]
 }
+
+export interface QueueRun {
+  id: number
+  job_id: number
+  job_name: string
+  environment: string
+  label: string
+  state: RunState
+  /** In words, for example "waiting for run #41". */
+  wait_reason: string
+  /** Parsed from a wait reason of the form "waiting for run #N". */
+  blocked_by_run_id: number | null
+  waiting_since: string
+  waited_seconds: number
+  legs_running: number
+  legs_queued: number
+}
+
+export interface QueueLock {
+  resource: string
+  run_id: number
+  acquired_at: string
+}
+
+export interface RunnerInfo {
+  id: string
+  version: string
+  concurrency: number
+  busy: number
+  started_at: string
+  last_seen_at: string
+}
+
+/** GET /api/v1/queue. */
+export interface QueueView {
+  runs: QueueRun[]
+  locks: QueueLock[]
+  runners: RunnerInfo[]
+  free_slots: number
+  queued_legs: number
+  oldest_queued_at: string | null
+  runner_gone_after_seconds: number
+}
+
+export interface SyncStatus {
+  checked_at: string | null
+  error: string
+  error_at: string | null
+}
+
+export interface SyncJobStatus extends SyncStatus {
+  id: number
+  job_id: number
+  title: string
+}
+
+export interface ConnectionHealth {
+  kind: 'aws' | 'github' | 'slack'
+  name: string
+  last_ok_at: string | null
+  last_error_at: string | null
+  last_error_code: string
+  failing: boolean
+}
+
+export interface HealthCounter {
+  hour: number
+  day: number
+}
+
+/** GET /api/v1/system/health (needs manage_connections). */
+export interface SystemHealth {
+  /** Plain-words problems, in order; empty when healthy. */
+  problems: string[]
+  runners: RunnerInfo[]
+  runner_gone_after_seconds: number
+  queue: { queued_legs: number; oldest_queued_at: string | null; active_runs: number }
+  counters: { lease_expired: HealthCounter; log_persist_failed: HealthCounter; sync_failed: HealthCounter }
+  sync: { inventory: SyncStatus; jobs: SyncJobStatus[] }
+  connections: ConnectionHealth[]
+  notifications: { pending: number; failed_last_day: number; oldest_pending_at: string | null }
+}

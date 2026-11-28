@@ -47,13 +47,20 @@ function UsersTable({ users, onEditGroups }: { users: AdminUser[]; onEditGroups:
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const update = useUpdateUser()
   const [failure, setFailure] = useState<{ id: number; message: string } | null>(null)
+  const [sessionsLeft, setSessionsLeft] = useState<number | null>(null)
 
   const change = (user: AdminUser, disabled: boolean) => {
     setFailure(null)
+    setSessionsLeft(null)
     update.mutate(
       { id: user.id, disabled },
       {
-        onSuccess: () => setConfirmingId(null),
+        onSuccess: (updated) => {
+          setConfirmingId(null)
+          if (updated.sessions_revoked === false) {
+            setSessionsLeft(user.id)
+          }
+        },
         onError: (error) => {
           setConfirmingId(null)
           setFailure({ id: user.id, message: changeConflictMessage(error) })
@@ -101,6 +108,9 @@ function UsersTable({ users, onEditGroups }: { users: AdminUser[]; onEditGroups:
             onDisable={() => change(user, true)}
             onEnable={() => change(user, false)}
           />
+          {sessionsLeft === user.id && (
+            <Note tone="warning">Their open sessions could not be ended. They are refused on every request anyway.</Note>
+          )}
           {failure?.id === user.id && (
             <p className="users-row-error" role="alert">
               {failure.message}
@@ -186,7 +196,9 @@ function RowActions({ user, confirming, busy, onEditGroups, onAskDisable, onCanc
 function GroupEditor({ user, onClose }: { user: AdminUser; onClose: () => void }) {
   const groups = useGroups(true)
   const update = useUpdateUser()
-  const [chosen, setChosen] = useState<number[]>(() => user.groups.map((group) => group.id))
+  // Only manual memberships are editable; groups from single sign-on are listed read-only and never sent.
+  const [chosen, setChosen] = useState<number[]>(() => user.groups.filter((group) => group.source === 'manual').map((group) => group.id))
+  const fromSso = user.groups.filter((group) => group.source === 'idp')
 
   const toggle = (id: number, on: boolean) => setChosen((current) => (on ? [...current, id] : current.filter((value) => value !== id)))
 
@@ -212,11 +224,22 @@ function GroupEditor({ user, onClose }: { user: AdminUser; onClose: () => void }
           ) : (
             <fieldset className="users-groups">
               <legend className="ui-visually-hidden">Groups</legend>
-              {groups.data.groups.map((group) => (
-                <Checkbox key={group.id} label={group.name} checked={chosen.includes(group.id)} onChange={(event) => toggle(group.id, event.target.checked)} />
-              ))}
+              {groups.data.groups
+                .filter((group) => !fromSso.some((ref) => ref.id === group.id))
+                .map((group) => (
+                  <Checkbox key={group.id} label={group.name} checked={chosen.includes(group.id)} onChange={(event) => toggle(group.id, event.target.checked)} />
+                ))}
             </fieldset>
           ))}
+        {fromSso.length > 0 && (
+          <ul className="users-sso-groups" aria-label="Groups from single sign-on">
+            {fromSso.map((group) => (
+              <li key={group.id}>
+                <Tag>{group.name}</Tag> <span className="users-muted">From single sign-on</span>
+              </li>
+            ))}
+          </ul>
+        )}
         {update.isError && <Note tone="error">{changeConflictMessage(update.error)}</Note>}
         <div className="users-buttons">
           <Button type="submit" variant="primary" loading={update.isPending} disabled={!groups.data}>

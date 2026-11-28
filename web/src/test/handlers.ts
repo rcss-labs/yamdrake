@@ -146,6 +146,7 @@ function recordAudit(action: string, targetType: string, targetId: string | numb
     id: takeId('audit'),
     at: now(),
     actor: state.session?.email ?? 'system',
+    actor_id: state.session?.id ?? null,
     action,
     target_type: targetType,
     target_id: String(targetId),
@@ -179,7 +180,7 @@ function route(method: keyof typeof factories, path: string, guard: Guard, resol
   return factories[method](path, async ({ request, params }) => {
     const url = new URL(request.url)
     let body: unknown
-    if (method !== 'GET' && method !== 'DELETE') {
+    if (method !== 'GET') {
       const raw = await request.text()
       try {
         body = raw === '' ? undefined : JSON.parse(raw)
@@ -317,7 +318,8 @@ export const handlers: HttpHandler[] = [
     return json(person)
   }),
 
-  route('POST', '/api/v1/auth/logout', 'public', () => {
+  // Like the server, a sign-out needs a session; the web treats the 401 for none as signed out.
+  route('POST', '/api/v1/auth/logout', 'session', () => {
     state.session = null
     return noContent()
   }),
@@ -631,7 +633,10 @@ export const handlers: HttpHandler[] = [
       if (unknown !== undefined) {
         return invalid(`group ${unknown} does not exist`)
       }
-      user.groups = state.groups.filter((group) => ids.includes(group.id)).map((group) => ({ id: group.id, name: group.name }))
+      // Like the server, only the manual memberships are replaced; a group reached only through single sign-on stays.
+      const manual = state.groups.filter((group) => ids.includes(group.id)).map((group) => ({ id: group.id, name: group.name, source: 'manual' as const }))
+      const idpOnly = user.groups.filter((ref) => ref.source === 'idp' && !ids.includes(ref.id))
+      user.groups = [...manual, ...idpOnly].sort((a, b) => a.id - b.id)
     }
     if (!hasAdministratorLeft()) {
       user.disabled = before.disabled
@@ -639,7 +644,7 @@ export const handlers: HttpHandler[] = [
       return conflict('at least one enabled user must remain in an admin group')
     }
     recordAudit('user.update', 'user', user.id, { disabled: user.disabled, groups: user.groups.map((ref) => ref.name) })
-    return json(user)
+    return json(typeof request.disabled === 'boolean' && request.disabled ? { ...user, sessions_revoked: true } : user)
   }),
 
   // Groups
@@ -770,7 +775,8 @@ export const handlers: HttpHandler[] = [
       ...state.sso,
       enabled: request.enabled === true,
       idp_metadata_xml: metadata,
-      entity_id: text(request.entity_id) || state.sso.entity_id,
+      // Empty means the default, which follows the public URL.
+      entity_id: text(request.entity_id) || state.sso.entity_id_default,
       groups_attribute: text(request.groups_attribute) || 'groups',
       email_attribute: text(request.email_attribute),
       name_attribute: text(request.name_attribute) || 'displayName',
@@ -838,6 +844,7 @@ export const handlers: HttpHandler[] = [
       user_code: userCode,
       verify_url: `https://yumdrake.example.com/cli/confirm?code=${userCode}`,
       interval: 5,
+      expires_in: 600,
     })
   }),
 
@@ -854,13 +861,18 @@ export const handlers: HttpHandler[] = [
 
   route('POST', '/api/v1/cli/login/token', 'public', ({ body }) => {
     const device = state.devices[text(fields(body).device_code)]
+    // Like the server: an unknown, used or timed-out code is one answer, 400 expired_token.
     if (!device || device.tokenIssued) {
-      return notFound('device code')
+      return errorResponse(400, 'expired_token', 'the device code is unknown or has expired')
     }
     if (!device.confirmedBy) {
-      return json({ status: 'pending' })
+      return json({ status: 'pending', interval: 5 })
     }
     device.tokenIssued = true
-    return json({ status: 'confirmed', token: 'ymd_mockcliabcdefghijklmnopqrstuvwxyz0123456789' })
+    const id = takeId('token')
+    const expiresAt = new Date(Date.parse(now()) + 90 * 86_400_000).toISOString()
+    const owner = device.confirmedBy.id
+    state.tokens[owner] = [...(state.tokens[owner] ?? []), { id, name: 'yumdrake CLI', created_at: now(), expires_at: expiresAt, last_used_at: null }]
+    return json({ status: 'complete', token: `ymd_mockcli${String(id).padStart(4, '0')}abcdefghijklmnopqrstuvwxyz0123456789`, token_id: id, expires_at: expiresAt })
   }),
 ]

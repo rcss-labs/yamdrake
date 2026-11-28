@@ -14,6 +14,8 @@ describe('safeNext', () => {
     ['//evil.example'],
     ['//evil.example/jobs'],
     ['/\\evil.example'],
+    ['/a\\b'],
+    ['/jobs/%5Cevil'],
     ['\\\\evil.example'],
     ['https://evil.example'],
     ['http://evil.example/jobs'],

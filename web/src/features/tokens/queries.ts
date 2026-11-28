@@ -1,5 +1,8 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { api } from '../../api/client'
+import type { ApiError } from '../../api/error'
 import { useApiGet, useApiMutation } from '../../api/hooks'
-import type { ApiToken, CreatedToken, CreateTokenRequest, DeviceLoginConfirmRequest, TokensResponse } from '../../api/types'
+import type { CreatedToken, CreateTokenRequest, DeviceLoginConfirmRequest, TokensResponse } from '../../api/types'
 
 export function useTokens() {
   return useApiGet<TokensResponse>(['tokens'], '/api/v1/tokens')
@@ -13,8 +16,13 @@ export function useCreateToken() {
   })
 }
 
+/** DELETE one token by id; the id is only in the path, no body is sent. */
 export function useRevokeToken() {
-  return useApiMutation<void, ApiToken>('DELETE', (token) => `/api/v1/tokens/${token.id}`, { invalidate: [['tokens']] })
+  const queryClient = useQueryClient()
+  return useMutation<void, ApiError, number>({
+    mutationFn: (id) => api<void>('DELETE', `/api/v1/tokens/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tokens'] }),
+  })
 }
 
 export function useConfirmDevice() {

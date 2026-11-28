@@ -72,6 +72,7 @@ const routes: Route[] = [
   { method: 'GET', path: '/api/v1/tokens', allowed: 'anyone', success: 200 },
   { method: 'POST', path: '/api/v1/tokens', body: { name: 'ci' }, allowed: 'anyone', success: 201 },
   { method: 'DELETE', path: '/api/v1/tokens/1', allowed: 'anyone', success: 204 },
+  { method: 'POST', path: '/api/v1/auth/logout', allowed: 'anyone', success: 204 },
   { method: 'POST', path: '/api/v1/cli/login', allowed: 'public', success: 200 },
   { method: 'POST', path: '/api/v1/cli/login/confirm', body: { user_code: 'KQ7M2X11' }, allowed: 'anyone', success: 204 },
   { method: 'POST', path: '/api/v1/cli/login/token', body: { device_code: 'device-code-1' }, allowed: 'public', success: 200 },
@@ -109,6 +110,22 @@ describe('the mock API', () => {
       expect(await statusOf(route)).toBe(route.success)
     },
   )
+
+  it('walks a CLI sign-in the way the server answers it', async () => {
+    const start = await api<{ device_code: string; user_code: string; expires_in: number; interval: number }>('POST', '/api/v1/cli/login')
+    expect(start.expires_in).toBeGreaterThan(0)
+    expect(await api('POST', '/api/v1/cli/login/token', { device_code: start.device_code })).toEqual({ status: 'pending', interval: start.interval })
+
+    signInAs(adminMe)
+    await api('POST', '/api/v1/cli/login/confirm', { user_code: start.user_code })
+    signOut()
+    const done = await api<Record<string, unknown>>('POST', '/api/v1/cli/login/token', { device_code: start.device_code })
+    expect(done).toMatchObject({ status: 'complete', token: expect.any(String), token_id: expect.any(Number), expires_at: expect.any(String) })
+
+    // A used or unknown code is an expired token, not a missing page.
+    await expect(api('POST', '/api/v1/cli/login/token', { device_code: start.device_code })).rejects.toMatchObject({ status: 400, code: 'expired_token' })
+    await expect(api('POST', '/api/v1/cli/login/token', { device_code: 'nope' })).rejects.toMatchObject({ status: 400, code: 'expired_token' })
+  })
 
   it('refuses the last administrator being disabled', async () => {
     signInAs(adminMe)

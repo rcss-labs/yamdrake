@@ -12,12 +12,58 @@ function formatWhen(iso: string): string {
   return date.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-// Only plain values are listed; the server never records secrets, but nested data is not worth a table cell.
-function detailText(detail: AuditEntry['detail']): string {
-  return Object.entries(detail ?? {})
-    .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value))
-    .map(([key, value]) => `${key} ${String(value)}`)
-    .join(' · ')
+type Plain = string | number | boolean
+
+function isPlain(value: unknown): value is Plain {
+  return ['string', 'number', 'boolean'].includes(typeof value)
+}
+
+// A plain value, or a list of plain values ("none" when empty). Anything else is not shown.
+function valueText(value: unknown): string | null {
+  if (isPlain(value)) {
+    return String(value)
+  }
+  if (Array.isArray(value) && value.every(isPlain)) {
+    return value.length === 0 ? 'none' : value.join(', ')
+  }
+  return null
+}
+
+function PlainPairs({ pairs, separator }: { pairs: [string, unknown][]; separator: string }) {
+  const shown = pairs.flatMap(([key, value]) => {
+    const text = valueText(value)
+    return text === null ? [] : [{ key, text }]
+  })
+  return shown.map(({ key, text }, index) => (
+    <span key={key}>
+      {index > 0 && separator}
+      {key} <span className="mono">{text}</span>
+    </span>
+  ))
+}
+
+// Plain values are listed as "key value". One level of nested objects (the "before" and "after" of a change)
+// is listed as "before: key value, key value; after: ...". Deeper data is not worth a table cell.
+function Detail({ detail }: { detail: Record<string, unknown> | undefined }) {
+  const entries = Object.entries(detail ?? {})
+  const plain = entries.filter(([, value]) => valueText(value) !== null)
+  const nested = entries.flatMap(([key, value]) =>
+    typeof value === 'object' && value !== null && !Array.isArray(value) ? [[key, Object.entries(value)] as const] : [],
+  )
+  if (plain.length === 0 && nested.length === 0) {
+    return null
+  }
+  return (
+    <div className="audit-detail">
+      <PlainPairs pairs={plain} separator=" · " />
+      {nested.map(([key, pairs], index) => (
+        <span key={key}>
+          {(plain.length > 0 || index > 0) && (index > 0 ? '; ' : ' · ')}
+          {key}: <PlainPairs pairs={pairs} separator=", " />
+        </span>
+      ))}
+    </div>
+  )
 }
 
 const columns: DataColumn<AuditEntry>[] = [
@@ -26,15 +72,12 @@ const columns: DataColumn<AuditEntry>[] = [
   {
     key: 'what',
     header: 'What',
-    render: (entry) => {
-      const detail = detailText(entry.detail)
-      return (
-        <>
-          <span className="mono">{entry.action}</span>
-          {detail && <div className="audit-detail">{detail}</div>}
-        </>
-      )
-    },
+    render: (entry) => (
+      <>
+        <span className="mono">{entry.action}</span>
+        <Detail detail={entry.detail} />
+      </>
+    ),
   },
   {
     key: 'target',

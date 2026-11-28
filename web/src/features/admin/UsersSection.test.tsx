@@ -212,6 +212,24 @@ describe('the users section', () => {
       expect(patches()[1]?.body).toEqual({ disabled: false })
     })
 
+    it('warns when the open sessions of a disabled user could not be ended', async () => {
+      server.use(
+        http.patch('/api/v1/admin/users/3', () => HttpResponse.json({ ...mockState().users.find((u) => u.id === 3), disabled: true, sessions_revoked: false })),
+      )
+      const user = await openUsers()
+      await user.click(screen.getByRole('button', { name: 'Disable Omer Katz' }))
+      await user.click(screen.getByRole('button', { name: 'Confirm disable of Omer Katz' }))
+      expect(await screen.findByText('Their open sessions could not be ended. They are refused on every request anyway.')).toBeInTheDocument()
+    })
+
+    it('shows no session warning when the sessions were ended', async () => {
+      const user = await openUsers()
+      await user.click(screen.getByRole('button', { name: 'Disable Omer Katz' }))
+      await user.click(screen.getByRole('button', { name: 'Confirm disable of Omer Katz' }))
+      await within(rowOf('Omer Katz')).findByText('Disabled')
+      expect(screen.queryByText(/open sessions could not be ended/)).not.toBeInTheDocument()
+    })
+
     it('shows the server message for a 409 that is not about the last admin', async () => {
       const user = await openUsers()
       failNext('PATCH', '/api/v1/admin/users/3', 409, 'conflict', 'Another change to this user is in progress')
@@ -276,6 +294,24 @@ describe('the users section', () => {
       await waitFor(() => expect(within(rowOf('Omer Katz')).getByText('Administrators')).toBeInTheDocument())
       expect(patches()[0]).toMatchObject({ path: '/api/v1/admin/users/3', body: { group_ids: [1, 2] } })
       expect(screen.queryByRole('button', { name: 'Save groups' })).not.toBeInTheDocument()
+    })
+
+    it('shows groups that come from single sign-on read-only and sends only the manual ones', async () => {
+      const user = await openUsers()
+      await user.click(screen.getByRole('button', { name: 'Edit groups of Lior Amar' }))
+      await user.click(await screen.findByRole('checkbox', { name: 'Administrators' }))
+      const readOnly = screen.getByText('From single sign-on')
+      expect(readOnly).toBeInTheDocument()
+      expect(within(readOnly.closest('li') ?? document.body).getByText('QA')).toBeInTheDocument()
+      expect(screen.queryByRole('checkbox', { name: 'QA' })).not.toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Save groups' }))
+      await waitFor(() => expect(patches()).toHaveLength(1))
+      expect(patches()[0]).toMatchObject({ path: '/api/v1/admin/users/5', body: { group_ids: [1] } })
+      // The membership from the identity provider is untouched.
+      expect(mockState().users.find((u) => u.id === 5)?.groups).toEqual([
+        { id: 1, name: 'Administrators', source: 'manual' },
+        { id: 2, name: 'QA', source: 'idp' },
+      ])
     })
 
     it('shows a failed save next to the editor and keeps it open', async () => {

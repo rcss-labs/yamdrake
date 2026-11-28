@@ -42,6 +42,16 @@ describe('the CLI tokens page', () => {
     expect(within(row).getByText('Never')).toBeInTheDocument()
   })
 
+  it('says Never for a token that does not expire', async () => {
+    mockState().tokens[1] = [
+      { id: 8, name: 'forever', created_at: '2026-11-01T10:00:00Z', expires_at: null, last_used_at: '2026-11-02T10:00:00Z' },
+    ]
+    renderApp(<App />, { route: '/cli' })
+    const row = (await screen.findByText('forever')).closest('tr')!
+    expect(within(row).getByText('Never')).toBeInTheDocument()
+    expect(row).not.toHaveTextContent('1970')
+  })
+
   it('has an empty state that says how to make a token', async () => {
     mockState().tokens[1] = []
     renderApp(<App />, { route: '/cli' })
@@ -155,6 +165,8 @@ describe('the CLI tokens page', () => {
     await userEvent.click(within(await screen.findByRole('group', { name: 'Revoke laptop cli?' })).getByRole('button', { name: 'Revoke token' }))
     await waitFor(() => expect(tokenRequests('DELETE')).toHaveLength(1))
     expect(tokenRequests('DELETE')[0]?.path).toBe('/api/v1/tokens/1')
+    // Only the id in the path: a DELETE with a JSON body can be refused by proxies.
+    expect(tokenRequests('DELETE')[0]?.body).toBeUndefined()
     expect(await screen.findByText('You have no CLI tokens')).toBeInTheDocument()
   })
 

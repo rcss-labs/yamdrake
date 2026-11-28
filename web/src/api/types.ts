@@ -347,6 +347,8 @@ export type UserSource = 'local' | 'saml' | 'service'
 export interface GroupRef {
   id: number
   name: string
+  /** "manual" when an administrator put the user in the group (also when both ways); "idp" when only single sign-on did. */
+  source: 'manual' | 'idp'
 }
 
 export interface AdminUser {
@@ -358,6 +360,8 @@ export interface AdminUser {
   groups: GroupRef[]
   last_sign_in_at: string | null
   created_at: string
+  /** Only in the answer to a disable: false means the open sessions could not be ended (the user is refused anyway). */
+  sessions_revoked?: boolean
 }
 
 export interface UsersResponse {
@@ -434,12 +438,14 @@ export interface AuditEntry {
   at: string
   /** The actor's email, or "system". */
   actor: string
+  /** Null for the system or when the user was deleted. */
+  actor_id: number | null
   /** For example "grant.create" or "auth.login". */
   action: string
   target_type: string
   target_id: string
-  /** Safe values only; secrets are never recorded. */
-  detail: Record<string, unknown>
+  /** Safe values only; secrets are never recorded. Absent when the entry has none. */
+  detail?: Record<string, unknown>
 }
 
 /** GET /api/v1/admin/audit?before=&limit= (newest first, limit at most 200). */
@@ -461,9 +467,12 @@ export interface SsoSettings {
   /** Read-only: the addresses to give the identity provider. */
   acs_url: string
   metadata_url: string
+  /** Read-only: the entity ID in use while `entity_id` is saved empty; it follows the public URL. */
+  entity_id_default: string
 }
 
-export type UpdateSsoRequest = Omit<SsoSettings, 'acs_url' | 'metadata_url'>
+/** An empty `entity_id` means "use the default". */
+export type UpdateSsoRequest = Omit<SsoSettings, 'acs_url' | 'metadata_url' | 'entity_id_default'>
 
 export interface SsoTestResult {
   ok: boolean
@@ -476,7 +485,8 @@ export interface ApiToken {
   id: number
   name: string
   created_at: string
-  expires_at: string
+  /** Null for a token that does not expire. */
+  expires_at: string | null
   last_used_at: string | null
 }
 
@@ -502,6 +512,8 @@ export interface DeviceLoginStart {
   verify_url: string
   /** Seconds between polls. */
   interval: number
+  /** Seconds until the codes stop working. */
+  expires_in: number
 }
 
 /** POST /api/v1/cli/login/confirm (signed in). */
@@ -514,7 +526,13 @@ export interface DeviceLoginPollRequest {
   device_code: string
 }
 
-export type DeviceLoginPollResponse = { status: 'pending' } | { status: 'confirmed'; token: string }
+/**
+ * Pending until the person confirms the code; then `complete` once, with the token. A used or unknown code is
+ * a 400 with code `expired_token`.
+ */
+export type DeviceLoginPollResponse =
+  | { status: 'pending'; interval: number }
+  | { status: 'complete'; token: string; token_id: number; expires_at: string }
 
 /** The body of every error response. */
 export interface ErrorBody {

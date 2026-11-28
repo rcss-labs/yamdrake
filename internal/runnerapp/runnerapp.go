@@ -35,13 +35,6 @@ type Registrar interface {
 	Register(kind string, e runner.Executor)
 }
 
-// artifactStore holds the encrypted config copies the steps share. *artifacts.Store
-// satisfies it.
-type artifactStore interface {
-	Put(ctx context.Context, runID int64, service, kind, name string, previous bool, data []byte) (key, sha256hex string, err error)
-	Get(ctx context.Context, key, wantSHA256 string) ([]byte, error)
-}
-
 // RegisterExecutors registers the real executors on r, replacing any fakes
 // registered earlier under those names: "resolve", "revalidate",
 // "copy-config" and "ecs-deploy". The artifact store is built once and shared
@@ -51,8 +44,10 @@ func RegisterExecutors(ctx context.Context, log *slog.Logger, cfg config.Runner,
 	if err != nil {
 		return err
 	}
-	artifactClient := s3.NewFromConfig(id.awsConfig, func(o *s3.Options) { o.UsePathStyle = cfg.AWS.UsePathStyleS3() })
-	copies := artifacts.New(artifactClient, cfg.ArtifactBucket, cfg.ArtifactKMSKeyID)
+	copies, err := artifactStore(cfg, id)
+	if err != nil {
+		return err
+	}
 	deps := resolveDeps(cfg, pool, id, copies, log)
 	r.Register("resolve", resolve.New(deps))
 	r.Register("revalidate", revalidate.New(deps))
@@ -106,8 +101,8 @@ func newIdentity(ctx context.Context, log *slog.Logger, cfg config.Runner, pool 
 // resolveDeps wires the resolve and revalidate executors. It reads the run's own
 // inventory snapshot (not the active one), uses the deployment credentials of
 // the run's account for ECS, ECR and S3, GitHub through the stored connections,
-// and writes config copies to the shared artifact store with the runner's own identity.
-func resolveDeps(cfg config.Runner, pool *pgxpool.Pool, id identity, copies artifactStore, log *slog.Logger) resolve.Deps {
+// and writes config copies to the shared artifact store.
+func resolveDeps(cfg config.Runner, pool *pgxpool.Pool, id identity, copies artifacts.Store, log *slog.Logger) resolve.Deps {
 	githubClient := app.GitHubClients(pool, id.cipher, cfg.GitHubAPIURL, log)
 	return resolve.Deps{
 		AWS: id.credentials.For,
@@ -133,4 +128,15 @@ func resolveDeps(cfg config.Runner, pool *pgxpool.Pool, id identity, copies arti
 		SourceRun: func(ctx context.Context, runID int64) (store.Run, error) { return store.GetRun(ctx, pool, runID) },
 		Options:   cfg.AWS,
 	}
+}
+
+// artifactStore builds the store of config copies, shared by resolve,
+// revalidate and copy-config: the S3 bucket with the runner's own identity, or
+// encrypted files in the directory. The configuration requires exactly one.
+func artifactStore(cfg config.Runner, id identity) (artifacts.Store, error) {
+	if cfg.ArtifactDir != "" {
+		return artifacts.NewDir(cfg.ArtifactDir, id.cipher)
+	}
+	client := s3.NewFromConfig(id.awsConfig, func(o *s3.Options) { o.UsePathStyle = cfg.AWS.UsePathStyleS3() })
+	return artifacts.NewS3(client, cfg.ArtifactBucket, cfg.ArtifactKMSKeyID), nil
 }

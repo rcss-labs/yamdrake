@@ -12,21 +12,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/rcss-labs/yamdrake/internal/audit"
+	"github.com/rcss-labs/yamdrake/internal/awsx"
 	"github.com/rcss-labs/yamdrake/internal/store"
-)
-
-// Encryption purposes of the two secret access keys of an AWS account. They
-// are separate so the orchestrator, which only ever decrypts the discovery key,
-// cannot be made to hand out a deployment key (and KMS enforces it).
-const (
-	awsDiscoveryPurpose = "aws-discovery"
-	awsDeployPurpose    = "aws-deploy"
 )
 
 const awsTestTimeout = 20 * time.Second
@@ -182,11 +174,11 @@ func (s *server) createAWSAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) storeAWSAccount(w http.ResponseWriter, r *http.Request, req awsAccountRequest, discoverySecret, deploySecret []byte) {
 	var err error
-	if discoverySecret, err = s.sealAWSSecret(r.Context(), awsDiscoveryPurpose, discoverySecret); err != nil {
+	if discoverySecret, err = s.sealAWSSecret(r.Context(), awsx.PurposeDiscovery, discoverySecret); err != nil {
 		s.internalError(w, r, fmt.Errorf("encrypt discovery secret: %w", err))
 		return
 	}
-	if deploySecret, err = s.sealAWSSecret(r.Context(), awsDeployPurpose, deploySecret); err != nil {
+	if deploySecret, err = s.sealAWSSecret(r.Context(), awsx.PurposeDeploy, deploySecret); err != nil {
 		s.internalError(w, r, fmt.Errorf("encrypt deployment secret: %w", err))
 		return
 	}
@@ -249,19 +241,7 @@ func (s *server) testAWSAccount(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	// Only the discovery secret is ever decrypted here, under its own purpose.
-	var secret []byte
-	if account.Discovery.Method == "key" {
-		ciphertext, err := store.DiscoverySecret(ctx, s.Pool, account.AccountID)
-		if err == nil {
-			secret, err = s.Cipher.Decrypt(ctx, awsDiscoveryPurpose, ciphertext)
-		}
-		if err != nil {
-			s.internalError(w, r, fmt.Errorf("read discovery secret: %w", err))
-			return
-		}
-	}
-	result := s.checkAWSDiscovery(ctx, account, string(secret))
+	result := s.checkAWSDiscovery(ctx, account)
 	if err := s.recordAudit(ctx, s.Pool, r, audit.Event{Action: "aws_account.test", TargetType: "aws_account", TargetID: strconv.FormatInt(account.ID, 10),
 		Detail: map[string]any{"account_id": account.AccountID, "ok": result.OK, "error_code": result.ErrorCode}}); err != nil {
 		s.internalError(w, r, err)
@@ -270,36 +250,19 @@ func (s *server) testAWSAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// checkAWSDiscovery signs in with the discovery credential (a role is assumed
-// from the orchestrator's own credentials, with the external id) and checks
-// that GetCallerIdentity answers with the account on the row.
-func (s *server) checkAWSDiscovery(ctx context.Context, account store.AWSAccount, secret string) awsTestResult {
+// awsTestSessionName is the STS session name of the connection test, so the
+// calls it makes can be told apart in CloudTrail.
+const awsTestSessionName = "yumdrake-orchestrator-test"
+
+// checkAWSDiscovery signs in with the discovery credential, built by the
+// discovery provider like for any other discovery call, and checks that
+// GetCallerIdentity answers with the account on the row.
+func (s *server) checkAWSDiscovery(ctx context.Context, account store.AWSAccount) awsTestResult {
 	ctx, cancel := context.WithTimeout(ctx, awsTestTimeout)
 	defer cancel()
-	cfg := s.AWSConfig.Copy()
-	if cfg.Region == "" {
-		cfg.Region = "us-east-1" // STS answers from any region
-	}
-	credential := account.Discovery
-	switch credential.Method {
-	case "key":
-		cfg.Credentials = credentials.NewStaticCredentialsProvider(credential.AccessKeyID, secret, "")
-	case "role":
-		input := &sts.AssumeRoleInput{
-			RoleArn: aws.String(credential.RoleARN), RoleSessionName: aws.String("yumdrake-connection-test"), DurationSeconds: aws.Int32(900),
-		}
-		if credential.ExternalID != "" {
-			input.ExternalId = aws.String(credential.ExternalID)
-		}
-		assumed, err := sts.NewFromConfig(cfg).AssumeRole(ctx, input)
-		if err != nil {
-			return awsFailure(err)
-		}
-		if assumed.Credentials == nil {
-			return awsTestResult{ErrorCode: "RequestFailed", Message: "AWS returned no credentials for the role"}
-		}
-		cfg.Credentials = credentials.NewStaticCredentialsProvider(
-			aws.ToString(assumed.Credentials.AccessKeyId), aws.ToString(assumed.Credentials.SecretAccessKey), aws.ToString(assumed.Credentials.SessionToken))
+	cfg, err := s.Discovery.ForUncached(ctx, account.AccountID, "", awsTestSessionName)
+	if err != nil {
+		return awsFailure(err)
 	}
 	identity, err := sts.NewFromConfig(cfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {

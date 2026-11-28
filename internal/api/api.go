@@ -19,6 +19,8 @@ import (
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/awsx"
+	"github.com/rcss-labs/yamdrake/internal/awsx/discovery"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -49,6 +51,13 @@ type Syncer interface {
 	// SetInventorySource stores the source and syncs it as one serialised step.
 	SetInventorySource(ctx context.Context, source store.InventorySource, inTx func(context.Context, store.DBTX) error) error
 	SyncJob(ctx context.Context, jobSourceID int64) error
+}
+
+// DiscoveryCredentials is implemented by *discovery.Provider.
+type DiscoveryCredentials interface {
+	// ForUncached skips the credential cache: the connection test must see
+	// AWS as it is now.
+	ForUncached(ctx context.Context, accountID, region, sessionName string) (aws.Config, error)
 }
 
 // Deps are the collaborators of the API.
@@ -89,10 +98,13 @@ type Deps struct {
 	// identity provider refresh only at sign-in, so this bounds how long a
 	// person removed there keeps their access through a token.
 	TokenSSOMaxAge time.Duration
+	// Discovery builds the discovery credentials of an account; the connection
+	// test uses it. Optional: New builds one from AWSConfig.
+	Discovery DiscoveryCredentials
 	// AWSConfig is the orchestrator's own AWS configuration (default
-	// credential chain, optional endpoint override). The connection test of an
-	// account assumes a discovery role from it. It may be empty when the
-	// service runs without AWS credentials; the test then reports a failure.
+	// credential chain, optional endpoint override), the base of the default
+	// Discovery. It may be empty when the service runs without AWS credentials;
+	// the connection test then reports a failure.
 	AWSConfig aws.Config
 }
 
@@ -134,6 +146,9 @@ func New(deps Deps) http.Handler {
 	}
 	if deps.DevicePollInterval <= 0 {
 		deps.DevicePollInterval = defaultDevicePollInterval
+	}
+	if deps.Discovery == nil {
+		deps.Discovery = discovery.New(deps.Pool, deps.Cipher, deps.AWSConfig, awsx.Options{})
 	}
 	dummy, err := dummyPasswordHash()
 	if err != nil {

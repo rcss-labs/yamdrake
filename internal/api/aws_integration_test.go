@@ -82,9 +82,11 @@ func TestCreateAccountNeverReturnsSecretAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiscoverySecret: %v", err)
 	}
-	storedDeploy, err := store.DeploySecret(ctx, h.pool, "123456789012")
-	if err != nil {
-		t.Fatalf("DeploySecret: %v", err)
+	// The orchestrator code has no reader of this column (it is read only in
+	// internal/awsx/deploy), so the test queries it directly.
+	var storedDeploy []byte
+	if err := h.pool.QueryRow(ctx, "SELECT deploy_secret_ciphertext FROM aws_accounts WHERE account_id = $1", "123456789012").Scan(&storedDeploy); err != nil {
+		t.Fatalf("read the deploy ciphertext: %v", err)
 	}
 	if plain, err := h.cipher.Decrypt(ctx, "aws-discovery", storedDiscovery); err != nil || string(plain) != discoverySecret {
 		t.Errorf("discovery ciphertext under aws-discovery = %q, %v", plain, err)

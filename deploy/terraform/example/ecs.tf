@@ -56,6 +56,8 @@ locals {
     { name = "YUMDRAKE_HTTP_ADDR", value = ":8080" },
     { name = "YUMDRAKE_LOG_BUCKET", value = aws_s3_bucket.log_archive.id }, # read from plan 5 onward
     { name = "YUMDRAKE_METRICS", value = var.metrics_mode },                # read from plan 11 (task 4) onward
+    # The dimensions the alarms and scaling expect on every metric (Name=value,Name=value; empty for none).
+    { name = "YUMDRAKE_METRICS_DIMENSIONS", value = join(",", [for k, v in var.metric_dimensions : "${k}=${v}"]) },
   ])
 
   runner_environment = concat(local.common_environment, [

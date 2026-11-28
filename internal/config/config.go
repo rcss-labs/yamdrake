@@ -62,6 +62,12 @@ type Orchestrator struct {
 	// their CLI tokens to keep working (YUMDRAKE_TOKEN_SSO_MAX_AGE, default 168h,
 	// at least 1h).
 	TokenSSOMaxAge time.Duration
+	// Metrics is "" (off, the default) or "emf": write CloudWatch embedded
+	// metric format lines to standard output every minute
+	// (YUMDRAKE_METRICS). MetricsDimensions are put on every metric
+	// (YUMDRAKE_METRICS_DIMENSIONS, "Name=value,Name=value").
+	Metrics           string
+	MetricsDimensions map[string]string
 
 	SyncSettings
 }
@@ -166,6 +172,12 @@ func LoadOrchestrator(getenv func(string) string) (Orchestrator, error) {
 	if cfg.TokenSSOMaxAge > 0 && cfg.TokenSSOMaxAge < minTokenSSOMaxAge {
 		l.fail("YUMDRAKE_TOKEN_SSO_MAX_AGE", "must be at least 1h")
 	}
+	switch cfg.Metrics = l.getenv("YUMDRAKE_METRICS"); cfg.Metrics {
+	case "", "emf":
+	default:
+		l.fail("YUMDRAKE_METRICS", `must be "" or "emf"`)
+	}
+	cfg.MetricsDimensions = l.metricDimensions("YUMDRAKE_METRICS_DIMENSIONS")
 	cfg.SyncSettings = l.loadSyncSettings()
 
 	if err := l.err(); err != nil {
@@ -245,6 +257,44 @@ func (l *loader) publicURL(variable string) string {
 		return ""
 	}
 	return u.Scheme + "://" + u.Host
+}
+
+const maxMetricDimensions = 30
+
+var metricDimensionName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,255}$`)
+
+// metricDimensions reads "Name=value,Name=value" (empty or unset means none).
+// A name must match metricDimensionName and appear once, a value must not be
+// empty or hold a comma (the separator), and there are at most 30 pairs.
+// Messages never echo a value.
+func (l *loader) metricDimensions(variable string) map[string]string {
+	raw := l.getenv(variable)
+	if raw == "" {
+		return nil
+	}
+	pairs := strings.Split(raw, ",")
+	if len(pairs) > maxMetricDimensions {
+		l.fail(variable, fmt.Sprintf("allows at most %d dimensions", maxMetricDimensions))
+		return nil
+	}
+	out := make(map[string]string, len(pairs))
+	for i, pair := range pairs {
+		name, value, found := strings.Cut(pair, "=")
+		switch {
+		case !found || value == "":
+			l.fail(variable, fmt.Sprintf("entry %d must be Name=value with a non-empty value", i+1))
+			return nil
+		case !metricDimensionName.MatchString(name):
+			l.fail(variable, fmt.Sprintf("entry %d: the name must match %s", i+1, metricDimensionName))
+			return nil
+		}
+		if _, dup := out[name]; dup {
+			l.fail(variable, fmt.Sprintf("entry %d: the name %q is given twice", i+1, name))
+			return nil
+		}
+		out[name] = value
+	}
+	return out
 }
 
 func (l *loader) valueOr(variable, fallback string) string {

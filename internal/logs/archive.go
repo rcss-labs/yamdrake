@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -270,6 +271,15 @@ func (a *Archiver) archiveLeg(ctx context.Context, runID, legID int64) (bool, er
 		return false, fmt.Errorf("check archive: %w", err)
 	}
 	if already {
+		var leftover bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM log_lines WHERE run_id = $1 AND leg_id = $2)`, runID, legID).Scan(&leftover); err != nil {
+			return false, fmt.Errorf("check leftover rows: %w", err)
+		}
+		if !leftover {
+			// Another orchestrator archived the leg between our listing and our lock.
+			a.log.Debug("leg was archived by another orchestrator; nothing to do", "run", runID, "leg", legID)
+			return false, nil
+		}
 		return false, errors.New("leg is already archived but has rows in PostgreSQL; refusing to overwrite the archive")
 	}
 
@@ -304,8 +314,8 @@ func (a *Archiver) archiveLeg(ctx context.Context, runID, legID int64) (bool, er
 		return false, fmt.Errorf("put %s: %w", key, err)
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO log_archives (run_id, leg_id, key, line_count, first_seq, last_seq, archived_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		runID, legID, key, len(lines), lines[0].Seq, lines[len(lines)-1].Seq, a.now().UTC().Truncate(time.Microsecond)); err != nil {
+		`INSERT INTO log_archives (run_id, leg_id, key, line_count, first_seq, last_seq, archived_at, first_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		runID, legID, key, len(lines), lines[0].Seq, lines[len(lines)-1].Seq, a.now().UTC().Truncate(time.Microsecond), lines[0].At); err != nil {
 		return false, fmt.Errorf("record archive: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM log_lines WHERE run_id = $1 AND leg_id = $2`, runID, legID); err != nil {
@@ -321,10 +331,11 @@ func (a *Archiver) archiveLeg(ctx context.Context, runID, legID int64) (bool, er
 type archiveRef struct {
 	LegID, LineCount, LastSeq int64
 	Key                       string
+	FirstAt                   *time.Time // nil for archives written before it was recorded
 }
 
 func (r *Reader) archivedLegs(ctx context.Context, q querier, runID int64) (map[int64]archiveRef, error) {
-	rows, err := q.Query(ctx, `SELECT leg_id, key, line_count, last_seq FROM log_archives WHERE run_id = $1`, runID)
+	rows, err := q.Query(ctx, `SELECT leg_id, key, line_count, last_seq, first_at FROM log_archives WHERE run_id = $1`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("list log archives: %w", err)
 	}
@@ -332,7 +343,7 @@ func (r *Reader) archivedLegs(ctx context.Context, q querier, runID int64) (map[
 	out := map[int64]archiveRef{}
 	for rows.Next() {
 		var ref archiveRef
-		if err := rows.Scan(&ref.LegID, &ref.Key, &ref.LineCount, &ref.LastSeq); err != nil {
+		if err := rows.Scan(&ref.LegID, &ref.Key, &ref.LineCount, &ref.LastSeq, &ref.FirstAt); err != nil {
 			return nil, fmt.Errorf("scan log archive: %w", err)
 		}
 		out[ref.LegID] = ref
@@ -343,13 +354,35 @@ func (r *Reader) archivedLegs(ctx context.Context, q querier, runID int64) (map[
 // readArchived loads the archived legs that still have lines after the cursor
 // and returns their matching lines (ordered like PostgreSQL rows) plus every
 // gap after the cursor, per leg.
-func (r *Reader) readArchived(ctx context.Context, q querier, runID int64, f Filter, cursor map[int64]int64, archived map[int64]archiveRef) ([]candidate, map[int64][]Gap, error) {
+//
+// At most limit matching lines are returned per leg: lines of one leg come out
+// in sequence order with a non-decreasing sort key, so no later line of the leg
+// can belong to a page of limit lines. cache, when not nil, keeps each decoded
+// leg between calls so a paged read decompresses a leg once.
+func (r *Reader) readArchived(ctx context.Context, q querier, runID int64, f Filter, cursor map[int64]int64, archived map[int64]archiveRef, limit int, cache archiveCache, rowCands []candidate) ([]candidate, map[int64][]Gap, error) {
 	var wanted []int64
 	for leg, ref := range archived {
 		if ref.LastSeq > cursor[leg] {
 			wanted = append(wanted, leg)
 		}
 	}
+	// Legs that must be decoded now (already being read, or with no recorded
+	// start time) come first, then the others by start time, so a leg that
+	// starts after the page is already full is left alone.
+	mustRead := func(leg int64) bool {
+		_, cached := cache[leg]
+		return archived[leg].FirstAt == nil || cursor[leg] > 0 || cached
+	}
+	sort.Slice(wanted, func(i, j int) bool {
+		a, b := wanted[i], wanted[j]
+		if mustRead(a) != mustRead(b) {
+			return mustRead(a)
+		}
+		if !mustRead(a) && !archived[a].FirstAt.Equal(*archived[b].FirstAt) {
+			return archived[a].FirstAt.Before(*archived[b].FirstAt)
+		}
+		return a < b
+	})
 	if len(wanted) == 0 {
 		return nil, nil, nil
 	}
@@ -384,23 +417,48 @@ func (r *Reader) readArchived(ctx context.Context, q querier, runID int64, f Fil
 	query := strings.ToLower(f.Query)
 	for _, leg := range wanted {
 		ref := archived[leg]
-		data, err := r.archive.Get(ctx, ref.Key)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read archived leg %d: %w", leg, err)
+		if !mustRead(leg) && len(rowCands)+len(out) >= limit {
+			// Every line of this leg sorts at or after its first line's time. When
+			// the page already holds `limit` lines before that time, it cannot
+			// reach the leg (and neither can any later-starting leg).
+			orders := make([]time.Time, 0, len(rowCands)+len(out))
+			for _, c := range rowCands {
+				orders = append(orders, c.order)
+			}
+			for _, c := range out {
+				orders = append(orders, c.order)
+			}
+			sort.Slice(orders, func(i, j int) bool { return orders[i].Before(orders[j]) })
+			if ref.FirstAt.After(orders[limit-1]) {
+				break
+			}
 		}
-		lines, err := decodeArchive(data)
-		if err != nil {
-			return nil, nil, fmt.Errorf("decode archived leg %d: %w", leg, err)
-		}
-		if int64(len(lines)) != ref.LineCount {
-			return nil, nil, fmt.Errorf("archived leg %d has %d lines, recorded %d", leg, len(lines), ref.LineCount)
+		lines, cached := cache[leg]
+		if !cached {
+			data, err := r.archive.Get(ctx, ref.Key)
+			if err != nil {
+				return nil, nil, fmt.Errorf("read archived leg %d: %w", leg, err)
+			}
+			lines, err = decodeArchive(data)
+			if err != nil {
+				return nil, nil, fmt.Errorf("decode archived leg %d: %w", leg, err)
+			}
+			if int64(len(lines)) != ref.LineCount {
+				return nil, nil, fmt.Errorf("archived leg %d has %d lines, recorded %d", leg, len(lines), ref.LineCount)
+			}
+			if cache != nil {
+				cache[leg] = lines
+			}
 		}
 		prev := cursor[leg]
 		var order time.Time
 		m := meta[leg]
-		for _, l := range lines {
-			if l.Seq <= cursor[leg] {
-				continue
+		matched := 0
+		// Lines are in sequence order: skip straight to the first one after the cursor.
+		start := sort.Search(len(lines), func(i int) bool { return lines[i].Seq > cursor[leg] })
+		for _, l := range lines[start:] {
+			if matched >= limit {
+				break
 			}
 			if l.Seq-prev > 1 {
 				gaps[leg] = append(gaps[leg], Gap{LegID: leg, FromSeq: prev + 1, ToSeq: l.Seq - 1})
@@ -421,6 +479,7 @@ func (r *Reader) readArchived(ctx context.Context, q querier, runID int64, f Fil
 			if query != "" && !strings.Contains(strings.ToLower(l.Text), query) {
 				continue
 			}
+			matched++
 			out = append(out, candidate{
 				Line:  Line{RunID: runID, LegID: leg, Seq: l.Seq, At: l.At.UTC(), Level: l.Level, Text: l.Text},
 				order: order.UTC(),

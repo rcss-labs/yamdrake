@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rcss-labs/yamdrake/internal/auth"
+	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/store"
 	"github.com/rcss-labs/yamdrake/internal/wake"
 )
@@ -1089,5 +1090,142 @@ func TestCancelOfAClaimedLegFlagsItInsteadOfFailing(t *testing.T) {
 	got := h.legByKind(run.ID, "revalidate")
 	if got.State != "claimed" || !got.CancelRequested {
 		t.Fatalf("leg = %+v, want still claimed and flagged", got)
+	}
+}
+
+// TestCancelReconcilesALegThatWasAttemptedBefore reproduces the review's
+// scenario: a runner claims a leg and records an intent (the change may have
+// happened), then dies; the sweep requeues the leg; a person cancels. The
+// orchestrator must not settle the leg as cancelled: it flags it and leaves it
+// queued so a runner claims it and reconciles the intended operation. The run
+// stays cancelling and keeps its locks. A leg never attempted is still
+// cancelled directly.
+func TestCancelReconcilesALegThatWasAttemptedBefore(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	ctx := context.Background()
+	const lease = 30 * time.Second
+	q := queue.New(h.pool, lease, h.clock.Now)
+
+	run := h.running("s1", "s2")
+	h.pastRevalidation(run.ID) // config s1 and config s2 are queued
+
+	claimed, err := q.Claim(ctx, "runner-dead")
+	if err != nil || claimed == nil {
+		t.Fatalf("Claim: %v, %v", claimed, err)
+	}
+	attempted := claimed.Leg
+	if _, err := q.Intend(ctx, attempted.ID, attempted.Generation, "copy-config", "copy-config/"+attempted.Service, []byte(`{"service":"x"}`)); err != nil {
+		t.Fatalf("Intend: %v", err)
+	}
+	h.clock.Advance(lease + time.Second) // the runner died: its lease runs out
+	if requeued, _, err := q.Sweep(ctx); err != nil || requeued != 1 {
+		t.Fatalf("Sweep = %d requeued, %v; want 1", requeued, err)
+	}
+	if got := h.stepLeg(run.ID, "config", attempted.Service); got.State != "queued" || got.Attempt != 1 {
+		t.Fatalf("swept leg: %+v, want queued after one attempt", got)
+	}
+
+	if err := h.eng.Cancel(ctx, h.starter, run.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	h.advance(run.ID)
+
+	got := h.stepLeg(run.ID, "config", attempted.Service)
+	if got.State != "queued" || !got.CancelRequested {
+		t.Fatalf("attempted leg = %+v, want still queued and flagged so a runner reconciles it", got)
+	}
+	other := "s1"
+	if attempted.Service == "s1" {
+		other = "s2"
+	}
+	if got := h.stepLeg(run.ID, "config", other).State; got != "cancelled" {
+		t.Fatalf("never-attempted leg is %s, want cancelled directly", got)
+	}
+	h.expectState(run.ID, "cancelling")
+	if len(h.locks(run.ID)) == 0 {
+		t.Fatalf("locks released while an intended operation is unreconciled")
+	}
+	for i := 0; i < 3; i++ {
+		h.advance(run.ID)
+	}
+	h.expectState(run.ID, "cancelling")
+	if got := h.stepLeg(run.ID, "config", attempted.Service).State; got != "queued" {
+		t.Fatalf("leg is %s after more advances, want queued", got)
+	}
+
+	// A runner reconciles and the leg ends unknown: the run needs reconciliation, locks kept.
+	again, err := q.Claim(ctx, "runner-2")
+	if err != nil || again == nil || again.Leg.ID != attempted.ID {
+		t.Fatalf("second Claim = %+v, %v; want the attempted leg", again, err)
+	}
+	if err := q.Complete(ctx, again.Leg.ID, again.Leg.Generation, queue.Outcome{State: "unknown", FailureShort: "change not in place"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	h.advance(run.ID)
+	h.expectState(run.ID, "needs_reconciliation")
+	if len(h.locks(run.ID)) == 0 {
+		t.Fatalf("locks released although the leg is unknown")
+	}
+}
+
+// TestRunHeldBackByTheEnvironmentLimitSaysSoAndClearsItWhenLegsAreQueued shows
+// the wait reason reaches the run row and is removed again.
+func TestRunHeldBackByTheEnvironmentLimitSaysSoAndClearsItWhenLegsAreQueued(t *testing.T) {
+	h := newHarness(t, harnessOptions{limits: Limits{PerEnvironment: 1, PerAccount: 20}})
+	a := h.running("s1")
+	h.pastRevalidation(a.ID) // A's one config leg is queued and fills the environment
+	b := h.running("s2")
+	h.pastRevalidation(b.ID)
+
+	held := h.expectState(b.ID, "running")
+	if want := "waiting for capacity in " + testEnvironment; held.WaitReason != want {
+		t.Fatalf("wait reason = %q, want %q", held.WaitReason, want)
+	}
+	if got := h.stepLeg(b.ID, "config", "s2").State; got != "pending" {
+		t.Fatalf("B's leg is %s, want pending while the environment is full", got)
+	}
+
+	h.setLeg(h.stepLeg(a.ID, "config", "s1").ID, "succeeded") // room appears
+	h.advance(b.ID)
+	freed := h.expectState(b.ID, "running")
+	if freed.WaitReason != "" {
+		t.Fatalf("wait reason = %q after legs were queued, want it cleared", freed.WaitReason)
+	}
+	if got := h.stepLeg(b.ID, "config", "s2").State; got != "queued" {
+		t.Fatalf("B's leg is %s, want queued", got)
+	}
+}
+
+// A runner that claims a leg and releases it (shutdown, a failed start) or dies
+// before its first operation has changed nothing: the leg is queued with
+// attempt 1 and no intended operation. Cancel settles it directly; flagging it
+// would let the next runner run the executor, which deploys.
+func TestCancelSettlesAReleasedLegThatNeverStartedAChange(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	ctx := context.Background()
+	q := queue.New(h.pool, 30*time.Second, h.clock.Now)
+
+	run := h.running("s1")
+	h.pastRevalidation(run.ID)
+	claimed, err := q.Claim(ctx, "runner-1")
+	if err != nil || claimed == nil {
+		t.Fatalf("Claim: %v, %v", claimed, err)
+	}
+	if err := q.Release(ctx, claimed.Leg.ID, claimed.Leg.Generation); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if got := h.stepLeg(run.ID, "config", claimed.Leg.Service); got.State != "queued" || got.Attempt != 1 {
+		t.Fatalf("released leg: %+v, want queued after one attempt", got)
+	}
+
+	if err := h.eng.Cancel(ctx, h.starter, run.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	h.advance(run.ID)
+	if got := h.stepLeg(run.ID, "config", claimed.Leg.Service); got.State != "cancelled" {
+		t.Fatalf("released leg is %s, want cancelled directly so no executor runs for it", got.State)
+	}
+	if again, err := q.Claim(ctx, "runner-2"); err != nil || again != nil {
+		t.Fatalf("a cancelled leg was claimed: %+v, %v", again, err)
 	}
 }

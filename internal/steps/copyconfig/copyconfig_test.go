@@ -641,6 +641,51 @@ func TestUnusableStoredCopyWithInheritedIntentIsUnknown(t *testing.T) {
 	}
 }
 
+// laterIntentFixture has b.env before a.env; an earlier attempt left a.env's
+// write intended, and b.env's write is now refused.
+func laterIntentFixture(t *testing.T) *fixture {
+	f := newFixture(t, file{"b.env", "b.env", "B=1\n"}, file{"a.env", "a.env", "A=1\n"})
+	f.env.PresetOps = []store.Op{{ID: 1, Name: "put-config", Key: "put-config:" + f.items[1].Destination, State: "intended"}}
+	f.s3.putErr = func(int, string) error { return refusal(403, "AccessDenied", "x") }
+	return f
+}
+
+func TestEarlierFileFailureSettlesLaterInheritedIntentBeforeFailing(t *testing.T) {
+	f := laterIntentFixture(t)
+	f.s3.objects[f.dest("a.env")] = []byte("A=1\n")
+	out := f.run()
+	if out.State != "failed" || out.FailureShort != "AccessDenied on s3:PutObject" {
+		t.Fatalf("outcome = %q %q: %s", out.State, out.FailureShort, out.FailureDetail)
+	}
+	r := result(t, out)
+	want(t, "written", r.Written, uri(f, "a.env")...)
+	want(t, "not written", r.NotWritten, uri(f, "b.env")...)
+	if len(f.s3.puts) != 1 {
+		t.Errorf("puts = %v; settling a.env must not write it", f.s3.puts)
+	}
+}
+
+func TestEarlierFileFailureWithUncheckableLaterIntentIsUnknown(t *testing.T) {
+	f := laterIntentFixture(t)
+	aKey := f.dest("a.env")
+	f.s3.getErr = func(key string) error {
+		if key == aKey {
+			return refusal(503, "SlowDown", "x")
+		}
+		return nil
+	}
+	out := f.run()
+	if out.State != "unknown" || out.FailureShort != "could not check an interrupted write of a.env" {
+		t.Fatalf("outcome = %q %q: %s", out.State, out.FailureShort, out.FailureDetail)
+	}
+	if !strings.Contains(out.FailureDetail, "AccessDenied on s3:PutObject") {
+		t.Errorf("detail lost the original failure: %s", out.FailureDetail)
+	}
+	if len(f.s3.puts) != 1 {
+		t.Errorf("puts = %v; a.env must not be written", f.s3.puts)
+	}
+}
+
 func TestDoneOpButDestinationChangedIsWrittenAgain(t *testing.T) {
 	f := newFixture(t, file{"web.env", "web.env", "A=1\n"})
 	f.env.PresetOps = []store.Op{{ID: 1, Name: "put-config", Key: "put-config:" + f.items[0].Destination, State: "done"}}

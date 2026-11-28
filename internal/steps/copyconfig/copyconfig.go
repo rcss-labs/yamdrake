@@ -434,11 +434,26 @@ func (r *leg) stopped(i int, state, short, detail string) *queue.Outcome {
 	return &out
 }
 
+// stop is stopped without the pointer.
+//
+// A leg may end "failed" (locks released) only when none of its writes is
+// still open, so before failing it settles every item left whose write an
+// earlier attempt intended, by reading the destination: the pinned bytes mean
+// Written, anything else NotWritten. Nothing new is written. If such a read
+// fails, the leg ends "unknown" instead.
 func (r *leg) stop(i int, state, short, detail string) queue.Outcome {
 	for _, item := range r.items[i:] {
-		if item.NotRestored != "" {
+		switch {
+		case item.NotRestored != "":
 			r.res.NotRestored = append(r.res.NotRestored, item.Destination)
-		} else {
+		case state == "failed" && r.intendedFor(item.Destination):
+			if err := r.settle(item); err != nil {
+				r.env.Log("error", fmt.Sprintf("%s: an interrupted write could not be checked.", item.Name))
+				detail = joinLines(short, detail, resolve.ErrorDetail("s3:GetObject", err))
+				state, short = "unknown", "could not check an interrupted write of "+item.Name
+				r.res.NotWritten = append(r.res.NotWritten, item.Destination)
+			}
+		default:
 			r.res.NotWritten = append(r.res.NotWritten, item.Destination)
 		}
 	}
@@ -449,6 +464,35 @@ func (r *leg) stop(i int, state, short, detail string) queue.Outcome {
 		detail += list
 	}
 	return r.end(state, short, detail)
+}
+
+// settle reads the destination of an item whose write is still intended and
+// files it under Written or NotWritten. It writes nothing.
+func (r *leg) settle(item manifest.ConfigItem) error {
+	if r.client == nil {
+		return errors.New("no S3 client")
+	}
+	current, missing, err := r.read(item.Destination)
+	if err != nil {
+		return err
+	}
+	if !missing && sumOf(current) == item.SHA256 {
+		r.res.Written = append(r.res.Written, item.Destination)
+		r.env.Log("ok", fmt.Sprintf("%s: an earlier attempt's write is in place (%s)", item.Name, shortSum(item.SHA256)))
+	} else {
+		r.res.NotWritten = append(r.res.NotWritten, item.Destination)
+	}
+	return nil
+}
+
+func joinLines(lines ...string) string {
+	var kept []string
+	for _, l := range lines {
+		if l != "" {
+			kept = append(kept, l)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // listing says in plain words where every file stands.

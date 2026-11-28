@@ -18,9 +18,13 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/awsx/discovery"
 	"github.com/rcss-labs/yamdrake/internal/config"
 	"github.com/rcss-labs/yamdrake/internal/db"
+	"github.com/rcss-labs/yamdrake/internal/engine"
+	"github.com/rcss-labs/yamdrake/internal/logs"
+	"github.com/rcss-labs/yamdrake/internal/queue"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	yumsync "github.com/rcss-labs/yamdrake/internal/sync"
+	"github.com/rcss-labs/yamdrake/internal/wake"
 	"github.com/rcss-labs/yamdrake/internal/webui"
 )
 
@@ -52,8 +56,9 @@ func NewOrchestratorService(cfg config.Orchestrator) Service {
 }
 
 // OrchestratorExtension wires the orchestrator's own parts into Run: the
-// secret cipher, the sync engine with its polling loop, and the /api/v1 API
-// with its sessions. Without an inventory source the loop finds nothing to do.
+// secret cipher, the sync engine with its polling loop, the run engine's loop
+// (woken through Valkey, with a timer as fallback) and the /api/v1 API with
+// its sessions. Without an inventory source the loop finds nothing to do.
 func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.Logger, *pgxpool.Pool, valkey.Client) (Extension, error) {
 	return func(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, client valkey.Client) (Extension, error) {
 		awsConfig, err := awsx.BaseConfig(ctx, cfg.AWS)
@@ -69,10 +74,26 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			return Extension{}, err
 		}
 		sources := newGitHubSources(pool, cipher, cfg.GitHubAPIURL, log)
-		engine := yumsync.NewEngine(pool, sources.For, log, time.Now)
+		syncEngine := yumsync.NewEngine(pool, sources.For, log, time.Now)
+		bus := wake.New(client, log, wake.WithKeyPrefix(cfg.ValkeyKeyPrefix))
+		runEngine := engine.New(engine.Deps{
+			DB:        pool,
+			Limits:    engine.Limits{PerEnvironment: cfg.LimitPerEnvironment, PerAccount: cfg.LimitPerAccount},
+			Log:       log,
+			Publisher: bus,
+		})
+		// Archived legs are read back from the same directory they were written to.
+		var archive logs.Archive
+		var archiver *logs.Archiver
+		if cfg.LogArchiveDir != "" {
+			if archive, err = logs.NewDirArchive(cfg.LogArchiveDir); err != nil {
+				return Extension{}, fmt.Errorf("log archive: %w", err)
+			}
+			archiver = logs.NewArchiver(pool, archive, cfg.LogArchiveAfter, nil, log)
+		}
 		handler := api.New(api.Deps{
 			Pool:                pool,
-			Engine:              engine,
+			Engine:              syncEngine,
 			Cipher:              cipher,
 			Log:                 log,
 			OnConnectionCreated: sources.Forget,
@@ -80,17 +101,36 @@ func OrchestratorExtension(cfg config.Orchestrator) func(context.Context, *slog.
 			Valkey:              client,
 			KeyPrefix:           cfg.ValkeyKeyPrefix,
 			PublicURL:           cfg.PublicURL,
+			Runs:                runEngine,
+			Logs:                logs.NewReader(pool, archive),
+			Wake:                bus,
 			TokenSSOMaxAge:      cfg.TokenSSOMaxAge,
 			AWSConfig:           awsConfig,
+			AWSOptions:          cfg.AWS,
 			Discovery:           discovery.New(pool, cipher, awsConfig, cfg.AWS).WithLogger(log),
 		})
+		// The queue is used only for Sweep, which compares against the database
+		// clock (nil) and does not need a lease length.
+		sweepQueue := queue.New(pool, 0, nil)
+		background := []func(context.Context){func(ctx context.Context) {
+			log.Info("sync loop started", "interval", cfg.SyncInterval.String(), "github_api_url", cfg.GitHubAPIURL)
+			syncEngine.Run(ctx, cfg.SyncInterval)
+			log.Info("sync loop stopped")
+		}, func(ctx context.Context) {
+			log.Info("engine loop started", "sweep_interval", cfg.SweepInterval.String())
+			runEngine.Loop(ctx, bus.Subscribe(ctx, wake.TopicRuns), cfg.SweepInterval, sweepQueue, nil)
+			log.Info("engine loop stopped")
+		}}
+		if archiver != nil {
+			background = append(background, func(ctx context.Context) {
+				log.Info("log archive loop started", "interval", cfg.LogArchiveInterval.String(), "after", cfg.LogArchiveAfter.String())
+				archiveLoop(ctx, archiver, cfg.LogArchiveInterval, log)
+				log.Info("log archive loop stopped")
+			})
+		}
 		return Extension{
-			Handlers: map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},
-			Background: []func(context.Context){func(ctx context.Context) {
-				log.Info("sync loop started", "interval", cfg.SyncInterval.String(), "github_api_url", cfg.GitHubAPIURL)
-				engine.Run(ctx, cfg.SyncInterval)
-				log.Info("sync loop stopped")
-			}},
+			Handlers:   map[string]http.Handler{"/api/v1/": handler, "/saml/": handler},
+			Background: background,
 		}, nil
 	}
 }
@@ -110,4 +150,32 @@ func NewCipher(cfg config.Common, awsConfig aws.Config) (secrets.Cipher, error) 
 		return nil, fmt.Errorf("secret cipher: %w", err)
 	}
 	return cipher, nil
+}
+
+// settledLegArchiver is what archiveLoop drives; *logs.Archiver satisfies it.
+type settledLegArchiver interface {
+	ArchiveSettledLegs(ctx context.Context) (int, error)
+}
+
+// archiveLoop archives settled legs every interval until ctx ends. A failed
+// round is logged and the next one tries again: archiving never takes the
+// orchestrator down.
+func archiveLoop(ctx context.Context, archiver settledLegArchiver, every time.Duration, log *slog.Logger) {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if n, err := archiver.ArchiveSettledLegs(ctx); err != nil && ctx.Err() == nil {
+			log.Error("log archive round failed", "error", err.Error())
+		} else if n > 0 {
+			log.Info("archived settled legs", "legs", n)
+		}
+	}
 }

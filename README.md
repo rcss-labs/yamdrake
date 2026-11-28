@@ -219,10 +219,32 @@ make web-e2e                                         # builds, then runs the tes
 make lint               # gofmt, go vet and golangci-lint
 make test               # unit tests with the race detector
 make test-integration   # integration tests; needs `make dev-up` first
+make test-e2e           # end-to-end tests: in-process orchestrators and runners with fake steps, a fake GitHub; needs `make dev-up` first
 make smoke              # builds the images and starts the Compose "app" profile, then checks that it is healthy
 ```
 
 `make smoke` needs Docker. It removes its containers and volumes on exit. See `scripts/smoke.sh -h` for its exit codes.
+
+## Trying a run with fake steps
+
+The real step executors arrive later; until then a run can be tried end to end with fake steps that change nothing. Start the runner with both of these (it refuses `YUMDRAKE_FAKE_STEPS=true` in any other environment, and production defaults keep them off):
+
+```sh
+YUMDRAKE_ENV=dev YUMDRAKE_FAKE_STEPS=true bin/yumdrake-runner
+```
+
+Then plan and start a run from the web application or `POST /api/v1/jobs/{id}/runs`. The version you choose for a service decides how its `ecs-deploy` step ends:
+
+| Version contains | The step |
+| --- | --- |
+| `fail` | fails with `health checks failed` |
+| `unknown` | ends `unknown`; the run waits in `needs_reconciliation` holding its locks until a person reconciles the leg |
+| `slow` | takes 30 seconds (useful for watching the live log, cancelling, or stopping a runner mid-step) |
+| anything else | succeeds after about 2 seconds |
+
+An environment whose name contains `stale` fails the revalidation just before the steps run, so the run ends `invalidated` without changing anything. Every run keeps its live log (`GET /api/v1/runs/{id}/events`) and its stored log (`GET /api/v1/runs/{id}/log`).
+
+The Compose "app" profile runs the runner this way only under `make smoke`, through `YUMDRAKE_RUNNER_ENV` and `YUMDRAKE_RUNNER_FAKE_STEPS` (default `prod` and `false`).
 
 ## Exit codes
 
@@ -260,6 +282,18 @@ Every variable starts with `YUMDRAKE_`. Secrets are never logged; a database URL
 | `YUMDRAKE_SYNC_INTERVAL` | orchestrator | `60s` | Go duration of at least `10s`. |
 | `YUMDRAKE_GITHUB_API_URL` | orchestrator | `https://api.github.com` | An `http://` or `https://` URL. Overridden in tests. |
 | `YUMDRAKE_AWS_ENDPOINT_URL` | orchestrator, runner | empty (real AWS) | An `http://` or `https://` URL that all AWS calls go to, for a local emulator such as Floci. |
+| `YUMDRAKE_SWEEP_INTERVAL` | orchestrator | `2s` | Go duration greater than zero. How often the run engine's fallback timer gives expired leases to another runner, expires waiting runs and advances every active run. Wake-ups through Valkey make runs move sooner; the timer alone is enough when Valkey is down. |
+| `YUMDRAKE_LIMIT_PER_ENVIRONMENT` | orchestrator | `10` | Positive integer. At most this many legs of other runs run at once in one environment. A soft limit: orchestrators advancing two runs at the same moment may overshoot it briefly. |
+| `YUMDRAKE_LIMIT_PER_ACCOUNT` | orchestrator | `20` | Positive integer. The same limit for one AWS account. |
+| `YUMDRAKE_LOG_ARCHIVE_DIR` | orchestrator | empty (no archiving) | Absolute path of a directory. When set, the logs of legs settled longer than `YUMDRAKE_LOG_ARCHIVE_AFTER` are moved there from PostgreSQL and are still served by the API. |
+| `YUMDRAKE_LOG_ARCHIVE_INTERVAL` | orchestrator | `1m` | Go duration greater than zero. How often settled legs are archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
+| `YUMDRAKE_LOG_ARCHIVE_AFTER` | orchestrator | `1h` | Go duration. How long a leg must have been settled before its log is archived. Used only with `YUMDRAKE_LOG_ARCHIVE_DIR`. |
+| `YUMDRAKE_ENV` | runner | `prod` | `dev` or `prod`. Fake steps are allowed only with `dev`. |
+| `YUMDRAKE_FAKE_STEPS` | runner | `false` | `true` or `false`. When `true` (only with `YUMDRAKE_ENV=dev`; the runner refuses to start otherwise) the runner executes pretend steps that change nothing real. See [Trying a run with fake steps](#trying-a-run-with-fake-steps). |
+| `YUMDRAKE_RUNNER_CONCURRENCY` | runner | `8` | Positive integer. How many legs one runner executes at once. |
+| `YUMDRAKE_LEASE` | runner | `30s` | Go duration. How long a claimed leg belongs to a runner without a heartbeat. After that another runner may take it (at most 5 times, then the leg becomes `unknown`). |
+| `YUMDRAKE_HEARTBEAT` | runner | `10s` | Go duration; must be shorter than `YUMDRAKE_LEASE`. How often the runner renews the leases of its legs. |
+| `YUMDRAKE_RUNNER_POLL` | runner | `2s` | Go duration. How often the runner looks for queued legs when no wake-up arrived. |
 | `YUMDRAKE_TEST_DATABASE_URL` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_DATABASE_URL`. Set by `make test-integration` and CI. |
 | `YUMDRAKE_TEST_VALKEY_ADDR` | integration tests | none (required with `-tags integration`) | Same format as `YUMDRAKE_VALKEY_ADDR`. Set by `make test-integration` and CI. |
 | `YUMDRAKE_TEST_AWS_ENDPOINT` | Floci tests | none (required with `-tags floci`) | URL of Floci, `http://localhost:4577`. Set by `make test-floci`. |

@@ -536,6 +536,39 @@ func TestAWSEndpointURLRules(t *testing.T) {
 	}
 }
 
+func TestFakeStepsRefusedOutsideDev(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       map[string]string
+		wantError string // substring; empty means the load must succeed
+	}{
+		{"prod with fakes", map[string]string{"YUMDRAKE_ENV": "prod", "YUMDRAKE_FAKE_STEPS": "true"}, "YUMDRAKE_FAKE_STEPS"},
+		{"default env with fakes", map[string]string{"YUMDRAKE_FAKE_STEPS": "true"}, "YUMDRAKE_FAKE_STEPS"},
+		{"dev with fakes", map[string]string{"YUMDRAKE_ENV": "dev", "YUMDRAKE_FAKE_STEPS": "true"}, ""},
+		{"prod without fakes", map[string]string{"YUMDRAKE_ENV": "prod"}, ""},
+		{"unknown env", map[string]string{"YUMDRAKE_ENV": "staging"}, "YUMDRAKE_ENV"},
+		{"fake flag not a bool", map[string]string{"YUMDRAKE_ENV": "dev", "YUMDRAKE_FAKE_STEPS": "yes"}, "YUMDRAKE_FAKE_STEPS"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := requiredEnv()
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			cfg, err := LoadRunner(envFrom(env))
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("LoadRunner() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("LoadRunner() = %+v, %v; want an error naming %s", cfg, err, tc.wantError)
+			}
+		})
+	}
+}
+
 func TestKMSModeCarriesTheKeyIDAndNeverEchoesBadValues(t *testing.T) {
 	env := requiredEnv()
 	delete(env, "YUMDRAKE_LOCAL_SECRET_KEY")
@@ -555,5 +588,110 @@ func TestKMSModeCarriesTheKeyIDAndNeverEchoesBadValues(t *testing.T) {
 	env["YUMDRAKE_SECRETS_MODE"] = "hunter2-mode"
 	if _, err := LoadOrchestrator(envFrom(env)); err == nil || strings.Contains(err.Error(), "hunter2-mode") {
 		t.Errorf("an unknown mode error = %v; it must exist and not echo the value", err)
+	}
+}
+
+func TestLoadRunnerEngineDefaultsAndOverrides(t *testing.T) {
+	cfg, err := LoadRunner(envFrom(requiredEnv()))
+	if err != nil {
+		t.Fatalf("LoadRunner() error = %v", err)
+	}
+	if cfg.Env != "prod" || cfg.FakeSteps || cfg.Concurrency != 8 ||
+		cfg.Lease != 30*time.Second || cfg.Heartbeat != 10*time.Second || cfg.Poll != 2*time.Second {
+		t.Errorf("defaults = %+v", cfg)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_RUNNER_CONCURRENCY"] = "3"
+	env["YUMDRAKE_LEASE"] = "1m"
+	env["YUMDRAKE_HEARTBEAT"] = "20s"
+	env["YUMDRAKE_RUNNER_POLL"] = "500ms"
+	cfg, err = LoadRunner(envFrom(env))
+	if err != nil {
+		t.Fatalf("LoadRunner() error = %v", err)
+	}
+	if cfg.Concurrency != 3 || cfg.Lease != time.Minute || cfg.Heartbeat != 20*time.Second || cfg.Poll != 500*time.Millisecond {
+		t.Errorf("overrides = %+v", cfg)
+	}
+}
+
+func TestLoadRunnerRefusesHeartbeatNotShorterThanLease(t *testing.T) {
+	for _, heartbeat := range []string{"30s", "45s"} {
+		env := requiredEnv()
+		env["YUMDRAKE_HEARTBEAT"] = heartbeat // the default lease is 30s
+		if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_HEARTBEAT") {
+			t.Errorf("heartbeat %s: error = %v, want one naming YUMDRAKE_HEARTBEAT", heartbeat, err)
+		}
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_RUNNER_CONCURRENCY"] = "0"
+	if _, err := LoadRunner(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_RUNNER_CONCURRENCY") {
+		t.Errorf("concurrency 0: error = %v", err)
+	}
+}
+
+func TestLoadOrchestratorLogArchiveDir(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.LogArchiveDir != "" {
+		t.Fatalf("default: dir = %q, err = %v; want archiving off", cfg.LogArchiveDir, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_LOG_ARCHIVE_DIR"] = "/var/lib/yumdrake/logs"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.LogArchiveDir != "/var/lib/yumdrake/logs" {
+		t.Fatalf("absolute: dir = %q, err = %v", cfg.LogArchiveDir, err)
+	}
+	env["YUMDRAKE_LOG_ARCHIVE_DIR"] = "relative/dir"
+	if _, err = LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), "YUMDRAKE_LOG_ARCHIVE_DIR") {
+		t.Fatalf("relative path: err = %v, want a complaint naming the variable", err)
+	}
+}
+
+func TestOrchestratorEngineSettings(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.SweepInterval != 2*time.Second || cfg.LimitPerEnvironment != 10 || cfg.LimitPerAccount != 20 {
+		t.Fatalf("defaults = %v, %d, %d, %v; want 2s, 10, 20", cfg.SweepInterval, cfg.LimitPerEnvironment, cfg.LimitPerAccount, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_SWEEP_INTERVAL"] = "500ms"
+	env["YUMDRAKE_LIMIT_PER_ENVIRONMENT"] = "3"
+	env["YUMDRAKE_LIMIT_PER_ACCOUNT"] = "6"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.SweepInterval != 500*time.Millisecond || cfg.LimitPerEnvironment != 3 || cfg.LimitPerAccount != 6 {
+		t.Fatalf("overrides = %v, %d, %d, %v", cfg.SweepInterval, cfg.LimitPerEnvironment, cfg.LimitPerAccount, err)
+	}
+	for variable, bad := range map[string]string{"YUMDRAKE_SWEEP_INTERVAL": "0s", "YUMDRAKE_LIMIT_PER_ENVIRONMENT": "0", "YUMDRAKE_LIMIT_PER_ACCOUNT": "many"} {
+		env := requiredEnv()
+		env[variable] = bad
+		if _, err := LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), variable) {
+			t.Errorf("%s=%s: error = %v, want one naming the variable", variable, bad, err)
+		}
+	}
+}
+
+func TestRunnerReadsTheKeyPrefix(t *testing.T) {
+	env := requiredEnv()
+	env["YUMDRAKE_VALKEY_KEY_PREFIX"] = "blue:"
+	if cfg, err := LoadRunner(envFrom(env)); err != nil || cfg.ValkeyKeyPrefix != "blue:" {
+		t.Fatalf("prefix = %q, %v; want blue:", cfg.ValkeyKeyPrefix, err)
+	}
+}
+
+func TestOrchestratorLogArchiveSchedule(t *testing.T) {
+	cfg, err := LoadOrchestrator(envFrom(requiredEnv()))
+	if err != nil || cfg.LogArchiveInterval != time.Minute || cfg.LogArchiveAfter != time.Hour {
+		t.Fatalf("defaults = %v, %v, %v; want 1m and 1h", cfg.LogArchiveInterval, cfg.LogArchiveAfter, err)
+	}
+	env := requiredEnv()
+	env["YUMDRAKE_LOG_ARCHIVE_INTERVAL"] = "5s"
+	env["YUMDRAKE_LOG_ARCHIVE_AFTER"] = "30m"
+	if cfg, err = LoadOrchestrator(envFrom(env)); err != nil || cfg.LogArchiveInterval != 5*time.Second || cfg.LogArchiveAfter != 30*time.Minute {
+		t.Fatalf("overrides = %v, %v, %v", cfg.LogArchiveInterval, cfg.LogArchiveAfter, err)
+	}
+	for variable, bad := range map[string]string{
+		"YUMDRAKE_LOG_ARCHIVE_INTERVAL": "0s", "YUMDRAKE_LOG_ARCHIVE_AFTER": "-1h",
+	} {
+		env := requiredEnv()
+		env[variable] = bad
+		if _, err := LoadOrchestrator(envFrom(env)); err == nil || !strings.Contains(err.Error(), variable) {
+			t.Errorf("%s=%s: error = %v, want one naming the variable", variable, bad, err)
+		}
 	}
 }

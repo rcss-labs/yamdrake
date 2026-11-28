@@ -30,6 +30,8 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/cache"
 	"github.com/rcss-labs/yamdrake/internal/db"
+	runengine "github.com/rcss-labs/yamdrake/internal/engine"
+	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -253,8 +255,8 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("NewLocal: %v", err)
 	}
 	src := &fakeSource{files: map[string][]byte{}, heads: map[string]string{}}
-	logs := &lockedBuffer{}
-	log := slog.New(slog.NewTextHandler(logs, nil))
+	logBuffer := &lockedBuffer{}
+	log := slog.New(slog.NewTextHandler(logBuffer, nil))
 	engine := yumsync.NewEngine(pool,
 		func(context.Context, string) (yumsync.Source, error) { return src, nil },
 		log, time.Now)
@@ -265,8 +267,10 @@ func newHarness(t *testing.T) *harness {
 		Pool: pool, Engine: engine, Cipher: cipher, Log: log,
 		Sessions: sessions, Valkey: client, KeyPrefix: prefix, PublicURL: publicURL,
 		LockoutWindow: testLockoutWindow,
+		Runs:          runengine.New(runengine.Deps{DB: pool, Log: log}),
+		Logs:          logs.NewReader(pool, nil),
 	}
-	h := &harness{t: t, logs: logs, dbURL: url, pool: pool, cipher: cipher, src: src, handler: New(deps),
+	h := &harness{t: t, logs: logBuffer, dbURL: url, pool: pool, cipher: cipher, src: src, handler: New(deps),
 		deps: deps, valkey: client, sessions: sessions}
 	h.admin = h.newUser("admin")
 	adminGroup, err := store.CreateGroup(ctx, pool, "Admins", true)

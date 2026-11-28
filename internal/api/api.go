@@ -21,6 +21,8 @@ import (
 	"github.com/rcss-labs/yamdrake/internal/auth"
 	"github.com/rcss-labs/yamdrake/internal/awsx"
 	"github.com/rcss-labs/yamdrake/internal/awsx/discovery"
+	"github.com/rcss-labs/yamdrake/internal/engine"
+	"github.com/rcss-labs/yamdrake/internal/logs"
 	"github.com/rcss-labs/yamdrake/internal/secrets"
 	"github.com/rcss-labs/yamdrake/internal/session"
 	"github.com/rcss-labs/yamdrake/internal/store"
@@ -94,6 +96,22 @@ type Deps struct {
 	// long a request waits for a slot before it is answered 503 (default 1s).
 	MaxConcurrentLogins int
 	VerifyWait          time.Duration
+
+	// Runs carries out people's actions on runs and Logs reads their logs.
+	// Both are required.
+	Runs *engine.Engine
+	Logs *logs.Reader
+	// Wake lets the event stream hear about changes at once; nil is allowed
+	// (and so is a Valkey outage): the stream also polls on a timer.
+	Wake Waker
+	// StreamKeepAlive is how often an idle event stream sends a comment line
+	// (default 15 seconds); StreamPollInterval is how often it looks for
+	// changes without a wake-up (default 1 second). Tests shorten both.
+	StreamKeepAlive    time.Duration
+	StreamPollInterval time.Duration
+	// StreamBatchLines is how many log lines one stream event carries at most
+	// (default 200).
+	StreamBatchLines int
 	// TokenSSOMaxAge is how recent the last SSO sign-in of a SAML user must be
 	// for their tokens to work (default 168h). Group memberships from the
 	// identity provider refresh only at sign-in, so this bounds how long a
@@ -139,8 +157,17 @@ var dummyPasswordHash = sync.OnceValues(func() (string, error) {
 // (full paths are registered, so mount it at "/api/v1/" and "/saml/"). Every route except sign-in needs an
 // authenticated principal, and every route states the action it needs.
 func New(deps Deps) http.Handler {
-	if deps.Pool == nil || deps.Sessions == nil || deps.Valkey == nil || deps.PublicURL == "" {
-		panic("api.New: Pool, Sessions, Valkey and PublicURL are required")
+	if deps.Pool == nil || deps.Sessions == nil || deps.Valkey == nil || deps.PublicURL == "" || deps.Runs == nil || deps.Logs == nil {
+		panic("api.New: Pool, Sessions, Valkey, PublicURL, Runs and Logs are required")
+	}
+	if deps.StreamKeepAlive <= 0 {
+		deps.StreamKeepAlive = defaultStreamKeepAlive
+	}
+	if deps.StreamPollInterval <= 0 {
+		deps.StreamPollInterval = defaultStreamPollInterval
+	}
+	if deps.StreamBatchLines <= 0 {
+		deps.StreamBatchLines = defaultStreamBatchLines
 	}
 	if deps.Log == nil {
 		deps.Log = slog.New(slog.DiscardHandler)
@@ -288,7 +315,7 @@ func (s *server) routes() []routeDef {
 		{"PATCH /api/v1/jobs/{id}", auth.ManageJobs, s.moveJob},
 		{"POST /api/v1/jobs/{id}/sync", auth.ManageJobs, s.syncJob},
 		{"GET /api/v1/jobs/{id}/versions", auth.View, s.getJobVersions},
-	}, s.accessRoutes()...)
+	}, append(s.runRoutes(), s.accessRoutes()...)...)
 }
 
 type errorBody struct {
